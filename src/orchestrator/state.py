@@ -59,6 +59,7 @@ def upsert_service(
     volumes: Optional[List[str]] = None,
     ports: Optional[List[str]] = None,
     user: Optional[str] = None,
+    volume_mode: Optional[str] = None,
 ) -> None:
     services = load_services()
     existing = services.get(name) or {}
@@ -73,6 +74,7 @@ def upsert_service(
         "volumes": volumes if volumes is not None else existing.get("volumes"),
         "ports": ports if ports is not None else existing.get("ports"),
         "user": user if user is not None else existing.get("user"),
+        "volume_mode": volume_mode if volume_mode is not None else existing.get("volume_mode", "shared"),
     }
     save_services(services)
 

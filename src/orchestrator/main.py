@@ -138,6 +138,7 @@ def api_run_container(req: RunContainerRequest):
             volumes=req.volumes,
             ports=req.ports,
             user=req.user,
+            volume_mode=req.volume_mode,
         )
         return {"success": ok, "message": msg, "details": details}
     except Exception as e:

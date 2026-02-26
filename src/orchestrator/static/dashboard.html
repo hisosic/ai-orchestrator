@@ -212,6 +212,7 @@
       html += '<details class="field" style="margin-top:0.5rem;"><summary class="text-muted" style="cursor:pointer;">고급 옵션 (환경변수, 마운트, 포트, User)</summary>';
       html += '<div class="field"><label>환경변수 (한 줄에 KEY=value)</label><textarea id="imageEnv" rows="2" placeholder="APP_ENV=prod\nDEBUG=0"></textarea></div>';
       html += '<div class="field"><label>마운트 (한 줄에 호스트경로:컨테이너경로)</label><textarea id="imageVolumes" rows="2" placeholder="/data:/app/data"></textarea></div>';
+      html += '<div class="field"><label>볼륨 모드</label><select id="imageVolumeMode"><option value="shared">공유 (모든 레플리카 동일)</option><option value="per_replica">레플리카별 디렉터리 분리</option></select></div>';
       html += '<div class="field"><label>포트 (한 줄에 호스트:컨테이너)</label><textarea id="imagePorts" rows="2" placeholder="8080:80"></textarea></div>';
       html += '<div class="field"><label>User (uid:gid 또는 사용자명)</label><input type="text" id="imageUser" placeholder="1000:1000"></div>';
       html += '</details>';
@@ -247,12 +248,14 @@
         var volEl = document.getElementById('imageVolumes');
         var portEl = document.getElementById('imagePorts');
         var userEl = document.getElementById('imageUser');
+        var volModeEl = document.getElementById('imageVolumeMode');
         function lines(el) { var t = (el && el.value || '').trim(); return t ? t.split(/\n/).map(function(s){ return s.trim(); }).filter(Boolean) : []; }
         var opts = {};
         if (envEl && lines(envEl).length) opts.environment = lines(envEl);
         if (volEl && lines(volEl).length) opts.volumes = lines(volEl);
         if (portEl && lines(portEl).length) opts.ports = lines(portEl);
         if (userEl && userEl.value.trim()) opts.user = userEl.value.trim();
+        if (volModeEl && volModeEl.value) opts.volume_mode = volModeEl.value;
         runImage(tag, replicas, opts);
       });
       document.getElementById('btnImageRemove').addEventListener('click', function () {
@@ -444,6 +447,7 @@
       if (opts.volumes && opts.volumes.length) body.volumes = opts.volumes;
       if (opts.ports && opts.ports.length) body.ports = opts.ports;
       if (opts.user) body.user = opts.user;
+      if (opts.volume_mode) body.volume_mode = opts.volume_mode;
       try {
         const r = await fetch(API + '/v1/containers/run', {
           method: 'POST',

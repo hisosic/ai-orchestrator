@@ -95,6 +95,41 @@ def _build_run_extra(
     return out
 
 
+def _volumes_for_replica(
+    base: Optional[List[str]],
+    container_name: str,
+    mode: Optional[str],
+) -> Optional[List[str]]:
+    """Return volumes spec for a replica based on volume_mode.
+
+    per_replica 모드일 때는 호스트 경로 하위에 컨테이너 이름 디렉터리를 붙여 사용한다.
+    예: /data/nginx:/app  +  orch-nginx-0  =>  /data/nginx/orch-nginx-0:/app
+    """
+    if not base:
+        return base
+    if (mode or "shared") != "per_replica":
+        return base
+    result: List[str] = []
+    for spec in base:
+        s = (spec or "").strip()
+        if not s:
+            continue
+        parts = s.split(":")
+        if len(parts) >= 2:
+            host = parts[0].strip().rstrip("/")
+            rest = ":".join(parts[1:])
+            host_with_name = f"{host}/{container_name}"
+            # 강제로 디렉터리 생성 (없으면 에러 나므로)
+            try:
+                os.makedirs(host_with_name, exist_ok=True)
+            except OSError:
+                pass
+            result.append(f"{host_with_name}:{rest}")
+        else:
+            result.append(s)
+    return result
+
+
 def _parse_memory(s: str) -> int:
     """Convert '512m'/'1g' to bytes for Docker API."""
     if not s:
@@ -161,10 +196,10 @@ def execute_scale(client, service_name: str, replicas: int) -> Tuple[bool, str, 
     memory = info.get("memory_limit")
     cpu = info.get("cpu_limit")
     env = info.get("environment")
-    vols = info.get("volumes")
+    base_vols = info.get("volumes")
     prts = info.get("ports")
     usr = info.get("user")
-    extra = _build_run_extra(client, environment=env, volumes=vols, ports=prts, user=usr)
+    volume_mode = info.get("volume_mode", "shared")
 
     # Remove excess (running only)
     to_remove = len(current) - target
@@ -197,6 +232,8 @@ def execute_scale(client, service_name: str, replicas: int) -> Tuple[bool, str, 
             idx += 1
         used_indices.add(idx)
         name = _container_name(service_name, idx)
+        vols = _volumes_for_replica(base_vols, name, volume_mode)
+        extra = _build_run_extra(client, environment=env, volumes=vols, ports=prts, user=usr)
         labels = {
             LABEL_ORCHESTRATOR: "true",
             LABEL_SERVICE: service_name,
@@ -230,9 +267,17 @@ def execute_scale(client, service_name: str, replicas: int) -> Tuple[bool, str, 
 
     all_ids = [c.id[:12] for c in current] + created
     state.upsert_service(
-        service_name, image, replicas=target,
-        memory_limit=memory, cpu_limit=cpu, container_ids=all_ids,
-        environment=env, volumes=vols, ports=prts, user=usr,
+        service_name,
+        image,
+        replicas=target,
+        memory_limit=memory,
+        cpu_limit=cpu,
+        container_ids=all_ids,
+        environment=env,
+        volumes=base_vols,
+        ports=prts,
+        user=usr,
+        volume_mode=volume_mode,
     )
     state.update_service_containers(service_name, all_ids)
 
@@ -362,6 +407,7 @@ def run_container(
     volumes: Optional[List[str]] = None,
     ports: Optional[List[str]] = None,
     user: Optional[str] = None,
+    volume_mode: Optional[str] = None,
 ) -> Tuple[bool, str, dict]:
     """Run one or more containers from image.
 
@@ -373,8 +419,11 @@ def run_container(
         ids: List[str] = []
         net = _ensure_network(client) if use_internal_network else None
         group_name = name or image.split(":")[0].split("/")[-1]
-        extra = _build_run_extra(client, environment=environment, volumes=volumes, ports=ports, user=user)
+        mode = volume_mode or "shared"
         for i in range(count):
+            cname = _container_name(group_name, i)
+            vols = _volumes_for_replica(volumes, cname, mode)
+            extra = _build_run_extra(client, environment=environment, volumes=vols, ports=ports, user=user)
             labels = {
                 LABEL_ORCHESTRATOR: "true",
                 LABEL_SERVICE: group_name,
@@ -382,7 +431,7 @@ def run_container(
             }
             kwargs = {
                 "image": image,
-                "name": _container_name(group_name, i),
+                "name": cname,
                 "detach": True,
                 "labels": labels,
                 **extra,
@@ -415,6 +464,7 @@ def run_container(
                 volumes=volumes,
                 ports=ports,
                 user=user,
+                volume_mode=mode,
             )
         msg = (
             f"컨테이너 {len(ids)}개 기동 완료"
@@ -423,7 +473,13 @@ def run_container(
         )
         return True, msg, {"container_ids": ids, "service_name": group_name}
     except (APIError, ImageNotFound) as e:
-        return False, str(e), {}
+        msg = str(e)
+        if isinstance(e, APIError) and "bind source path does not exist" in msg:
+            msg = (
+                "볼륨 마운트 호스트 경로가 존재하지 않거나 Docker에서 공유되지 않았습니다: "
+                + msg
+            )
+        return False, msg, {}
 
 
 def stop_container_by_id(client, container_id: str) -> Tuple[bool, str, dict]:

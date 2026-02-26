@@ -57,6 +57,7 @@ class RunContainerRequest(BaseModel):
     volumes: Optional[List[str]] = Field(None, description='Mounts e.g. ["/host:/container", "/host2:/cont2:ro"]')
     ports: Optional[List[str]] = Field(None, description='Ports e.g. ["8080:80", "8443:443"]')
     user: Optional[str] = Field(None, description="User e.g. uid:gid or username")
+    volume_mode: Optional[str] = Field("shared", description="Volume mode: shared or per_replica")
 
 
 class ScaleServiceRequest(BaseModel):

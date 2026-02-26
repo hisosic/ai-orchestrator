@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Container Orchestrator — Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --text-muted: #8b949e;
+      --accent: #58a6ff;
+      --success: #3fb950;
+      --warn: #d29922;
+      --danger: #f85149;
+      --radius: 8px;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font-family: 'Outfit', sans-serif; font-size: 14px; line-height: 1.5; min-height: 100vh; }
+    .layout { max-width: 1600px; margin: 0 auto; padding: 1.5rem; }
+    header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 1px solid var(--border); }
+    h1 { font-size: 1.5rem; font-weight: 700; margin: 0; letter-spacing: -0.02em; }
+    .header-meta { display: flex; align-items: center; gap: 1rem; }
+    .refresh-control { display: flex; align-items: center; gap: 0.5rem; }
+    .refresh-control label { color: var(--text-muted); }
+    .refresh-control select { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); padding: 0.35rem 0.6rem; font-family: inherit; }
+    .last-updated { color: var(--text-muted); font-size: 0.85rem; }
+    .btn { background: var(--accent); color: #fff; border: none; border-radius: var(--radius); padding: 0.4rem 0.9rem; font-family: inherit; font-weight: 600; cursor: pointer; }
+    .btn:hover { filter: brightness(1.1); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-sm { padding: 0.25rem 0.5rem; font-size: 0.8rem; }
+    .btn-danger { background: var(--danger); }
+    .btn-warn { background: var(--warn); color: #000; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+    .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+    .panel-title { padding: 0.75rem 1rem; font-weight: 600; border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.03); }
+    .panel-body { padding: 1rem; overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
+    th { color: var(--text-muted); font-weight: 600; }
+    tr:last-child td { border-bottom: none; }
+    .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
+    .badge-running { background: rgba(63,185,80,0.2); color: var(--success); }
+    .badge-stopped { background: rgba(139,148,158,0.2); color: var(--text-muted); }
+    .badge-managed { background: rgba(88,166,255,0.2); color: var(--accent); }
+    .loading { color: var(--text-muted); }
+    .text-muted { color: var(--text-muted); }
+    .error-msg { color: var(--danger); }
+
+    .console-wrap { grid-column: 1 / -1; }
+    .console-wrap .panel-body { padding: 0; display: flex; flex-direction: column; }
+    .command-row { display: flex; gap: 0.5rem; padding: 1rem; border-bottom: 1px solid var(--border); align-items: center; flex-wrap: wrap; }
+    .command-row input[type="text"] {
+      flex: 1;
+      min-width: 200px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.6rem 0.8rem;
+      border-radius: var(--radius);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.9rem;
+    }
+    .command-row input::placeholder { color: var(--text-muted); }
+    .command-row input:focus { outline: none; border-color: var(--accent); }
+    .command-row label { display: flex; align-items: center; gap: 0.4rem; cursor: pointer; color: var(--text-muted); }
+    .command-row input[type="checkbox"] { width: auto; min-width: auto; }
+    .log { padding: 1rem; font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; max-height: 260px; overflow-y: auto; background: #0a0c10; }
+    .log-entry { margin-bottom: 0.5rem; }
+    .log-entry .ts { color: var(--text-muted); margin-right: 0.5rem; }
+    .log-entry .cmd { color: var(--accent); }
+    .log-entry .ok { color: var(--success); }
+    .log-entry .err { color: var(--danger); }
+    .log-entry .msg { color: var(--text); }
+    .operator-status { font-size: 0.85rem; padding: 0.25rem 0.5rem; border-radius: 4px; background: rgba(63,185,80,0.15); color: var(--success); font-weight: 600; }
+    .operator-status.error { background: rgba(248,81,73,0.15); color: var(--danger); }
+    tr.group-row { background: rgba(88,166,255,0.06); }
+    tr.group-row td { font-weight: 600; vertical-align: middle; }
+    tr.group-member { display: none; }
+    tr.group-member.expanded { display: table-row; }
+    tr.group-member td:first-child { padding-left: 2rem; }
+    .replica-control { display: inline-flex; align-items: center; gap: 0.35rem; }
+    .replica-control input[type="number"] { width: 3.5rem; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 0.25rem 0.4rem; border-radius: 4px; font-family: inherit; }
+    .toggle-group { background: none; border: none; color: var(--accent); cursor: pointer; padding: 0.2rem 0.4rem; font-size: 0.9rem; }
+    .field label { display: block; color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.25rem; }
+    .field textarea, .field input[type="text"] { width: 100%; max-width: 320px; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 0.4rem; border-radius: var(--radius); font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; }
+    .field textarea { resize: vertical; min-height: 2.5rem; }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <header>
+      <h1>AI Container Orchestrator — Dashboard</h1>
+      <div class="header-meta">
+        <span id="operatorStatus" class="operator-status" title="운영 상태 (헬스)">—</span>
+        <div class="refresh-control">
+          <label for="refreshInterval">자동 새로고침</label>
+          <select id="refreshInterval">
+            <option value="0">끄기</option>
+            <option value="5">5초</option>
+            <option value="10" selected>10초</option>
+            <option value="30">30초</option>
+          </select>
+        </div>
+        <span class="last-updated" id="lastUpdated">—</span>
+        <button type="button" class="btn" id="btnRefresh">새로고침</button>
+      </div>
+    </header>
+
+    <div class="grid">
+      <div class="panel">
+        <div class="panel-title">시스템 / 환경</div>
+        <div class="panel-body" id="systemPanel"><span class="loading">불러오는 중…</span></div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">관리 서비스</div>
+        <div class="panel-body" id="servicesPanel"><span class="loading">불러오는 중…</span></div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">이미지 목록 (기동 / 삭제)</div>
+        <div class="panel-body" id="imagesPanel"><span class="loading">불러오는 중…</span></div>
+      </div>
+
+      <div class="panel console-wrap">
+        <div class="panel-title">명령 콘솔 (자연어 또는 명령어)</div>
+        <div class="panel-body">
+          <div class="command-row">
+            <input type="text" id="commandInput" placeholder="예: nginx 배포해줘 / nginx를 3개로 스케일해줘 / nginx 컨테이너 종료해줘 / 서비스 목록" autocomplete="off">
+            <label><input type="checkbox" id="dryRun"> Dry run</label>
+            <button type="button" class="btn" id="btnRun">실행</button>
+          </div>
+          <div class="log" id="commandLog"></div>
+        </div>
+      </div>
+
+      <div class="panel" style="grid-column: 1 / -1;">
+        <div class="panel-title">컨테이너 목록 (중지 / 삭제)</div>
+        <div class="panel-body" id="containersPanel"><span class="loading">불러오는 중…</span></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API = '';
+    let refreshTimer = null;
+
+    function now() {
+      const d = new Date();
+      return d.toLocaleTimeString('ko-KR', { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3,'0');
+    }
+    function setLastUpdated() { document.getElementById('lastUpdated').textContent = '마지막 갱신: ' + now(); }
+    async function fetchJson(path) {
+      const r = await fetch(API + path);
+      if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+      return r.json();
+    }
+    function escapeHtml(s) {
+      if (s == null) return '';
+      const div = document.createElement('div');
+      div.textContent = s;
+      return div.innerHTML;
+    }
+
+    function renderSystem(data) {
+      if (!data) return;
+      const docker = data.docker || {};
+      const err = docker.error;
+      let html = '<table><tbody>';
+      html += '<tr><th>호스트</th><td>' + escapeHtml(data.hostname || '—') + '</td></tr>';
+      html += '<tr><th>Docker</th><td>' + (err ? '<span class="error-msg">' + escapeHtml(err) + '</span>' : (docker.server_version || '—')) + '</td></tr>'
+      html += '<tr><th>컨테이너</th><td>' + (docker.containers_running ?? '—') + ' / ' + (docker.containers ?? 0) + '</td></tr>';
+      html += '<tr><th>내부 DNS</th><td>orch-internal 네트워크 (서비스명으로 조회 시 레플리카 LB)</td></tr>';
+      html += '<tr><th>Ingress</th><td>Traefik :80 · <code>&lt;서비스&gt;.local</code> 또는 <code>/&lt;서비스&gt;/</code> (LB)</td></tr>';
+      html += '<tr><th>*.local DNS</th><td>dns 서비스 :15353 → 127.0.0.1 (로컬 Ingress 접근 시 /etc/hosts 또는 DNS 127.0.0.1:15353)</td></tr>';
+      html += '</tbody></table>';
+      document.getElementById('systemPanel').innerHTML = html;
+    }
+
+    function renderServices(data) {
+      if (!Array.isArray(data) || data.length === 0) {
+        document.getElementById('servicesPanel').innerHTML = '<p class="text-muted">관리 중인 서비스 없음</p>';
+        return;
+      }
+      let html = '<table><thead><tr><th>서비스</th><th>이미지</th><th>레플리카</th><th>메모리</th><th>CPU</th><th>상태</th></tr></thead><tbody>';
+      data.forEach(s => {
+        html += '<tr><td>' + escapeHtml(s.name) + '</td><td>' + escapeHtml(s.image) + '</td><td>' + (s.replicas ?? 0) + '</td><td>' + escapeHtml(s.memory_limit || '—') + '</td><td>' + escapeHtml(s.cpu_limit || '—') + '</td><td><span class="badge badge-' + (s.status === 'running' ? 'running' : 'stopped') + '">' + escapeHtml(s.status) + '</span></td></tr>';
+      });
+      html += '</tbody></table>';
+      document.getElementById('servicesPanel').innerHTML = html;
+    }
+
+    function renderImages(data) {
+      const panel = document.getElementById('imagesPanel');
+      if (!Array.isArray(data) || data.length === 0) {
+        panel.innerHTML = '<p class="text-muted">이미지 없음</p>';
+        return;
+      }
+      // 펼침 메뉴(셀렉트 박스) + 레플리카 수 + 실행/삭제 버튼
+      let html = '<div class="field"><label>이미지 선택</label><select id="imageSelect">';
+      data.forEach((img, idx) => {
+        const tag = (img.tags && img.tags[0]) ? img.tags[0] : (img.id || '');
+        const label = (img.repository || tag) + ' (' + tag + ')';
+        html += '<option value="' + idx + '">' + escapeHtml(label) + '</option>';
+      });
+      html += '</select></div>';
+      html += '<div class="field" style="margin-top:0.5rem;"><label>레플리카 수</label><input type="number" id="imageReplicas" min="1" value="1"></div>';
+      html += '<details class="field" style="margin-top:0.5rem;"><summary class="text-muted" style="cursor:pointer;">고급 옵션 (환경변수, 마운트, 포트, User)</summary>';
+      html += '<div class="field"><label>환경변수 (한 줄에 KEY=value)</label><textarea id="imageEnv" rows="2" placeholder="APP_ENV=prod\nDEBUG=0"></textarea></div>';
+      html += '<div class="field"><label>마운트 (한 줄에 호스트경로:컨테이너경로)</label><textarea id="imageVolumes" rows="2" placeholder="/data:/app/data"></textarea></div>';
+      html += '<div class="field"><label>포트 (한 줄에 호스트:컨테이너)</label><textarea id="imagePorts" rows="2" placeholder="8080:80"></textarea></div>';
+      html += '<div class="field"><label>User (uid:gid 또는 사용자명)</label><input type="text" id="imageUser" placeholder="1000:1000"></div>';
+      html += '</details>';
+      html += '<p class="text-muted" id="imageMeta"></p>';
+      html += '<div style="margin-top:0.5rem;">';
+      html += '<button type="button" class="btn btn-sm" id="btnImageRun">기동</button> ';
+      html += '<button type="button" class="btn btn-sm btn-danger" id="btnImageRemove">삭제</button>';
+      html += '</div>';
+      panel.innerHTML = html;
+
+      const select = document.getElementById('imageSelect');
+      const meta = document.getElementById('imageMeta');
+
+      function updateMeta() {
+        const idx = parseInt(select.value, 10);
+        const img = data[idx];
+        if (!img) { meta.textContent = ''; return; }
+        const tags = img.tags && img.tags.length ? img.tags.join(', ') : (img.tag || '—');
+        const size = (img.size_mb != null ? img.size_mb + ' MB' : '—');
+        meta.textContent = '태그: ' + tags + ' / 크기: ' + size;
+      }
+      select.addEventListener('change', updateMeta);
+      updateMeta();
+
+      document.getElementById('btnImageRun').addEventListener('click', function () {
+        const idx = parseInt(select.value, 10);
+        const img = data[idx];
+        if (!img) return;
+        const tag = (img.tags && img.tags[0]) ? img.tags[0] : (img.id || '');
+        const replicasVal = parseInt(document.getElementById('imageReplicas').value || '1', 10);
+        const replicas = isNaN(replicasVal) || replicasVal < 1 ? 1 : replicasVal;
+        var envEl = document.getElementById('imageEnv');
+        var volEl = document.getElementById('imageVolumes');
+        var portEl = document.getElementById('imagePorts');
+        var userEl = document.getElementById('imageUser');
+        function lines(el) { var t = (el && el.value || '').trim(); return t ? t.split(/\n/).map(function(s){ return s.trim(); }).filter(Boolean) : []; }
+        var opts = {};
+        if (envEl && lines(envEl).length) opts.environment = lines(envEl);
+        if (volEl && lines(volEl).length) opts.volumes = lines(volEl);
+        if (portEl && lines(portEl).length) opts.ports = lines(portEl);
+        if (userEl && userEl.value.trim()) opts.user = userEl.value.trim();
+        runImage(tag, replicas, opts);
+      });
+      document.getElementById('btnImageRemove').addEventListener('click', function () {
+        const idx = parseInt(select.value, 10);
+        const img = data[idx];
+        if (!img) return;
+        const id = img.id || ((img.tags && img.tags[0]) ? img.tags[0] : '');
+        if (!id) return;
+        removeImage(id);
+      });
+    }
+
+    let expandedGroups = new Set();
+
+    function renderContainers(data, errorMsg, servicesOpt) {
+      const panel = document.getElementById('containersPanel');
+      var servicesList = Array.isArray(servicesOpt) ? servicesOpt : [];
+      function desiredReplicas(serviceName) {
+        var s = servicesList.find(function(x) { return (x.name || '') === serviceName; });
+        return s != null && typeof s.replicas === 'number' ? s.replicas : null;
+      }
+      if (errorMsg) {
+        panel.innerHTML = '<p class="error-msg">컨테이너 목록을 가져올 수 없습니다: ' + escapeHtml(errorMsg) + '</p><p class="text-muted">Docker 소켓이 마운트되었는지 확인하세요 (예: -v /var/run/docker.sock:/var/run/docker.sock)</p>';
+        return;
+      }
+      if (!Array.isArray(data) || data.length === 0) {
+        panel.innerHTML = '<p class="text-muted">컨테이너 없음</p>';
+        return;
+      }
+      var byService = {};
+      var singles = [];
+      data.forEach(function(c) {
+        var svc = (c.service || '').trim();
+        if (svc) {
+          if (!byService[svc]) byService[svc] = [];
+          byService[svc].push(c);
+        } else {
+          singles.push(c);
+        }
+      });
+      var groupNames = Object.keys(byService).sort();
+
+      function cellCpu(st) { return st ? (st.cpu_percent + ' %') : '—'; }
+      function cellMem(st) { return st ? (st.memory_usage_mb + ' / ' + (st.memory_limit_mb || '?') + ' MB') : '—'; }
+      function rowCells(c) {
+        var st = c.stats;
+        var name = c.name || c.id;
+        var cells = '<td>' + escapeHtml(name) + '</td><td>' + escapeHtml(c.image || '') + '</td>';
+        cells += '<td><span class="badge badge-' + (c.state === 'running' ? 'running' : 'stopped') + '">' + escapeHtml(c.status || c.state) + '</span></td>';
+        cells += '<td>' + (c.managed ? '<span class="badge badge-managed">Y</span>' : '—') + '</td>';
+        cells += '<td>' + escapeHtml(c.service || '—') + '</td>';
+        cells += '<td>' + cellCpu(st) + '</td><td>' + cellMem(st) + '</td>';
+        cells += '<td>';
+        if (c.state === 'running') cells += '<button type="button" class="btn btn-sm btn-warn" data-c-stop="' + escapeHtml(c.id) + '">중지</button> ';
+        cells += '<button type="button" class="btn btn-sm btn-danger" data-c-remove="' + escapeHtml(c.id) + '">삭제</button>';
+        cells += '</td>';
+        return cells;
+      }
+
+      var html = '<table><thead><tr><th>이름</th><th>이미지</th><th>상태</th><th>관리</th><th>서비스</th><th>CPU%</th><th>메모리</th><th>동작</th></tr></thead><tbody>';
+
+      groupNames.forEach(function(svc) {
+        var list = byService[svc];
+        var n = list.length;
+        var desired = desiredReplicas(svc);
+        var replicaInputValue = desired !== null ? desired : n;
+        var running = list.filter(function(c) { return (c.state || '').toLowerCase() === 'running'; }).length;
+        var first = list[0];
+        var cpuSum = 0, cpuCnt = 0, memUsage = 0, memLimit = 0;
+        list.forEach(function(c) {
+          if (c.stats) {
+            cpuSum += c.stats.cpu_percent || 0;
+            cpuCnt++;
+            memUsage += c.stats.memory_usage_mb || 0;
+            memLimit += c.stats.memory_limit_mb || 0;
+          }
+        });
+        var cpuAgg = cpuCnt ? (cpuSum / cpuCnt).toFixed(2) + ' %' : '—';
+        var memAgg = (memUsage || memLimit) ? memUsage.toFixed(1) + ' / ' + (memLimit ? memLimit.toFixed(1) : '?') + ' MB' : '—';
+        var isExpanded = expandedGroups.has(svc);
+        html += '<tr class="group-row" data-group-row="' + escapeHtml(svc) + '">';
+        html += '<td><button type="button" class="toggle-group" data-group-toggle="' + escapeHtml(svc) + '" aria-label="펼치기/접기">' + (isExpanded ? '▼' : '▶') + '</button> ';
+        html += escapeHtml(svc) + ' <span class="text-muted">(' + n + ')</span></td>';
+        html += '<td>' + escapeHtml(first.image || '') + '</td>';
+        html += '<td><span class="badge badge-running">' + running + ' running</span></td>';
+        html += '<td>' + (first.managed ? '<span class="badge badge-managed">Y</span>' : '—') + '</td>';
+        html += '<td>' + escapeHtml(svc) + '</td>';
+        html += '<td>' + cpuAgg + '</td><td>' + memAgg + '</td>';
+        html += '<td><span class="replica-control">';
+        html += '<input type="number" min="0" value="' + replicaInputValue + '" data-replica-input="' + escapeHtml(svc) + '"> ';
+        html += '<button type="button" class="btn btn-sm" data-replica-apply="' + escapeHtml(svc) + '">적용</button> ';
+        html += '<button type="button" class="btn btn-sm" data-c-scale="' + escapeHtml(svc) + '">스케일</button>';
+        html += '</span></td></tr>';
+        list.forEach(function(c) {
+          html += '<tr class="group-member' + (isExpanded ? ' expanded' : '') + '" data-group="' + escapeHtml(svc) + '">' + rowCells(c) + '</tr>';
+        });
+      });
+
+      singles.forEach(function(c) {
+        html += '<tr>' + rowCells(c) + '</tr>';
+      });
+
+      html += '</tbody></table>';
+      panel.innerHTML = html;
+
+      panel.querySelectorAll('[data-c-stop]').forEach(function(el) {
+        el.addEventListener('click', function() { stopContainer(this.getAttribute('data-c-stop')); });
+      });
+      panel.querySelectorAll('[data-c-scale]').forEach(function(el) {
+        el.addEventListener('click', function() { scaleService(this.getAttribute('data-c-scale')); });
+      });
+      panel.querySelectorAll('[data-c-remove]').forEach(function(el) {
+        el.addEventListener('click', function() { removeContainer(this.getAttribute('data-c-remove')); });
+      });
+      panel.querySelectorAll('[data-group-toggle]').forEach(function(el) {
+        el.addEventListener('click', function() {
+          var svc = this.getAttribute('data-group-toggle');
+          if (expandedGroups.has(svc)) expandedGroups.delete(svc); else expandedGroups.add(svc);
+          var sel = '.group-member[data-group="' + (svc || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"]';
+          panel.querySelectorAll(sel).forEach(function(row) {
+            row.classList.toggle('expanded', expandedGroups.has(svc));
+          });
+          this.textContent = expandedGroups.has(svc) ? '▼' : '▶';
+        });
+      });
+      panel.querySelectorAll('[data-replica-apply]').forEach(function(el) {
+        el.addEventListener('click', function() {
+          var svc = this.getAttribute('data-replica-apply');
+          var input = panel.querySelector('input[data-replica-input="' + (svc || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"]');
+          if (!input) return;
+          var n = parseInt(input.value, 10);
+          if (isNaN(n) || n < 0) { alert('0 이상의 숫자를 입력하세요.'); return; }
+          scaleServiceWith(svc, n);
+        });
+      });
+    }
+
+    function scaleServiceWith(serviceName, replicas) {
+      fetch(API + '/v1/services/scale', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ service_name: serviceName, replicas: replicas })
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        appendLog('서비스 스케일: ' + serviceName + ' -> ' + replicas, data);
+        loadAll();
+      }).catch(function(e) {
+        appendLog('서비스 스케일 실패: ' + serviceName, { success: false, message: e.message });
+      });
+    }
+
+    function appendLog(cmd, res) {
+      const log = document.getElementById('commandLog');
+      const entry = document.createElement('div');
+      entry.className = 'log-entry';
+      const ok = res && res.success;
+      entry.innerHTML =
+        '<span class="ts">[' + now() + ']</span>' +
+        '<span class="cmd">' + escapeHtml(cmd) + '</span><br>' +
+        '<span class="' + (ok ? 'ok' : 'err') + '">' + (ok ? 'OK' : '실패') + '</span> ' +
+        '<span class="msg">' + escapeHtml(res && res.message ? res.message : (res && res.error ? res.error : '')) + '</span>';
+      log.appendChild(entry);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    async function runCommand() {
+      const input = document.getElementById('commandInput');
+      const cmd = (input.value || '').trim();
+      if (!cmd) return;
+      const dryRun = document.getElementById('dryRun').checked;
+      input.value = '';
+      try {
+        const res = await fetch(API + '/v1/command', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command: cmd, dry_run: dryRun })
+        });
+        const data = await res.json();
+        appendLog(cmd, data);
+        loadAll();
+      } catch (e) {
+        appendLog(cmd, { success: false, message: e.message });
+      }
+    }
+
+    async function runImage(tag, replicas, opts) {
+      opts = opts || {};
+      var body = { image: tag, replicas: replicas, use_internal_network: true };
+      if (opts.environment && opts.environment.length) body.environment = opts.environment;
+      if (opts.volumes && opts.volumes.length) body.volumes = opts.volumes;
+      if (opts.ports && opts.ports.length) body.ports = opts.ports;
+      if (opts.user) body.user = opts.user;
+      try {
+        const r = await fetch(API + '/v1/containers/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const data = await r.json();
+        appendLog('이미지 기동: ' + tag + ' (x' + replicas + ')', data);
+        if (data.success) loadAll();
+      } catch (e) {
+        appendLog('이미지 기동', { success: false, message: e.message });
+      }
+    }
+
+    async function removeImage(id) {
+      if (!confirm('이미지 "' + id + '" 를 삭제할까요?')) return;
+      try {
+        const r = await fetch(API + '/v1/images/' + encodeURIComponent(id), { method: 'DELETE' });
+        const data = await r.json();
+        appendLog('이미지 삭제: ' + id, data);
+        loadAll();
+      } catch (e) {
+        appendLog('이미지 삭제', { success: false, message: e.message });
+      }
+    }
+
+    async function stopContainer(id) {
+      try {
+        const r = await fetch(API + '/v1/containers/' + encodeURIComponent(id) + '/stop', { method: 'POST' });
+        const data = await r.json();
+        appendLog('컨테이너 중지: ' + id, data);
+        loadAll();
+      } catch (e) {
+        appendLog('컨테이너 중지', { success: false, message: e.message });
+      }
+    }
+
+    async function scaleService(serviceName) {
+      const v = prompt(serviceName + ' 레플리카 수를 입력하세요', '1');
+      if (v === null) return;
+      const n = parseInt(v, 10);
+      if (isNaN(n) || n < 0) {
+        alert('0 이상의 숫자를 입력하세요.');
+        return;
+      }
+      try {
+        const r = await fetch(API + '/v1/services/scale', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ service_name: serviceName, replicas: n })
+        });
+        const data = await r.json();
+        appendLog('서비스 스케일: ' + serviceName + ' -> ' + n, data);
+        loadAll();
+      } catch (e) {
+        appendLog('서비스 스케일 실패: ' + serviceName, { success: false, message: e.message });
+      }
+    }
+
+    async function removeContainer(id) {
+      if (!confirm('컨테이너 "' + id + '" 를 삭제할까요?')) return;
+      try {
+        const r = await fetch(API + '/v1/containers/' + encodeURIComponent(id), { method: 'DELETE' });
+        const data = await r.json();
+        appendLog('컨테이너 삭제: ' + id, data);
+        loadAll();
+      } catch (e) {
+        appendLog('컨테이너 삭제', { success: false, message: e.message });
+      }
+    }
+
+    function updateOperatorStatus(health) {
+      const el = document.getElementById('operatorStatus');
+      if (!el) return;
+      if (health && health.status === 'ok') {
+        el.textContent = '운영 상태: 정상 (v' + (health.version || '—') + ')';
+        el.classList.remove('error');
+      } else {
+        el.textContent = '운영 상태: 확인 불가';
+        el.classList.add('error');
+      }
+    }
+
+    async function loadAll() {
+      try {
+        const [health, system, services, containersResp, images] = await Promise.all([
+          fetch(API + '/health').then(r => r.ok ? r.json() : null).catch(() => null),
+          fetchJson('/v1/system'),
+          fetchJson('/v1/services'),
+          fetchJson('/v1/containers?stats=true'),
+          fetchJson('/v1/images')
+        ]);
+        updateOperatorStatus(health);
+        renderSystem(system);
+        renderServices(services);
+        let containers = containersResp;
+        let containersError = null;
+        if (containersResp && typeof containersResp === 'object' && 'containers' in containersResp) {
+          containers = containersResp.containers || [];
+          containersError = containersResp.error || null;
+        }
+        renderContainers(Array.isArray(containers) ? containers : [], containersError, services);
+        renderImages(images);
+        setLastUpdated();
+      } catch (e) {
+        updateOperatorStatus(null);
+        document.getElementById('systemPanel').innerHTML = '<p class="error-msg">로드 실패: ' + escapeHtml(e.message) + '</p>';
+        renderContainers([], e.message);
+      }
+    }
+
+    // 자동 새로고침용: 컨테이너 목록 + 서비스(desired replicas) 갱신
+    async function loadContainersOnly() {
+      try {
+        const [containersResp, services] = await Promise.all([
+          fetchJson('/v1/containers?stats=true'),
+          fetchJson('/v1/services')
+        ]);
+        let containers = containersResp;
+        let containersError = null;
+        if (containersResp && typeof containersResp === 'object' && 'containers' in containersResp) {
+          containers = containersResp.containers || [];
+          containersError = containersResp.error || null;
+        }
+        var servicesList = Array.isArray(services) ? services : [];
+        renderContainers(Array.isArray(containers) ? containers : [], containersError, servicesList);
+        setLastUpdated();
+      } catch (e) {
+        renderContainers([], e.message);
+      }
+    }
+
+    document.getElementById('btnRun').addEventListener('click', runCommand);
+    document.getElementById('commandInput').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') runCommand();
+    });
+    document.getElementById('btnRefresh').addEventListener('click', loadAll);
+    document.getElementById('refreshInterval').addEventListener('change', function() {
+      if (refreshTimer) clearInterval(refreshTimer);
+      const sec = parseInt(this.value, 10);
+      if (sec > 0) refreshTimer = setInterval(loadContainersOnly, sec * 1000);
+    });
+
+    loadAll(); // 초기 한 번은 전체 패널 갱신
+    const sec = parseInt(document.getElementById('refreshInterval').value, 10);
+    if (sec > 0) refreshTimer = setInterval(loadContainersOnly, sec * 1000);
+  </script>
+</body>
+</html>

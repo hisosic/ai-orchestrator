@@ -1,0 +1,68 @@
+# AI Container Orchestrator - run orchestrator in container
+# Internal DNS: orch-internal network, *.local -> 127.0.0.1 (ingress)
+# Ingress: Traefik load-balances to replicas by service name
+# orch-internal: use existing network (created by orchestrator or `docker network create orch-internal`)
+networks:
+  orch-internal:
+    name: orch-internal
+    external: true
+
+services:
+  orchestrator:
+    build: .
+    image: ai-orchestrator:latest
+    container_name: ai-orchestrator
+    ports:
+      - "8000:8000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - orchestrator-data:/data
+    environment:
+      - ORCHESTRATOR_STATE_DIR=/data
+    networks:
+      - orch-internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  traefik:
+    image: traefik:v2.10
+    container_name: orch-traefik
+    command:
+      - "--api.dashboard=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.network=orch-internal"
+      - "--entrypoints.web.address=:80"
+    ports:
+      - "80:80"
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - orch-internal
+    restart: unless-stopped
+
+  # *.local → 127.0.0.1 (호스트 53/5353 충돌 방지로 15353 사용)
+  dns:
+    image: alpine:3.18
+    container_name: orch-dns
+    command:
+      - /bin/sh
+      - -c
+      - |
+        apk add --no-cache dnsmasq
+        echo "listen-address=0.0.0.0" > /etc/dnsmasq.d/local.conf
+        echo "address=/.local/127.0.0.1" >> /etc/dnsmasq.d/local.conf
+        exec dnsmasq -k -q
+    ports:
+      - "15353:53/udp"
+      - "15353:53/tcp"
+    restart: unless-stopped
+
+volumes:
+  orchestrator-data:

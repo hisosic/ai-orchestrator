@@ -294,7 +294,7 @@
         <div class="panel-title">시스템 / 환경</div>
         <div class="panel-body" id="systemPanel"><span class="loading">불러오는 중…</span></div>
       </div>
-      <div class="panel">
+      <div class="panel" style="grid-column: 1 / -1;">
         <div class="panel-title">서비스 관리 (스케일 / URL / 중지)</div>
         <div class="panel-body" id="servicesPanel"><span class="loading">불러오는 중…</span></div>
       </div>
@@ -346,10 +346,6 @@
         </div>
       </div>
 
-      <div class="panel" style="grid-column: 1 / -1;">
-        <div class="panel-title">클러스터 컨테이너 목록 (전체 노드)</div>
-        <div class="panel-body" id="containersPanel"><span class="loading">불러오는 중…</span></div>
-      </div>
     </div>
 
     <!-- Container Placement Grid -->
@@ -942,88 +938,25 @@
 
     function renderServices(data) {
       var panel = document.getElementById('servicesPanel');
-      // Use cluster services data if available for accurate multi-node view
-      var clusterSvcs = (clusterStatus && clusterStatus.services) ? clusterStatus.services : null;
-      if (clusterSvcs && Object.keys(clusterSvcs).length > 0) {
-        var html = '<table><thead><tr><th>서비스</th><th>실행</th><th>노드 배치</th><th>스케일</th><th>동작</th></tr></thead><tbody>';
-        Object.keys(clusterSvcs).forEach(function(name) {
-          var s = clusterSvcs[name];
-          var nodeList = Object.keys(s.nodes || {}).map(function(n) {
-            return n + ':' + (s.nodes[n].running || 0);
-          }).join(', ');
-          html += '<tr>';
-          html += '<td><strong>' + escapeHtml(name) + '</strong></td>';
-          html += '<td><span class="badge badge-running">' + (s.running || 0) + '/' + (s.total || 0) + '</span></td>';
-          html += '<td style="font-size:0.8rem;">' + escapeHtml(nodeList) + '</td>';
-          html += '<td><span class="replica-control">';
-          html += '<input type="number" min="0" value="' + (s.total || 0) + '" data-csvc-input="' + escapeHtml(name) + '" style="width:3.5rem;">';
-          html += '<button type="button" class="btn btn-sm" data-csvc-scale="' + escapeHtml(name) + '">적용</button>';
-          html += '</span></td>';
-          html += '<td><button type="button" class="btn btn-sm btn-danger" data-csvc-stop="' + escapeHtml(name) + '">중지</button></td>';
-          html += '</tr>';
-        });
-        html += '</tbody></table>';
-        panel.innerHTML = html;
-
-        // Cluster scale button
-        panel.querySelectorAll('[data-csvc-scale]').forEach(function(el) {
-          el.addEventListener('click', async function() {
-            var svc = this.getAttribute('data-csvc-scale');
-            var input = panel.querySelector('input[data-csvc-input="' + svc + '"]');
-            var n = parseInt(input.value, 10);
-            if (isNaN(n) || n < 0) { alert('0 이상의 숫자를 입력하세요.'); return; }
-            try {
-              var r = await fetch(API + '/v1/cluster/scale', {
-                method: 'POST', headers: {'Content-Type':'application/json'},
-                body: JSON.stringify({service_name: svc, replicas: n})
-              });
-              var data = await r.json();
-              appendLog('클러스터 스케일: ' + svc + ' -> ' + n, data);
-              loadAll();
-            } catch(e) { appendLog('스케일 실패', {success:false, message:e.message}); }
-          });
-        });
-        // Cluster stop button
-        panel.querySelectorAll('[data-csvc-stop]').forEach(function(el) {
-          el.addEventListener('click', async function() {
-            var svc = this.getAttribute('data-csvc-stop');
-            if (!confirm(svc + ' 서비스의 모든 컨테이너를 중지할까요?')) return;
-            try {
-              var r = await fetch(API + '/v1/cluster/stop', {
-                method: 'POST', headers: {'Content-Type':'application/json'},
-                body: JSON.stringify({service_name: svc})
-              });
-              var data = await r.json();
-              appendLog('클러스터 중지: ' + svc, data);
-              loadAll();
-            } catch(e) { appendLog('중지 실패', {success:false, message:e.message}); }
-          });
-        });
-        return;
-      }
-      // Merged services list (local + cluster)
       if (!Array.isArray(data) || data.length === 0) {
-        panel.innerHTML = '<p class="text-muted">관리 중인 서비스 없음</p>';
+        panel.innerHTML = '<p class="text-muted">배포된 서비스 없음 — 위 "클러스터 배포" 패널에서 이미지를 입력하여 배포하세요.</p>';
         return;
       }
-      html = '<table><thead><tr><th>서비스</th><th>이미지</th><th>실행</th><th>노드 배치</th><th>URL</th><th>스케일</th><th>동작</th></tr></thead><tbody>';
+      var html = '<table><thead><tr><th>서비스</th><th>이미지</th><th>상태</th><th>노드 배치</th><th>URL</th><th>스케일</th><th>동작</th></tr></thead><tbody>';
       data.forEach(function(s) {
         var running = s.running != null ? s.running : (s.status === 'running' ? s.replicas : 0);
         var total = s.replicas != null ? s.replicas : 0;
         var nodesStr = (s.nodes && s.nodes.length) ? s.nodes.join(', ') : '—';
-        // Build URL: show node IPs where service is running
         var urlHtml = '—';
-        if (s.nodes && s.nodes.length) {
+        if (s.nodes && s.nodes.length && clusterStatus && clusterStatus.nodes) {
           var nodeIps = [];
-          if (clusterStatus && clusterStatus.nodes) {
-            clusterStatus.nodes.forEach(function(n) {
-              var match = (s.nodes || []).find(function(ns) { return ns.startsWith(n.name + ':'); });
-              if (match) {
-                var ip = (n.address || '').split(':')[0];
-                if (ip) nodeIps.push(ip);
-              }
-            });
-          }
+          clusterStatus.nodes.forEach(function(n) {
+            var match = (s.nodes || []).find(function(ns) { return ns.startsWith(n.name + ':'); });
+            if (match) {
+              var ip = (n.address || '').split(':')[0];
+              if (ip) nodeIps.push(ip);
+            }
+          });
           if (nodeIps.length) {
             urlHtml = nodeIps.map(function(ip) {
               var url = 'http://' + ip + '/' + s.name + '/';
@@ -1033,7 +966,7 @@
         }
         html += '<tr>';
         html += '<td><strong>' + escapeHtml(s.name) + '</strong></td>';
-        html += '<td style="font-size:0.8rem;">' + escapeHtml(s.image || '—') + '</td>';
+        html += '<td style="font-family:\'JetBrains Mono\',monospace;font-size:0.8rem;">' + escapeHtml(s.image || '—') + '</td>';
         html += '<td><span class="badge badge-' + (running > 0 ? 'running' : 'stopped') + '">' + running + '/' + total + '</span></td>';
         html += '<td style="font-size:0.8rem;">' + escapeHtml(nodesStr) + '</td>';
         html += '<td>' + urlHtml + '</td>';
@@ -1047,7 +980,6 @@
       html += '</tbody></table>';
       panel.innerHTML = html;
 
-      // Scale/Stop event bindings
       panel.querySelectorAll('[data-csvc-scale]').forEach(function(el) {
         el.addEventListener('click', async function() {
           var svc = this.getAttribute('data-csvc-scale');
@@ -1059,8 +991,8 @@
               method: 'POST', headers: {'Content-Type':'application/json'},
               body: JSON.stringify({service_name: svc, replicas: n})
             });
-            var data = await r.json();
-            appendLog('클러스터 스케일: ' + svc + ' -> ' + n, data);
+            var d = await r.json();
+            appendLog('클러스터 스케일: ' + svc + ' -> ' + n, d);
             loadAll();
           } catch(e) { appendLog('스케일 실패', {success:false, message:e.message}); }
         });
@@ -1074,8 +1006,8 @@
               method: 'POST', headers: {'Content-Type':'application/json'},
               body: JSON.stringify({service_name: svc})
             });
-            var data = await r.json();
-            appendLog('클러스터 중지: ' + svc, data);
+            var d = await r.json();
+            appendLog('클러스터 중지: ' + svc, d);
             loadAll();
           } catch(e) { appendLog('중지 실패', {success:false, message:e.message}); }
         });
@@ -1441,14 +1373,13 @@
         await Promise.all([loadClusterStatus(), loadAlerts(), loadMigrations(), loadPlacements()]);
       } catch(e) { console.warn('cluster data error:', e); }
 
-      // Load main data - always fetch from local to avoid proxy issues
-      var health = null, system = null, services = null, containersResp = null, images = null;
+      // Load main data
+      var health = null, system = null, services = null, images = null;
       try {
-        [health, system, services, containersResp, images] = await Promise.all([
+        [health, system, services, images] = await Promise.all([
           fetch(API + '/health').then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }),
           fetch(API + '/v1/system').then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }),
           fetch(API + '/v1/services').then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }),
-          fetch(API + '/v1/containers?stats=true').then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }),
           fetch(API + '/v1/images').then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; })
         ]);
       } catch(e) { console.warn('main data error:', e); }
@@ -1456,16 +1387,6 @@
       try { updateOperatorStatus(health); } catch(e) { console.warn('renderHealth error:', e); }
       try { renderSystem(system); } catch(e) { console.warn('renderSystem error:', e); }
       try { renderServices(services); } catch(e) { console.warn('renderServices error:', e); }
-
-      try {
-        var containers = containersResp;
-        var containersError = null;
-        if (containersResp && typeof containersResp === 'object' && 'containers' in containersResp) {
-          containers = containersResp.containers || [];
-          containersError = containersResp.error || null;
-        }
-        renderContainers(Array.isArray(containers) ? containers : [], containersError, services);
-      } catch(e) { console.warn('renderContainers error:', e); }
 
       try { renderImages(images); } catch(e) { console.warn('renderImages error:', e); }
 
@@ -1483,23 +1404,10 @@
       try { await loadNodes(); } catch(e) {}
       try { await Promise.all([loadClusterStatus(), loadAlerts(), loadMigrations(), loadPlacements()]); } catch(e) {}
 
-      var containersResp = null, services = null;
+      var services = null;
       try {
-        [containersResp, services] = await Promise.all([
-          fetch(API + '/v1/containers?stats=true').then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }),
-          fetch(API + '/v1/services').then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; })
-        ]);
+        services = await fetch(API + '/v1/services').then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; });
       } catch(e) {}
-
-      try {
-        var containers = containersResp;
-        var containersError = null;
-        if (containersResp && typeof containersResp === 'object' && 'containers' in containersResp) {
-          containers = containersResp.containers || [];
-          containersError = containersResp.error || null;
-        }
-        renderContainers(Array.isArray(containers) ? containers : [], containersError, services);
-      } catch(e) { console.warn('renderContainers error:', e); }
 
       try { renderServices(services); } catch(e) {}
       try { renderClusterHealthBadge(clusterStatus); } catch(e) {}

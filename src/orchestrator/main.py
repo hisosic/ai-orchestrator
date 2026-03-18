@@ -272,40 +272,28 @@ def list_services(show_system: bool = False):
         elif local:
             image = local.image
 
-        # Build endpoint URLs
-        # Traefik path routing: http://<node-ip>/<service-name>/
-        # Show endpoints for nodes that actually have the service
-        # Master node first if service is on master
-        endpoints = []
-        port_info = ""
-        if cluster_svc:
-            import json as _json
-            ports_raw = cluster_svc.get("ports", "[]")
-            try:
-                ports_list = _json.loads(ports_raw) if isinstance(ports_raw, str) else (ports_raw or [])
-            except Exception:
-                ports_list = []
-            if ports_list:
-                # e.g. ["8080:80"] -> show host port
-                for p in ports_list:
-                    parts = str(p).split(":")
-                    if len(parts) == 2:
-                        host_port = parts[0].strip()
-                        port_info = host_port
+        # Build endpoint URL: always via master node, single link
+        endpoint = ""
+        if master_ip:
+            # Check for host port mapping (non-standard port)
+            port_info = ""
+            if cluster_svc:
+                import json as _json
+                ports_raw = cluster_svc.get("ports", "[]")
+                try:
+                    ports_list = _json.loads(ports_raw) if isinstance(ports_raw, str) else (ports_raw or [])
+                except Exception:
+                    ports_list = []
+                if ports_list:
+                    for p in ports_list:
+                        parts = str(p).split(":")
+                        if len(parts) == 2:
+                            port_info = parts[0].strip()
 
-        # Sort: master first, then other nodes
-        sorted_nodes = sorted(nodes.keys(), key=lambda n: (0 if n == master_node_name else 1, n))
-        for node_name in sorted_nodes:
-            ni = node_info_map.get(node_name, {})
-            ip = ni.get("ip", "")
-            if not ip:
-                continue
-            # Traefik routes on port 80
-            url = f"http://{ip}/{svc_name}/"
-            endpoints.append(url)
-            # If there's a host port mapping (not 80/443), add direct port endpoint too
             if port_info and port_info not in ("80", "443"):
-                endpoints.append(f"http://{ip}:{port_info}/")
+                endpoint = f"http://{master_ip}:{port_info}/"
+            else:
+                endpoint = f"http://{master_ip}/{svc_name}/"
 
         result.append({
             "name": svc_name,
@@ -317,7 +305,7 @@ def list_services(show_system: bool = False):
             "status": "running" if info.get("running", 0) > 0 else "stopped",
             "container_ids": [],
             "nodes": node_list,
-            "endpoints": endpoints,
+            "endpoint": endpoint,
         })
 
     # Add local-only services not in cluster placements (skip stopped stale + system)

@@ -979,11 +979,9 @@
         var total = s.replicas != null ? s.replicas : 0;
         var nodesStr = (s.nodes && s.nodes.length) ? s.nodes.join(', ') : '—';
         var urlHtml = '—';
-        var eps = s.endpoints || [];
-        if (eps.length) {
-          urlHtml = eps.map(function(url) {
-            return '<a href="' + escapeHtml(url) + '" target="_blank" style="color:var(--accent);font-family:\'JetBrains Mono\',monospace;font-size:0.78rem;">' + escapeHtml(url) + '</a>';
-          }).join('<br>');
+        var ep = s.endpoint || '';
+        if (ep) {
+          urlHtml = '<a href="' + escapeHtml(ep) + '" target="_blank" style="color:var(--accent);font-family:\'JetBrains Mono\',monospace;font-size:0.78rem;">' + escapeHtml(ep) + '</a>';
         }
         html += '<tr>';
         html += '<td><strong>' + escapeHtml(s.name) + '</strong></td>';

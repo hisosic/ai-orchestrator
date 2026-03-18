@@ -548,13 +548,42 @@ def api_inspect_container(container_id: str):
 
 
 @app.delete("/v1/images/{image_id}")
-def api_remove_image(image_id: str):
+async def api_remove_image(image_id: str):
+    """Remove image from local node AND all cluster nodes."""
+    results = []
+
+    # 1. Delete from local (master)
     try:
         client = _docker_client()
         ok, msg, _ = remove_image_by_id(client, image_id)
-        return {"success": ok, "message": msg}
+        results.append({"node": "master", "success": ok, "message": msg})
     except Exception as e:
-        return {"success": False, "message": str(e)}
+        results.append({"node": "master", "success": False, "message": str(e)})
+
+    # 2. Delete from all worker nodes
+    if _cluster_state:
+        master_node_name = os.environ.get("ORCHESTRATOR_NODE_NAME", "master")
+        for node in _cluster_state.list_nodes():
+            if node.name == master_node_name or node.role == "master":
+                continue
+            base_url = node.address if node.address.startswith("http") else f"http://{node.address}"
+            headers = {"Content-Type": "application/json"}
+            if node.token:
+                headers["Authorization"] = f"Bearer {node.token}"
+            try:
+                async with httpx.AsyncClient(timeout=15) as client:
+                    resp = await client.delete(f"{base_url}/v1/images/{image_id}", headers=headers)
+                    data = resp.json()
+                    results.append({"node": node.name, "success": data.get("success", False), "message": data.get("message", "")})
+            except Exception as e:
+                results.append({"node": node.name, "success": False, "message": str(e)})
+
+    deleted = [r["node"] for r in results if r["success"]]
+    failed = [r["node"] for r in results if not r["success"]]
+    msg = f"이미지 '{image_id}' 삭제: {len(deleted)}개 노드 성공"
+    if failed:
+        msg += f", {len(failed)}개 노드 없음/실패"
+    return {"success": len(deleted) > 0, "message": msg, "details": results}
 
 
 @app.post("/v1/services/scale")

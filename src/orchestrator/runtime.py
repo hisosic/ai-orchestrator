@@ -588,7 +588,21 @@ def inspect_container_by_id(client, container_id: str) -> Tuple[bool, str, dict]
 def remove_image_by_id(client, image_id: str) -> Tuple[bool, str, dict]:
     """Remove a Docker image by id or tag."""
     try:
+        # Try as-is first (works for tags like nginx:alpine)
         client.images.remove(image_id, force=True)
+        return True, f"이미지 '{image_id}' 삭제됨.", {}
+    except (APIError, NotFound):
+        pass
+    # Short ID without tag fails - try with sha256: prefix
+    try:
+        client.images.remove(f"sha256:{image_id}", force=True)
+        return True, f"이미지 '{image_id}' 삭제됨.", {}
+    except (APIError, NotFound):
+        pass
+    # Try getting full ID first then removing
+    try:
+        img = client.images.get(image_id)
+        client.images.remove(img.id, force=True)
         return True, f"이미지 '{image_id}' 삭제됨.", {}
     except (APIError, NotFound) as e:
         return False, str(e), {}

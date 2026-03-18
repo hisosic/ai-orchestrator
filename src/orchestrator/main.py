@@ -747,6 +747,120 @@ async def cluster_migrate(req: Request):
     return result
 
 
+@app.post("/v1/cluster/move")
+async def cluster_move_container(req: Request):
+    """Move a container to another node using existing image (fast move).
+
+    Instead of docker commit+save+transfer+load (slow migration), this:
+    1. Stops source container
+    2. Pulls/uses existing image on destination
+    3. Runs new container on destination with same name/labels
+    4. Removes source container
+
+    Body: {container_id, container_name, source_node, destination_node, service_name, image}
+    """
+    if not _cluster_state:
+        return {"success": False, "error": "Cluster not available"}
+
+    body = await req.json()
+    container_id = body.get("container_id", "")
+    container_name = body.get("container_name", "")
+    source_node = body.get("source_node", "")
+    destination_node = body.get("destination_node", "")
+    service_name = body.get("service_name", "")
+    image = body.get("image", "")
+
+    if not source_node or not destination_node:
+        return {"success": False, "error": "source_node와 destination_node는 필수입니다."}
+
+    src_node = _cluster_state.get_node(source_node)
+    dst_node = _cluster_state.get_node(destination_node)
+    if not src_node:
+        return {"success": False, "error": f"소스 노드 '{source_node}'를 찾을 수 없습니다."}
+    if not dst_node:
+        return {"success": False, "error": f"대상 노드 '{destination_node}'를 찾을 수 없습니다."}
+
+    src_url = src_node.address if src_node.address.startswith("http") else f"http://{src_node.address}"
+    dst_url = dst_node.address if dst_node.address.startswith("http") else f"http://{dst_node.address}"
+
+    def _headers(node):
+        h = {"Content-Type": "application/json"}
+        if node.token:
+            h["Authorization"] = f"Bearer {node.token}"
+        return h
+
+    try:
+        # Step 1: If no image specified, inspect source to get image name
+        if not image:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(f"{src_url}/v1/containers/{container_id}/inspect", headers=_headers(src_node))
+                if resp.status_code == 200:
+                    data = resp.json()
+                    details = data.get("details", data)
+                    attrs = details.get("attrs", details)
+                    image = (attrs.get("Config", {}).get("Image", "") or "")
+            if not image:
+                return {"success": False, "error": "이미지를 확인할 수 없습니다. image 파라미터를 지정하세요."}
+
+        # Step 2: Reduce source replicas to prevent reconcile
+        if service_name:
+            async with httpx.AsyncClient(timeout=15) as client:
+                svc_resp = await client.get(f"{src_url}/v1/services", headers=_headers(src_node))
+                src_replicas = 0
+                if svc_resp.status_code == 200:
+                    for s in svc_resp.json():
+                        if isinstance(s, dict) and s.get("name") == service_name:
+                            src_replicas = s.get("replicas", 0)
+                            break
+                if src_replicas > 0:
+                    await client.post(f"{src_url}/v1/services/scale", json={
+                        "service_name": service_name, "replicas": max(0, src_replicas - 1)
+                    }, headers=_headers(src_node))
+
+        # Step 3: Stop and remove source container
+        async with httpx.AsyncClient(timeout=30) as client:
+            try:
+                await client.post(f"{src_url}/v1/containers/{container_id}/stop", headers=_headers(src_node))
+            except Exception:
+                pass
+            resp = await client.delete(f"{src_url}/v1/containers/{container_id}", headers=_headers(src_node))
+            if resp.status_code != 200 and container_name:
+                await client.delete(f"{src_url}/v1/containers/{container_name}", headers=_headers(src_node))
+
+        # Step 4: Pull image on destination (auto_pull in run_container handles this)
+        # Step 5: Run container on destination
+        async with httpx.AsyncClient(timeout=120) as client:
+            run_resp = await client.post(f"{dst_url}/v1/containers/run", json={
+                "image": image,
+                "name": service_name or container_name.replace("orch-", "").rsplit("-", 1)[0] if container_name.startswith("orch-") else container_name,
+                "replicas": 1,
+                "use_internal_network": True,
+            }, headers=_headers(dst_node))
+            run_data = run_resp.json()
+
+        if not run_data.get("success"):
+            return {
+                "success": False,
+                "error": f"대상 노드에서 컨테이너 기동 실패: {run_data.get('message', '')}",
+                "details": run_data,
+            }
+
+        return {
+            "success": True,
+            "message": f"'{container_name}' 이동 완료: {source_node} -> {destination_node} (이미지: {image})",
+            "details": {
+                "container_name": container_name,
+                "image": image,
+                "source_node": source_node,
+                "destination_node": destination_node,
+                "new_containers": run_data.get("details", {}).get("container_ids", []),
+            },
+        }
+
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/v1/cluster/migrations")
 def cluster_migrations():
     """List migration history."""

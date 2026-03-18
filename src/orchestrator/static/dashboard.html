@@ -711,18 +711,28 @@
     }
 
     /* ===== Migration Confirmation Modal ===== */
-    function showMigrateModal(containerName, containerId, srcNode, dstNode, serviceName) {
+    function showMoveModal(containerName, containerId, srcNode, dstNode, serviceName, imageName) {
       var overlay = document.createElement('div');
       overlay.className = 'modal-overlay';
       overlay.innerHTML =
         '<div class="modal-content">' +
-        '<div class="modal-header"><span>컨테이너 마이그레이션</span><button type="button" class="modal-close" aria-label="닫기">&times;</button></div>' +
+        '<div class="modal-header"><span>컨테이너 이동</span><button type="button" class="modal-close" aria-label="닫기">&times;</button></div>' +
         '<div class="modal-body">' +
-        '<p>"<strong>' + escapeHtml(containerName) + '</strong>"을(를) <strong>' + escapeHtml(srcNode) + '</strong>에서 <strong>' + escapeHtml(dstNode) + '</strong>(으)로 마이그레이션할까요?</p>' +
+        '<p>"<strong>' + escapeHtml(containerName) + '</strong>"을(를)</p>' +
+        '<p><strong>' + escapeHtml(srcNode) + '</strong> → <strong>' + escapeHtml(dstNode) + '</strong> (으)로 이동합니다.</p>' +
+        '<table style="margin-top:0.5rem;font-size:0.85rem;"><tbody>' +
+        '<tr><th style="width:80px;">이미지</th><td style="font-family:\'JetBrains Mono\',monospace;font-size:0.8rem;">' + escapeHtml(imageName || '자동 감지') + '</td></tr>' +
+        '<tr><th>서비스</th><td>' + escapeHtml(serviceName || '—') + '</td></tr>' +
+        '</tbody></table>' +
+        '<div style="margin-top:0.75rem;">' +
+        '<label style="font-size:0.85rem;color:var(--text-muted);display:block;margin-bottom:0.3rem;">이동 방식</label>' +
+        '<label style="display:block;cursor:pointer;padding:0.3rem 0;"><input type="radio" name="moveType" value="move" checked> <strong>이동</strong> <span class="text-muted">— 기존 이미지 사용, 대상에 없으면 Pull (빠름)</span></label>' +
+        '<label style="display:block;cursor:pointer;padding:0.3rem 0;"><input type="radio" name="moveType" value="migrate"> <strong>마이그레이션</strong> <span class="text-muted">— 컨테이너 상태를 그대로 복제 (느림, 상태 보존)</span></label>' +
+        '</div>' +
         '</div>' +
         '<div class="modal-footer">' +
         '<button type="button" class="btn btn-sm btn-outline" id="migModalCancel">취소</button>' +
-        '<button type="button" class="btn btn-sm" id="migModalConfirm">마이그레이션</button>' +
+        '<button type="button" class="btn btn-sm btn-success" id="migModalConfirm">이동</button>' +
         '</div></div>';
       document.body.appendChild(overlay);
 
@@ -731,18 +741,38 @@
       overlay.querySelector('.modal-close').addEventListener('click', close);
       overlay.querySelector('#migModalCancel').addEventListener('click', close);
       overlay.querySelector('#migModalConfirm').addEventListener('click', async function() {
+        var moveType = (overlay.querySelector('input[name="moveType"]:checked') || {}).value || 'move';
         close();
-        try {
-          var r = await fetch(API + '/v1/cluster/migrate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ container_id: containerId, container_name: containerName, source_node: srcNode, destination_node: dstNode, service_name: serviceName || '' })
-          });
-          var data = await r.json();
-          appendLog('마이그레이션: ' + containerName + ' (' + srcNode + ' -> ' + dstNode + ')', data);
-          loadAll();
-        } catch (e) {
-          appendLog('마이그레이션 실패', { success: false, message: e.message });
+        if (moveType === 'move') {
+          // Fast move: use existing image
+          try {
+            appendLog('이동 중: ' + containerName + ' (' + srcNode + ' -> ' + dstNode + ')', {success: true, message: '처리 중...'});
+            var r = await fetch(API + '/v1/cluster/move', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ container_id: containerId, container_name: containerName, source_node: srcNode, destination_node: dstNode, service_name: serviceName || '', image: imageName || '' })
+            });
+            var data = await r.json();
+            appendLog('이동: ' + containerName + ' (' + srcNode + ' -> ' + dstNode + ')', data);
+            loadAll();
+          } catch (e) {
+            appendLog('이동 실패', { success: false, message: e.message });
+          }
+        } else {
+          // Full migration: docker commit + transfer
+          try {
+            appendLog('마이그레이션 중: ' + containerName + ' (' + srcNode + ' -> ' + dstNode + ')', {success: true, message: '처리 중...'});
+            var r = await fetch(API + '/v1/cluster/migrate', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ container_id: containerId, container_name: containerName, source_node: srcNode, destination_node: dstNode, service_name: serviceName || '' })
+            });
+            var data = await r.json();
+            appendLog('마이그레이션: ' + containerName + ' (' + srcNode + ' -> ' + dstNode + ')', data);
+            loadAll();
+          } catch (e) {
+            appendLog('마이그레이션 실패', { success: false, message: e.message });
+          }
         }
       });
     }
@@ -809,7 +839,7 @@
           var cName = p.container_name || p.name || p.container_id || '';
           var pStatus = p.status || 'unknown';
           var statusDot = pStatus === 'running' ? '🟢' : '🔴';
-          html += '<div class="container-chip ' + colorCls + '" draggable="true" data-drag-cid="' + escapeHtml(p.container_id || '') + '" data-drag-name="' + escapeHtml(cName) + '" data-drag-src="' + escapeHtml(n.name) + '" data-drag-svc="' + escapeHtml(svc) + '" title="' + escapeHtml(cName + ' (' + pStatus + ') - ' + (p.image || '')) + '">' + statusDot + ' ' + escapeHtml(cName) + '</div>';
+          html += '<div class="container-chip ' + colorCls + '" draggable="true" data-drag-cid="' + escapeHtml(p.container_id || '') + '" data-drag-name="' + escapeHtml(cName) + '" data-drag-src="' + escapeHtml(n.name) + '" data-drag-svc="' + escapeHtml(svc) + '" data-drag-img="' + escapeHtml(p.image || '') + '" title="' + escapeHtml(cName + ' (' + pStatus + ') - ' + (p.image || '')) + '">' + statusDot + ' ' + escapeHtml(cName) + '</div>';
         });
         html += '</div></div>';
       });
@@ -823,7 +853,8 @@
             cid: this.getAttribute('data-drag-cid'),
             name: this.getAttribute('data-drag-name'),
             src: this.getAttribute('data-drag-src'),
-            svc: this.getAttribute('data-drag-svc') || ''
+            svc: this.getAttribute('data-drag-svc') || '',
+            img: this.getAttribute('data-drag-img') || ''
           };
           this.classList.add('dragging');
           e.dataTransfer.effectAllowed = 'move';
@@ -851,7 +882,7 @@
           this.closest('.placement-column').classList.remove('drag-over');
           var dstNode = this.getAttribute('data-drop-node');
           if (!dragData || dragData.src === dstNode) return;
-          showMigrateModal(dragData.name, dragData.cid, dragData.src, dstNode, dragData.svc);
+          showMoveModal(dragData.name, dragData.cid, dragData.src, dstNode, dragData.svc, dragData.img);
         });
       });
     }

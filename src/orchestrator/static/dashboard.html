@@ -554,6 +554,11 @@
         html += '<div class="usage-bar"><div class="usage-bar-fill ' + cpuBarCls + '" style="width:' + cpuPct + '%"></div></div>';
         html += '<div class="usage-label"><span>메모리</span><span>' + memUsed + '/' + memTotal + 'MB (' + memPct + '%)</span></div>';
         html += '<div class="usage-bar"><div class="usage-bar-fill ' + memBarCls + '" style="width:' + memPct + '%"></div></div>';
+        var netRx = res.net_rx_mb != null ? res.net_rx_mb : 0;
+        var netTx = res.net_tx_mb != null ? res.net_tx_mb : 0;
+        var netRxStr = netRx > 1024 ? (netRx/1024).toFixed(1) + 'GB' : netRx.toFixed(0) + 'MB';
+        var netTxStr = netTx > 1024 ? (netTx/1024).toFixed(1) + 'GB' : netTx.toFixed(0) + 'MB';
+        html += '<div class="usage-label"><span>네트워크</span><span>RX ' + netRxStr + ' / TX ' + netTxStr + '</span></div>';
         html += '<div class="node-card-containers">컨테이너: ' + (n.container_count != null ? n.container_count : (res.containers_running || '—')) + '</div>';
         html += '<div class="node-actions">';
         if (st === 'cordoned') {
@@ -916,6 +921,11 @@
         html += '<div class="usage-bar"><div class="usage-bar-fill ' + cpuBarCls + '" style="width:' + cpuPct + '%"></div></div>';
         html += '<div class="usage-label" style="margin-top:2px;"><span>MEM ' + memPct + '%</span><span>' + memUsed + '/' + memTotal + 'MB</span></div>';
         html += '<div class="usage-bar"><div class="usage-bar-fill ' + memBarCls + '" style="width:' + memPct + '%"></div></div>';
+        var pNetRx = res.net_rx_mb != null ? res.net_rx_mb : 0;
+        var pNetTx = res.net_tx_mb != null ? res.net_tx_mb : 0;
+        var pRxStr = pNetRx > 1024 ? (pNetRx/1024).toFixed(1)+'G' : pNetRx.toFixed(0)+'M';
+        var pTxStr = pNetTx > 1024 ? (pNetTx/1024).toFixed(1)+'G' : pNetTx.toFixed(0)+'M';
+        html += '<div class="usage-label" style="margin-top:2px;"><span>NET</span><span>RX ' + pRxStr + ' / TX ' + pTxStr + '</span></div>';
         html += '</div></div>';
         html += '<div class="placement-column-body" data-drop-node="' + escapeHtml(n.name) + '">';
         var nodeContainers = byNode[n.name] || [];

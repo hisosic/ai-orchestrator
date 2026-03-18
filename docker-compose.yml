@@ -18,6 +18,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - orchestrator-data:/data
       - traefik-dynamic:/traefik-dynamic
+      - /tmp/host-net-dev:/host/net/dev:ro
     environment:
       - ORCHESTRATOR_STATE_DIR=${ORCHESTRATOR_STATE_DIR:-/data}
       - ORCHESTRATOR_API_TOKEN=${ORCHESTRATOR_API_TOKEN:-}

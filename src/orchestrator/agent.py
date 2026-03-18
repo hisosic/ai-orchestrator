@@ -111,6 +111,9 @@ class WorkerAgent:
                 containers_total = len(self.docker_client.containers.list(all=True))
                 containers_running = len(self.docker_client.containers.list())
 
+            # Network I/O - try host /proc/net/dev first, fallback to psutil
+            net_rx_mb, net_tx_mb = self._get_host_network()
+
             return {
                 "cpu_cores": cpu_count,
                 "cpu_used_percent": round(cpu_percent, 1),
@@ -118,6 +121,8 @@ class WorkerAgent:
                 "memory_used_mb": int(mem.used / 1024 / 1024),
                 "disk_total_gb": round(disk.total / 1024 / 1024 / 1024, 1),
                 "disk_used_gb": round(disk.used / 1024 / 1024 / 1024, 1),
+                "net_rx_mb": net_rx_mb,
+                "net_tx_mb": net_tx_mb,
                 "containers_running": containers_running,
                 "containers_total": containers_total
             }
@@ -139,9 +144,57 @@ class WorkerAgent:
                 "memory_used_mb": 0,
                 "disk_total_gb": round(disk.total / 1024 / 1024 / 1024, 1),
                 "disk_used_gb": round(disk.used / 1024 / 1024 / 1024, 1),
+                "net_rx_mb": 0.0,
+                "net_tx_mb": 0.0,
                 "containers_running": containers_running,
                 "containers_total": containers_total
             }
+
+    def _get_host_network(self) -> tuple:
+        """Read host network stats from /host/net/dev (populated by host cron)
+        or via docker API system info."""
+        # Method 1: Host-written file
+        try:
+            with open("/host/net/dev", "r") as f:
+                lines = f.readlines()
+            rx_total = 0
+            tx_total = 0
+            for line in lines[2:]:
+                parts = line.strip().split()
+                if len(parts) < 10:
+                    continue
+                iface = parts[0].rstrip(":")
+                if iface.startswith(("ens", "eth", "em", "bond", "enp")):
+                    rx_total += int(parts[1])
+                    tx_total += int(parts[9])
+            if rx_total > 0 or tx_total > 0:
+                return round(rx_total / 1024 / 1024, 2), round(tx_total / 1024 / 1024, 2)
+        except Exception:
+            pass
+        # Method 2: Docker host exec (slow but works)
+        try:
+            if self.docker_client:
+                import subprocess
+                result = subprocess.run(
+                    ["nsenter", "--target", "1", "--net", "cat", "/proc/net/dev"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0:
+                    rx_total = 0
+                    tx_total = 0
+                    for line in result.stdout.strip().split("\n")[2:]:
+                        parts = line.strip().split()
+                        if len(parts) < 10:
+                            continue
+                        iface = parts[0].rstrip(":")
+                        if iface.startswith(("ens", "eth", "em", "bond", "enp")):
+                            rx_total += int(parts[1])
+                            tx_total += int(parts[9])
+                    if rx_total > 0 or tx_total > 0:
+                        return round(rx_total / 1024 / 1024, 2), round(tx_total / 1024 / 1024, 2)
+        except Exception:
+            pass
+        return 0.0, 0.0
 
     def get_managed_containers(self) -> List[dict]:
         """Get list of ALL running containers on this node for placement tracking."""

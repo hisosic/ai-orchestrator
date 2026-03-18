@@ -17,6 +17,8 @@ class NodeResources(BaseModel):
     memory_used_mb: int = 0
     disk_total_gb: float = 0.0
     disk_used_gb: float = 0.0
+    net_rx_mb: float = 0.0
+    net_tx_mb: float = 0.0
     containers_running: int = 0
     containers_total: int = 0
 

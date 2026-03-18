@@ -938,24 +938,19 @@ async def cluster_move_container(req: Request):
             if not image:
                 return {"success": False, "error": "이미지를 확인할 수 없습니다. image 파라미터를 지정하세요."}
 
-        # Step 2: Adjust source replicas BEFORE removing container
-        # (prevents reconcile from restarting it)
-        src_replicas = 0
+        # Step 2: Pause reconcile on source+destination (do NOT change replicas)
         if service_name:
-            try:
-                async with httpx.AsyncClient(timeout=10) as client:
-                    svc_resp = await client.get(f"{src_url}/v1/services", headers=_headers(src_node))
-                    if svc_resp.status_code == 200:
-                        for s in svc_resp.json():
-                            if isinstance(s, dict) and s.get("name") == service_name:
-                                src_replicas = s.get("replicas", 0)
-                                break
-                    if src_replicas > 0:
-                        await client.post(f"{src_url}/v1/services/scale", json={
-                            "service_name": service_name, "replicas": max(0, src_replicas - 1)
-                        }, headers=_headers(src_node))
-            except Exception:
-                pass
+            from .runtime import reconcile_skip_add
+            reconcile_skip_add(service_name)
+            async with httpx.AsyncClient(timeout=10) as client:
+                try:
+                    await client.post(f"{src_url}/v1/agent/reconcile-skip", json={"service_name": service_name, "skip": True}, headers=_headers(src_node))
+                except Exception:
+                    pass
+                try:
+                    await client.post(f"{dst_url}/v1/agent/reconcile-skip", json={"service_name": service_name, "skip": True}, headers=_headers(dst_node))
+                except Exception:
+                    pass
 
         # Step 3: Stop and remove source container
         async with httpx.AsyncClient(timeout=30) as client:
@@ -967,44 +962,43 @@ async def cluster_move_container(req: Request):
             if resp.status_code != 200 and container_name:
                 await client.delete(f"{src_url}/v1/containers/{container_name}", headers=_headers(src_node))
 
-        # Step 4: Pull image + run on destination
-        # Derive service/group name for the new container
+        # Step 4: Pull image + run 1 container on destination
+        # NEVER use scale endpoint (it changes replicas permanently)
+        # Find next available index to avoid name conflict
         svc_group = service_name
         if not svc_group and container_name:
-            # "orch-rtest-0" -> "rtest"
             name_clean = container_name.replace("orch-", "").strip("/")
             parts = name_clean.rsplit("-", 1)
             svc_group = parts[0] if len(parts) > 1 and parts[-1].isdigit() else name_clean
 
-        # Check how many containers of this service already exist on destination
-        # to avoid name conflict (orch-{svc}-0 might exist)
-        dst_existing = 0
+        # Find used indices on destination
+        used_indices = set()
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 resp = await client.get(f"{dst_url}/v1/containers", headers=_headers(dst_node))
                 if resp.status_code == 200:
+                    prefix = f"orch-{svc_group}-"
                     for c in resp.json().get("containers", []):
-                        if c.get("service") == svc_group or (svc_group and c.get("name", "").startswith(f"orch-{svc_group}-")):
-                            dst_existing += 1
+                        cname = c.get("name", "")
+                        if cname.startswith(prefix):
+                            suffix = cname[len(prefix):]
+                            if suffix.isdigit():
+                                used_indices.add(int(suffix))
         except Exception:
             pass
 
-        # If destination already has containers with this name, use scale endpoint
-        # which handles index allocation automatically
+        # Pick next available index
+        next_idx = 0
+        while next_idx in used_indices:
+            next_idx += 1
+        new_container_name = f"orch-{svc_group}-{next_idx}"
+
+        # Run 1 container via agent/run-one (does NOT change replicas)
         async with httpx.AsyncClient(timeout=120) as client:
-            if dst_existing > 0:
-                # Scale up by 1 on destination (handles name indexing)
-                run_resp = await client.post(f"{dst_url}/v1/services/scale", json={
-                    "service_name": svc_group, "replicas": dst_existing + 1,
-                }, headers=_headers(dst_node))
-            else:
-                # Fresh run
-                run_resp = await client.post(f"{dst_url}/v1/containers/run", json={
-                    "image": image,
-                    "name": svc_group,
-                    "replicas": 1,
-                    "use_internal_network": True,
-                }, headers=_headers(dst_node))
+            run_resp = await client.post(f"{dst_url}/v1/agent/run-one", json={
+                "image": image,
+                "service_name": svc_group,
+            }, headers=_headers(dst_node))
             run_data = run_resp.json()
 
         if not run_data.get("success"):
@@ -1026,30 +1020,22 @@ async def cluster_move_container(req: Request):
                 },
             }
 
-        # If failed, restore source replicas
-        if not result.get("success") and service_name and src_replicas > 0:
-            try:
-                async with httpx.AsyncClient(timeout=10) as client:
-                    await client.post(f"{src_url}/v1/services/scale", json={
-                        "service_name": service_name, "replicas": src_replicas
-                    }, headers=_headers(src_node))
-            except Exception:
-                pass
-
         return result
 
     except Exception as e:
-        # Restore source replicas on exception
-        if service_name and src_replicas > 0:
+        return {"success": False, "error": str(e)}
+
+    finally:
+        # Resume reconcile on all nodes
+        if service_name:
+            from .runtime import reconcile_skip_remove
+            reconcile_skip_remove(service_name)
             try:
-                import httpx as _httpx
-                with _httpx.Client(timeout=10) as client:
-                    client.post(f"{src_url}/v1/services/scale", json={
-                        "service_name": service_name, "replicas": src_replicas
-                    }, headers=_headers(src_node))
+                async with httpx.AsyncClient(timeout=10) as client:
+                    await client.post(f"{src_url}/v1/agent/reconcile-skip", json={"service_name": service_name, "skip": False}, headers=_headers(src_node))
+                    await client.post(f"{dst_url}/v1/agent/reconcile-skip", json={"service_name": service_name, "skip": False}, headers=_headers(dst_node))
             except Exception:
                 pass
-        return {"success": False, "error": str(e)}
 
 
 @app.get("/v1/cluster/migrations")
@@ -1188,6 +1174,64 @@ def agent_resources():
     from .agent import WorkerAgent
     agent = _worker_agent or WorkerAgent()
     return agent.get_node_resources()
+
+
+@app.post("/v1/agent/run-one")
+async def agent_run_one(req: Request):
+    """Run a single container WITHOUT updating services.json replicas.
+    Used by move/migrate to avoid changing admin-set replica counts."""
+    body = await req.json()
+    image = (body.get("image") or "").strip()
+    svc_name = (body.get("service_name") or "").strip()
+    if not image:
+        return {"success": False, "error": "image is required"}
+    try:
+        import re
+        client = _docker_client()
+        from .runtime import (
+            _ensure_network, _traefik_labels, _parse_memory,
+            LABEL_ORCHESTRATOR, LABEL_SERVICE, ORCH_NETWORK, pull_image
+        )
+        # Auto-pull if not found
+        from docker.errors import ImageNotFound as _INF
+        try:
+            client.images.get(image)
+        except _INF:
+            ok, msg = pull_image(client, image)
+            if not ok:
+                return {"success": False, "error": msg}
+
+        # Find next available index
+        prefix = f"orch-{svc_name}-"
+        used = set()
+        for c in client.containers.list(all=True):
+            n = (c.name or "").strip("/")
+            if n.startswith(prefix):
+                suffix = n[len(prefix):]
+                if suffix.isdigit():
+                    used.add(int(suffix))
+        idx = 0
+        while idx in used:
+            idx += 1
+        cname = f"{prefix}{idx}"
+
+        labels = {
+            LABEL_ORCHESTRATOR: "true",
+            LABEL_SERVICE: svc_name,
+            **_traefik_labels(svc_name),
+        }
+        net = _ensure_network(client)
+        c = client.containers.run(image, name=cname, labels=labels, detach=True)
+        cid = c.id[:12]
+        if net:
+            try:
+                net.connect(c, aliases=[svc_name])
+            except Exception:
+                pass
+        # Do NOT call state.upsert_service — replicas stay unchanged
+        return {"success": True, "container_id": cid, "container_name": cname}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 @app.post("/v1/agent/reconcile-skip")

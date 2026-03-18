@@ -1,4 +1,5 @@
 """Docker runtime adapter: scale, deploy, resource limits."""
+import json
 import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
@@ -119,9 +120,25 @@ def _volumes_for_replica(
             host = parts[0].strip().rstrip("/")
             rest = ":".join(parts[1:])
             host_with_name = f"{host}/{container_name}"
-            # 강제로 디렉터리 생성 (없으면 에러 나므로)
+            # 강제로 디렉터리 및 컨텍스트 파일 생성 (없으면 에러 나므로)
             try:
                 os.makedirs(host_with_name, exist_ok=True)
+                ctx_path = os.path.join(host_with_name, "context.json")
+                try:
+                    with open(ctx_path, "w", encoding="utf-8") as f:
+                        json.dump(
+                            {
+                                "container": container_name,
+                                "base_volume": s,
+                                "host_path": host_with_name,
+                                "mode": mode or "per_replica",
+                            },
+                            f,
+                            ensure_ascii=False,
+                            indent=2,
+                        )
+                except OSError:
+                    pass
             except OSError:
                 pass
             result.append(f"{host_with_name}:{rest}")
@@ -395,6 +412,21 @@ def execute_stop(client, service_name: str) -> Tuple[bool, str, dict]:
     return True, f"컨테이너 '{service_name}'를 종료했습니다.", {"removed": removed}
 
 
+def pull_image(client, image: str) -> Tuple[bool, str]:
+    """Pull a Docker image. Returns (success, message)."""
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        logger.info(f"Pulling image: {image}")
+        pulled = client.images.pull(image)
+        tag = pulled.tags[0] if pulled.tags else pulled.id[:12]
+        return True, f"이미지 pull 완료: {tag}"
+    except (APIError, ImageNotFound) as e:
+        return False, f"이미지 pull 실패: {e}"
+    except Exception as e:
+        return False, f"이미지 pull 실패: {e}"
+
+
 def run_container(
     client,
     image: str,
@@ -408,13 +440,28 @@ def run_container(
     ports: Optional[List[str]] = None,
     user: Optional[str] = None,
     volume_mode: Optional[str] = None,
+    auto_pull: bool = True,
 ) -> Tuple[bool, str, dict]:
     """Run one or more containers from image.
 
+    If auto_pull is True (default), automatically pulls the image if not found locally.
     Containers are labeled so that they can be scaled later as a group
     (LABEL_SERVICE = service/group name).
     """
     try:
+        # Auto-pull: try to find locally first, pull if missing
+        if auto_pull:
+            try:
+                client.images.get(image)
+            except ImageNotFound:
+                ok, pull_msg = pull_image(client, image)
+                if not ok:
+                    return False, pull_msg, {}
+            except APIError:
+                # Try pulling anyway
+                ok, pull_msg = pull_image(client, image)
+                if not ok:
+                    return False, pull_msg, {}
         count = replicas or 1
         ids: List[str] = []
         net = _ensure_network(client) if use_internal_network else None
@@ -499,9 +546,24 @@ def remove_container_by_id(client, container_id: str) -> Tuple[bool, str, dict]:
         attrs = c.attrs or {}
         labels = (attrs.get("Config") or {}).get("Labels") or {}
         service_name = labels.get(LABEL_SERVICE) or None
-        c.stop(timeout=10)
-        c.remove()
+        try:
+            c.stop(timeout=10)
+        except (APIError, NotFound):
+            pass  # already stopped
+        try:
+            c.remove(force=True)
+        except (APIError, NotFound):
+            pass  # already removed
         return True, f"컨테이너 '{container_id}' 삭제됨.", {"service_name": service_name}
+    except (APIError, NotFound) as e:
+        return False, str(e), {}
+
+
+def inspect_container_by_id(client, container_id: str) -> Tuple[bool, str, dict]:
+    """Return docker inspect information for a container by id or name."""
+    try:
+        c = client.containers.get(container_id)
+        return True, "inspect", {"id": c.id, "name": c.name, "attrs": c.attrs}
     except (APIError, NotFound) as e:
         return False, str(e), {}
 
@@ -551,5 +613,30 @@ def execute_intent(intent: ParsedIntent, dry_run: bool = False) -> Tuple[bool, s
     if intent.action == IntentAction.LIST:
         services = state.list_services()
         return True, "서비스 목록", {"services": [s.model_dump() for s in services]}
+
+    if intent.action == IntentAction.MIGRATE:
+        target = intent.target_node
+        service = intent.service_name
+        if not service or not target:
+            return False, "마이그레이션할 서비스와 대상 노드를 지정해주세요.", {}
+        return True, f"마이그레이션은 클러스터 API를 통해 실행하세요: POST /v1/cluster/migrate", {
+            "service_name": service,
+            "target_node": target,
+            "hint": "대시보드에서 컨테이너를 드래그하여 마이그레이션할 수 있습니다.",
+        }
+
+    if intent.action == IntentAction.DRAIN:
+        target = intent.target_node
+        if not target:
+            return False, "드레인할 노드를 지정해주세요.", {}
+        return True, f"드레인은 클러스터 API를 통해 실행하세요: POST /v1/cluster/nodes/{target}/drain", {
+            "target_node": target,
+        }
+
+    if intent.action == IntentAction.CLUSTER_STATUS:
+        return True, "클러스터 상태는 대시보드 또는 GET /v1/cluster/status에서 확인하세요.", {}
+
+    if intent.action == IntentAction.NODE_LIST:
+        return True, "노드 목록은 대시보드 또는 GET /v1/cluster/nodes에서 확인하세요.", {}
 
     return False, f"지원하지 않는 명령입니다: {intent.raw}", {}

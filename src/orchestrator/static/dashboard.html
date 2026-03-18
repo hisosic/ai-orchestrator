@@ -25,7 +25,7 @@
     .layout { max-width: 1600px; margin: 0 auto; padding: 1.5rem; }
     header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 1px solid var(--border); }
     h1 { font-size: 1.5rem; font-weight: 700; margin: 0; letter-spacing: -0.02em; }
-    .header-meta { display: flex; align-items: center; gap: 1rem; }
+    .header-meta { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
     .refresh-control { display: flex; align-items: center; gap: 0.5rem; }
     .refresh-control label { color: var(--text-muted); }
     .refresh-control select { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); padding: 0.35rem 0.6rem; font-family: inherit; }
@@ -36,7 +36,10 @@
     .btn-sm { padding: 0.25rem 0.5rem; font-size: 0.8rem; }
     .btn-danger { background: var(--danger); }
     .btn-warn { background: var(--warn); color: #000; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+    .btn-success { background: var(--success); color: #fff; }
+    .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text-muted); }
+    .btn-outline:hover { border-color: var(--accent); color: var(--accent); }
+    .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
     .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
     .panel-title { padding: 0.75rem 1rem; font-weight: 600; border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.03); }
     .panel-body { padding: 1rem; overflow-x: auto; }
@@ -48,6 +51,10 @@
     .badge-running { background: rgba(63,185,80,0.2); color: var(--success); }
     .badge-stopped { background: rgba(139,148,158,0.2); color: var(--text-muted); }
     .badge-managed { background: rgba(88,166,255,0.2); color: var(--accent); }
+    .badge-healthy { background: rgba(63,185,80,0.2); color: var(--success); }
+    .badge-degraded { background: rgba(210,153,34,0.2); color: var(--warn); }
+    .badge-offline { background: rgba(248,81,73,0.2); color: var(--danger); }
+    .badge-cordoned { background: rgba(210,153,34,0.2); color: var(--warn); }
     .loading { color: var(--text-muted); }
     .text-muted { color: var(--text-muted); }
     .error-msg { color: var(--danger); }
@@ -90,14 +97,176 @@
     .field label { display: block; color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.25rem; }
     .field textarea, .field input[type="text"] { width: 100%; max-width: 320px; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 0.4rem; border-radius: var(--radius); font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; }
     .field textarea { resize: vertical; min-height: 2.5rem; }
+    .containers-toolbar { display: flex; justify-content: flex-end; gap: 0.5rem; margin-bottom: 0.5rem; }
+    .inspect-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 2000; }
+    .inspect-modal { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); max-width: 900px; width: 90%; max-height: 80vh; display: flex; flex-direction: column; box-shadow: 0 12px 30px rgba(0,0,0,0.6); }
+    .inspect-modal-header { padding: 0.75rem 1rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; font-weight: 600; }
+    .inspect-modal-title { font-size: 0.95rem; }
+    .inspect-modal-close { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 1rem; }
+    .inspect-modal-close:hover { color: var(--text); }
+    .inspect-modal-body { padding: 0.75rem 1rem 1rem; overflow: auto; }
+    .inspect-modal-body pre { margin: 0; font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; white-space: pre; }
+
+    /* ===== Alert Banner ===== */
+    .alert-banner { display: none; padding: 0.6rem 1rem; font-size: 0.85rem; font-weight: 600; border-radius: var(--radius); margin-bottom: 1rem; align-items: center; gap: 0.75rem; }
+    .alert-banner.active { display: flex; }
+    .alert-banner.level-critical { background: rgba(248,81,73,0.18); border: 1px solid var(--danger); color: var(--danger); }
+    .alert-banner.level-warning { background: rgba(210,153,34,0.18); border: 1px solid var(--warn); color: var(--warn); }
+    .alert-banner .alert-text { flex: 1; }
+    .alert-banner .alert-count { font-size: 0.75rem; opacity: 0.8; margin-left: 0.5rem; }
+    .alert-banner .btn { font-size: 0.75rem; padding: 0.2rem 0.6rem; }
+    .alert-details { display: none; margin-bottom: 1rem; }
+    .alert-details.expanded { display: block; }
+    .alert-details table { font-size: 0.8rem; }
+    .alert-details .badge { font-size: 0.7rem; }
+
+    /* ===== Cluster Overview Bar ===== */
+    .cluster-bar { display: none; overflow-x: auto; gap: 0.75rem; margin-bottom: 1.5rem; padding-bottom: 0.5rem; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+    .cluster-bar.active { display: flex; }
+    .cluster-bar::-webkit-scrollbar { height: 6px; }
+    .cluster-bar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    .node-card { flex: 0 0 220px; background: var(--surface); border: 2px solid var(--border); border-radius: var(--radius); padding: 0.75rem; cursor: pointer; transition: border-color 0.2s, box-shadow 0.2s; }
+    .node-card:hover { box-shadow: 0 0 0 1px rgba(88,166,255,0.3); }
+    .node-card.selected { box-shadow: 0 0 0 2px var(--accent); }
+    .node-card.healthy { border-color: var(--success); }
+    .node-card.degraded, .node-card.cordoned { border-color: var(--warn); }
+    .node-card.offline { border-color: var(--danger); }
+    .node-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
+    .node-card-name { font-weight: 600; font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 130px; }
+    .node-card-ip { color: var(--text-muted); font-size: 0.7rem; font-family: 'JetBrains Mono', monospace; margin-top: 0.15rem; }
+    .node-card-containers { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.4rem; }
+
+    .usage-bar { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; margin-top: 0.35rem; }
+    .usage-bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
+    .usage-bar-fill.cpu { background: var(--accent); }
+    .usage-bar-fill.mem { background: #a371f7; }
+    .usage-bar-fill.low { background: var(--success); }
+    .usage-bar-fill.mid { background: var(--warn); }
+    .usage-bar-fill.high { background: var(--danger); }
+    .usage-label { display: flex; justify-content: space-between; font-size: 0.7rem; color: var(--text-muted); margin-top: 0.2rem; }
+
+    /* ===== Node Tabs ===== */
+    .tabs { display: flex; gap: 0; margin-bottom: 1.5rem; border-bottom: 2px solid var(--border); overflow-x: auto; scrollbar-width: none; }
+    .tabs::-webkit-scrollbar { display: none; }
+    .tab { padding: 0.5rem 1rem; font-size: 0.85rem; font-weight: 600; color: var(--text-muted); background: none; border: none; border-bottom: 2px solid transparent; margin-bottom: -2px; cursor: pointer; white-space: nowrap; font-family: inherit; transition: color 0.2s, border-color 0.2s; }
+    .tab:hover { color: var(--text); }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .tab .tab-status { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 0.4rem; vertical-align: middle; }
+    .tab .tab-status.healthy { background: var(--success); }
+    .tab .tab-status.degraded, .tab .tab-status.cordoned { background: var(--warn); }
+    .tab .tab-status.offline { background: var(--danger); }
+
+    .cluster-health-badge { font-size: 0.8rem; padding: 0.2rem 0.6rem; border-radius: 4px; font-weight: 600; }
+    .cluster-health-badge.all-healthy { background: rgba(63,185,80,0.15); color: var(--success); }
+    .cluster-health-badge.partial { background: rgba(210,153,34,0.15); color: var(--warn); }
+    .cluster-health-badge.critical { background: rgba(248,81,73,0.15); color: var(--danger); }
+
+    /* ===== Modal Overlay (generic) ===== */
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 3000; }
+    .modal-content { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); max-width: 500px; width: 90%; box-shadow: 0 12px 30px rgba(0,0,0,0.6); }
+    .modal-header { padding: 0.75rem 1rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; font-weight: 600; }
+    .modal-close { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 1.1rem; }
+    .modal-close:hover { color: var(--text); }
+    .modal-body { padding: 1rem; }
+    .modal-body .form-group { margin-bottom: 0.75rem; }
+    .modal-body .form-group label { display: block; color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.25rem; font-weight: 600; }
+    .modal-body .form-group input[type="text"],
+    .modal-body .form-group input[type="number"],
+    .modal-body .form-group input[type="password"] {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.5rem 0.6rem;
+      border-radius: var(--radius);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.85rem;
+    }
+    .modal-body .form-group input:focus { outline: none; border-color: var(--accent); }
+    .modal-footer { padding: 0.75rem 1rem; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 0.5rem; }
+    .modal-status { font-size: 0.8rem; margin-top: 0.25rem; min-height: 1.2em; }
+    .modal-status.ok { color: var(--success); }
+    .modal-status.fail { color: var(--danger); }
+
+    /* ===== Container Placement Grid ===== */
+    .placement-grid { display: flex; gap: 1rem; overflow-x: auto; padding-bottom: 0.5rem; min-height: 120px; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+    .placement-grid::-webkit-scrollbar { height: 6px; }
+    .placement-grid::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    .placement-column { flex: 0 0 220px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); display: flex; flex-direction: column; min-height: 150px; }
+    .placement-column.drag-over { border-color: var(--accent); background: rgba(88,166,255,0.05); }
+    .placement-column-header { padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.03); font-weight: 600; font-size: 0.85rem; }
+    .placement-column-header .node-mini-bars { margin-top: 0.35rem; }
+    .placement-column-body { padding: 0.5rem; flex: 1; display: flex; flex-direction: column; gap: 0.35rem; min-height: 60px; }
+
+    .container-chip { padding: 0.3rem 0.6rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600; font-family: 'JetBrains Mono', monospace; cursor: grab; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border: 1px solid transparent; transition: opacity 0.2s; }
+    .container-chip:active { cursor: grabbing; }
+    .container-chip.dragging { opacity: 0.4; }
+    .container-chip.svc-0 { background: rgba(88,166,255,0.2); color: var(--accent); border-color: rgba(88,166,255,0.3); }
+    .container-chip.svc-1 { background: rgba(163,113,247,0.2); color: #a371f7; border-color: rgba(163,113,247,0.3); }
+    .container-chip.svc-2 { background: rgba(63,185,80,0.2); color: var(--success); border-color: rgba(63,185,80,0.3); }
+    .container-chip.svc-3 { background: rgba(210,153,34,0.2); color: var(--warn); border-color: rgba(210,153,34,0.3); }
+    .container-chip.svc-4 { background: rgba(248,81,73,0.2); color: var(--danger); border-color: rgba(248,81,73,0.3); }
+    .container-chip.svc-5 { background: rgba(219,171,255,0.2); color: #dbabff; border-color: rgba(219,171,255,0.3); }
+    .container-chip.svc-default { background: rgba(139,148,158,0.15); color: var(--text-muted); border-color: rgba(139,148,158,0.2); }
+
+    /* ===== Migration Panel ===== */
+    .migration-panel { display: none; margin-bottom: 1.5rem; }
+    .migration-panel.active { display: block; }
+    .migration-item { display: flex; align-items: center; gap: 1rem; padding: 0.6rem 0; border-bottom: 1px solid var(--border); font-size: 0.85rem; }
+    .migration-item:last-child { border-bottom: none; }
+    .migration-info { flex: 1; }
+    .migration-info .mig-name { font-weight: 600; }
+    .migration-info .mig-route { color: var(--text-muted); font-size: 0.8rem; }
+    .migration-progress { width: 200px; }
+    .migration-progress-bar { height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
+    .migration-progress-fill { height: 100%; background: var(--accent); border-radius: 4px; transition: width 0.5s; }
+    .migration-progress-fill.complete { background: var(--success); }
+    .migration-progress-fill.error { background: var(--danger); }
+    .migration-step { font-size: 0.7rem; color: var(--text-muted); margin-top: 0.15rem; }
+    .migration-status-text { font-size: 0.8rem; font-weight: 600; min-width: 80px; text-align: right; }
+
+    /* ===== Node Context Menu ===== */
+    .node-actions { display: flex; gap: 0.35rem; margin-top: 0.4rem; flex-wrap: wrap; }
+    .node-actions .btn { font-size: 0.7rem; padding: 0.15rem 0.4rem; }
+
+    @media (max-width: 900px) {
+      .grid { grid-template-columns: 1fr; }
+      .node-card { flex: 0 0 180px; }
+      .placement-column { flex: 0 0 180px; }
+    }
   </style>
 </head>
 <body>
   <div class="layout">
+    <!-- Alert Banner -->
+    <div class="alert-banner" id="alertBanner">
+      <span class="alert-text" id="alertText"></span>
+      <span class="alert-count" id="alertCount"></span>
+      <button type="button" class="btn btn-sm" id="btnAlertAck">확인</button>
+      <button type="button" class="btn btn-sm btn-outline" id="btnAlertViewAll">모두 보기</button>
+    </div>
+    <div class="alert-details" id="alertDetails">
+      <div class="panel">
+        <div class="panel-title">전체 알림</div>
+        <div class="panel-body" id="alertDetailBody"></div>
+      </div>
+    </div>
+
     <header>
-      <h1>AI Container Orchestrator — Dashboard</h1>
+      <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">
+        <h1>AI Container Orchestrator — Dashboard</h1>
+        <span class="cluster-health-badge" id="clusterHealthBadge" style="display:none;"></span>
+      </div>
       <div class="header-meta">
         <span id="operatorStatus" class="operator-status" title="운영 상태 (헬스)">—</span>
+        <div class="refresh-control">
+          <label for="targetNode">대상</label>
+          <select id="targetNode">
+            <option value="local" selected>local</option>
+          </select>
+        </div>
+        <button type="button" class="btn btn-sm" id="btnAddNode">노드 추가</button>
         <div class="refresh-control">
           <label for="refreshInterval">자동 새로고침</label>
           <select id="refreshInterval">
@@ -112,13 +281,21 @@
       </div>
     </header>
 
+    <!-- Cluster Overview Bar -->
+    <div class="cluster-bar" id="clusterBar"></div>
+
+    <!-- Node Tabs -->
+    <div class="tabs" id="nodeTabs" style="display:none;">
+      <button type="button" class="tab active" data-tab-node="__cluster__">클러스터</button>
+    </div>
+
     <div class="grid">
       <div class="panel">
         <div class="panel-title">시스템 / 환경</div>
         <div class="panel-body" id="systemPanel"><span class="loading">불러오는 중…</span></div>
       </div>
       <div class="panel">
-        <div class="panel-title">관리 서비스</div>
+        <div class="panel-title">서비스 관리 (스케일 / URL / 중지)</div>
         <div class="panel-body" id="servicesPanel"><span class="loading">불러오는 중…</span></div>
       </div>
       <div class="panel">
@@ -138,9 +315,56 @@
         </div>
       </div>
 
+      <!-- Cluster Deploy Panel -->
+      <div class="panel console-wrap">
+        <div class="panel-title">클러스터 배포 (이미지 Pull + 자동 기동)</div>
+        <div class="panel-body">
+          <div class="command-row" style="flex-wrap:wrap;gap:0.5rem;">
+            <input type="text" id="deployImage" placeholder="이미지 경로 (예: nginx:latest, redis:7, ghcr.io/org/app:v1.0)" style="flex:2;min-width:250px;" autocomplete="off">
+            <input type="text" id="deployName" placeholder="서비스명 (선택)" style="flex:0.8;min-width:100px;" autocomplete="off">
+            <input type="number" id="deployReplicas" value="1" min="1" max="100" style="width:60px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.5rem;border-radius:var(--radius);font-family:inherit;" title="레플리카 수">
+            <select id="deployStrategy" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.5rem;border-radius:var(--radius);font-family:inherit;" title="배치 전략">
+              <option value="spread">분산 (spread)</option>
+              <option value="least-loaded">최소부하 (least-loaded)</option>
+              <option value="binpack">압축 (binpack)</option>
+            </select>
+            <button type="button" class="btn btn-success" id="btnDeploy">배포</button>
+          </div>
+          <details style="padding:0.5rem 1rem 0.75rem;">
+            <summary class="text-muted" style="cursor:pointer;font-size:0.85rem;">고급 옵션 (환경변수, 포트, 볼륨, 리소스 제한)</summary>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;margin-top:0.5rem;">
+              <div class="field"><label>환경변수 (KEY=value, 줄바꿈)</label><textarea id="deployEnv" rows="2" placeholder="APP_ENV=prod&#10;DEBUG=0" style="max-width:100%;"></textarea></div>
+              <div class="field"><label>포트 (호스트:컨테이너, 줄바꿈)</label><textarea id="deployPorts" rows="2" placeholder="8080:80&#10;8443:443" style="max-width:100%;"></textarea></div>
+              <div class="field"><label>볼륨 (호스트:컨테이너, 줄바꿈)</label><textarea id="deployVolumes" rows="2" placeholder="/data:/app/data" style="max-width:100%;"></textarea></div>
+              <div style="display:flex;gap:0.5rem;">
+                <div class="field"><label>메모리 제한</label><input type="text" id="deployMemory" placeholder="512m / 1g" style="max-width:100%;"></div>
+                <div class="field"><label>CPU 제한</label><input type="text" id="deployCpu" placeholder="0.5 / 1" style="max-width:100%;"></div>
+              </div>
+            </div>
+          </details>
+          <div id="deployLog" style="padding:0 1rem 0.5rem;font-size:0.85rem;"></div>
+        </div>
+      </div>
+
       <div class="panel" style="grid-column: 1 / -1;">
         <div class="panel-title">컨테이너 목록 (중지 / 삭제)</div>
         <div class="panel-body" id="containersPanel"><span class="loading">불러오는 중…</span></div>
+      </div>
+    </div>
+
+    <!-- Container Placement Grid -->
+    <div class="panel" id="placementSection" style="display:none; margin-bottom: 1.5rem;">
+      <div class="panel-title">컨테이너 배치 현황 (드래그하여 마이그레이션)</div>
+      <div class="panel-body">
+        <div class="placement-grid" id="placementGrid"></div>
+      </div>
+    </div>
+
+    <!-- Migration Status Panel -->
+    <div class="migration-panel" id="migrationPanel">
+      <div class="panel">
+        <div class="panel-title">마이그레이션 현황</div>
+        <div class="panel-body" id="migrationBody"></div>
       </div>
     </div>
   </div>
@@ -148,14 +372,40 @@
   <script>
     const API = '';
     let refreshTimer = null;
+    let clusterNodes = [];
+    let clusterStatus = null;
+    let activeAlerts = [];
+    let selectedTabNode = '__cluster__';
+    let allPlacements = [];
+    let serviceColorMap = {};
+    let serviceColorIdx = 0;
 
+    /* ===== Utility ===== */
+    function getTargetNode() {
+      const el = document.getElementById('targetNode');
+      const v = el ? (el.value || 'local') : 'local';
+      return v || 'local';
+    }
+    function apiUrl(path) {
+      const node = getTargetNode();
+      if (!node || node === 'local') return API + path;
+      return API + '/v1/cluster/' + encodeURIComponent(node) + '/proxy?path=' + encodeURIComponent(path);
+    }
+    async function apiFetch(path, opts) {
+      return fetch(apiUrl(path), opts || {});
+    }
+    async function fetchJsonLocal(path) {
+      const r = await fetch(API + path);
+      if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+      return r.json();
+    }
     function now() {
       const d = new Date();
       return d.toLocaleTimeString('ko-KR', { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3,'0');
     }
     function setLastUpdated() { document.getElementById('lastUpdated').textContent = '마지막 갱신: ' + now(); }
     async function fetchJson(path) {
-      const r = await fetch(API + path);
+      const r = await apiFetch(path);
       if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
       return r.json();
     }
@@ -165,7 +415,511 @@
       div.textContent = s;
       return div.innerHTML;
     }
+    function getServiceColor(svc) {
+      if (!svc) return 'svc-default';
+      if (serviceColorMap[svc] !== undefined) return 'svc-' + serviceColorMap[svc];
+      serviceColorMap[svc] = serviceColorIdx % 6;
+      serviceColorIdx++;
+      return 'svc-' + serviceColorMap[svc];
+    }
 
+    /* ===== Alert Banner ===== */
+    function renderAlerts(alerts) {
+      activeAlerts = Array.isArray(alerts) ? alerts : [];
+      var banner = document.getElementById('alertBanner');
+      var details = document.getElementById('alertDetails');
+      if (!activeAlerts.length) {
+        banner.classList.remove('active', 'level-critical', 'level-warning');
+        details.classList.remove('expanded');
+        return;
+      }
+      var hasCritical = activeAlerts.some(function(a) { return a.level === 'critical'; });
+      banner.className = 'alert-banner active ' + (hasCritical ? 'level-critical' : 'level-warning');
+      var latest = activeAlerts[0];
+      document.getElementById('alertText').textContent = latest.message || latest.type || '알림';
+      document.getElementById('alertCount').textContent = activeAlerts.length > 1 ? '(+' + (activeAlerts.length - 1) + '건)' : '';
+    }
+    function renderAlertDetails() {
+      if (!activeAlerts.length) return;
+      var html = '<table><thead><tr><th>시간</th><th>수준</th><th>유형</th><th>메시지</th><th>동작</th></tr></thead><tbody>';
+      activeAlerts.forEach(function(a) {
+        var lvl = a.level || 'warning';
+        html += '<tr><td>' + escapeHtml(a.timestamp || '—') + '</td>';
+        html += '<td><span class="badge badge-' + (lvl === 'critical' ? 'offline' : 'degraded') + '">' + escapeHtml(lvl) + '</span></td>';
+        html += '<td>' + escapeHtml(a.type || '—') + '</td>';
+        html += '<td>' + escapeHtml(a.message || '') + '</td>';
+        html += '<td><button type="button" class="btn btn-sm btn-outline" data-ack-alert="' + escapeHtml(a.id || '') + '">확인</button></td></tr>';
+      });
+      html += '</tbody></table>';
+      document.getElementById('alertDetailBody').innerHTML = html;
+      document.getElementById('alertDetailBody').querySelectorAll('[data-ack-alert]').forEach(function(el) {
+        el.addEventListener('click', function() { ackAlert(this.getAttribute('data-ack-alert')); });
+      });
+    }
+    async function ackAlert(id) {
+      if (!id) return;
+      try {
+        await fetch(API + '/v1/cluster/alerts/' + encodeURIComponent(id) + '/ack', { method: 'POST' });
+        appendLog('알림 확인: ' + id, { success: true, message: '확인됨' });
+        loadAlerts();
+      } catch (e) {
+        appendLog('알림 확인 실패', { success: false, message: e.message });
+      }
+    }
+    async function loadAlerts() {
+      try {
+        var resp = await fetch(API + '/v1/cluster/alerts');
+        if (!resp.ok) { renderAlerts([]); return; }
+        var data = await resp.json();
+        renderAlerts(data.alerts || data || []);
+      } catch (e) { renderAlerts([]); }
+    }
+    document.getElementById('btnAlertAck').addEventListener('click', function() {
+      if (activeAlerts.length && activeAlerts[0].id) ackAlert(activeAlerts[0].id);
+    });
+    document.getElementById('btnAlertViewAll').addEventListener('click', function() {
+      var det = document.getElementById('alertDetails');
+      var isExpanded = det.classList.contains('expanded');
+      if (isExpanded) { det.classList.remove('expanded'); }
+      else { renderAlertDetails(); det.classList.add('expanded'); }
+    });
+
+    /* ===== Cluster Health Badge ===== */
+    function renderClusterHealthBadge(status) {
+      var badge = document.getElementById('clusterHealthBadge');
+      if (!status || !status.nodes || !status.nodes.length) {
+        badge.style.display = 'none';
+        return;
+      }
+      badge.style.display = '';
+      var nodes = status.nodes;
+      var total = nodes.length;
+      var healthy = nodes.filter(function(n) { return n.status === 'healthy' || n.status === 'online'; }).length;
+      var offline = nodes.filter(function(n) { return n.status === 'offline' || n.status === 'unreachable'; }).length;
+      if (healthy === total) {
+        badge.className = 'cluster-health-badge all-healthy';
+        badge.textContent = total + '/' + total + ' 노드 정상';
+      } else if (offline > 0) {
+        badge.className = 'cluster-health-badge ' + (offline === total ? 'critical' : 'partial');
+        badge.textContent = healthy + '/' + total + ' 노드 - ' + offline + ' 오프라인';
+      } else {
+        badge.className = 'cluster-health-badge partial';
+        badge.textContent = healthy + '/' + total + ' 노드 정상';
+      }
+    }
+
+    /* ===== Cluster Overview Bar ===== */
+    function renderClusterBar(status) {
+      var bar = document.getElementById('clusterBar');
+      if (!status || !status.nodes || !status.nodes.length) {
+        bar.classList.remove('active');
+        return;
+      }
+      bar.classList.add('active');
+      var html = '';
+      status.nodes.forEach(function(n) {
+        var st = n.status || 'offline';
+        var cls = (st === 'healthy' || st === 'online') ? 'healthy' : (st === 'offline' || st === 'unreachable') ? 'offline' : 'degraded';
+        var res = n.resources || {};
+        var cpuPct = res.cpu_used_percent != null ? Math.min(100, Math.max(0, res.cpu_used_percent)) : 0;
+        var memTotal = res.memory_total_mb || 1;
+        var memUsed = res.memory_used_mb || 0;
+        var memPct = Math.min(100, Math.round(memUsed / memTotal * 100));
+        var cpuBarCls = cpuPct > 80 ? 'high' : cpuPct > 50 ? 'mid' : 'low';
+        var memBarCls = memPct > 80 ? 'high' : memPct > 50 ? 'mid' : 'low';
+        var selected = (selectedTabNode === n.name) ? ' selected' : '';
+        html += '<div class="node-card ' + cls + selected + '" data-node-card="' + escapeHtml(n.name) + '">';
+        html += '<div class="node-card-header"><span class="node-card-name">' + escapeHtml(n.name) + '</span>';
+        html += '<span class="badge badge-' + cls + '">' + escapeHtml(st) + '</span></div>';
+        html += '<div class="node-card-ip">' + escapeHtml(n.address || '—') + '</div>';
+        html += '<div class="usage-label"><span>CPU ' + (res.cpu_cores || '?') + '코어</span><span>' + cpuPct.toFixed(1) + '%</span></div>';
+        html += '<div class="usage-bar"><div class="usage-bar-fill ' + cpuBarCls + '" style="width:' + cpuPct + '%"></div></div>';
+        html += '<div class="usage-label"><span>메모리</span><span>' + memUsed + '/' + memTotal + 'MB (' + memPct + '%)</span></div>';
+        html += '<div class="usage-bar"><div class="usage-bar-fill ' + memBarCls + '" style="width:' + memPct + '%"></div></div>';
+        html += '<div class="node-card-containers">컨테이너: ' + (n.container_count != null ? n.container_count : (res.containers_running || '—')) + '</div>';
+        html += '<div class="node-actions">';
+        if (st === 'cordoned') {
+          html += '<button type="button" class="btn btn-sm btn-success" data-node-uncordon="' + escapeHtml(n.name) + '">해제</button>';
+        } else if (st !== 'offline' && st !== 'unreachable') {
+          html += '<button type="button" class="btn btn-sm btn-warn" data-node-cordon="' + escapeHtml(n.name) + '">차단</button>';
+        }
+        html += '<button type="button" class="btn btn-sm btn-warn" data-node-drain="' + escapeHtml(n.name) + '">드레인</button>';
+        html += '<button type="button" class="btn btn-sm btn-danger" data-node-remove="' + escapeHtml(n.name) + '">제거</button>';
+        html += '</div></div>';
+      });
+      bar.innerHTML = html;
+
+      bar.querySelectorAll('[data-node-card]').forEach(function(el) {
+        el.addEventListener('click', function(e) {
+          if (e.target.closest('button')) return;
+          var name = this.getAttribute('data-node-card');
+          selectTab(name);
+        });
+      });
+      bar.querySelectorAll('[data-node-cordon]').forEach(function(el) {
+        el.addEventListener('click', function() { cordonNode(this.getAttribute('data-node-cordon')); });
+      });
+      bar.querySelectorAll('[data-node-uncordon]').forEach(function(el) {
+        el.addEventListener('click', function() { uncordonNode(this.getAttribute('data-node-uncordon')); });
+      });
+      bar.querySelectorAll('[data-node-drain]').forEach(function(el) {
+        el.addEventListener('click', function() { drainNode(this.getAttribute('data-node-drain')); });
+      });
+      bar.querySelectorAll('[data-node-remove]').forEach(function(el) {
+        el.addEventListener('click', function() { removeNode(this.getAttribute('data-node-remove')); });
+      });
+    }
+
+    /* ===== Node Management ===== */
+    async function cordonNode(name) {
+      try {
+        var r = await fetch(API + '/v1/cluster/nodes/' + encodeURIComponent(name) + '/cordon', { method: 'POST' });
+        var data = await r.json();
+        appendLog('노드 차단: ' + name, data);
+        loadAll();
+      } catch (e) { appendLog('노드 차단 실패', { success: false, message: e.message }); }
+    }
+    async function uncordonNode(name) {
+      try {
+        var r = await fetch(API + '/v1/cluster/nodes/' + encodeURIComponent(name) + '/uncordon', { method: 'POST' });
+        var data = await r.json();
+        appendLog('노드 차단 해제: ' + name, data);
+        loadAll();
+      } catch (e) { appendLog('노드 차단 해제 실패', { success: false, message: e.message }); }
+    }
+    async function drainNode(name) {
+      if (!confirm('노드 "' + name + '"의 모든 컨테이너를 다른 노드로 이전할까요?')) return;
+      try {
+        var r = await fetch(API + '/v1/cluster/nodes/' + encodeURIComponent(name) + '/drain', { method: 'POST' });
+        var data = await r.json();
+        appendLog('노드 드레인: ' + name, data);
+        loadAll();
+      } catch (e) { appendLog('노드 드레인 실패', { success: false, message: e.message }); }
+    }
+    async function removeNode(name) {
+      if (!confirm('노드 "' + name + '"을 클러스터에서 제거할까요?')) return;
+      try {
+        var r = await fetch(API + '/v1/cluster/nodes/' + encodeURIComponent(name), { method: 'DELETE' });
+        var data = await r.json();
+        appendLog('노드 제거: ' + name, data);
+        loadAll();
+      } catch (e) { appendLog('노드 제거 실패', { success: false, message: e.message }); }
+    }
+
+    /* ===== Node Tabs ===== */
+    function renderNodeTabs(status) {
+      var tabsEl = document.getElementById('nodeTabs');
+      if (!status || !status.nodes || !status.nodes.length) {
+        tabsEl.style.display = 'none';
+        return;
+      }
+      tabsEl.style.display = '';
+      var html = '<button type="button" class="tab' + (selectedTabNode === '__cluster__' ? ' active' : '') + '" data-tab-node="__cluster__">클러스터</button>';
+      status.nodes.forEach(function(n) {
+        var st = n.status || 'offline';
+        var cls = (st === 'healthy' || st === 'online') ? 'healthy' : (st === 'offline' || st === 'unreachable') ? 'offline' : 'degraded';
+        var active = selectedTabNode === n.name ? ' active' : '';
+        html += '<button type="button" class="tab' + active + '" data-tab-node="' + escapeHtml(n.name) + '"><span class="tab-status ' + cls + '"></span>' + escapeHtml(n.name) + '</button>';
+      });
+      tabsEl.innerHTML = html;
+      tabsEl.querySelectorAll('.tab').forEach(function(el) {
+        el.addEventListener('click', function() { selectTab(this.getAttribute('data-tab-node')); });
+      });
+    }
+    function selectTab(name) {
+      selectedTabNode = name;
+      document.querySelectorAll('.tab').forEach(function(el) {
+        el.classList.toggle('active', el.getAttribute('data-tab-node') === name);
+      });
+      document.querySelectorAll('.node-card').forEach(function(el) {
+        el.classList.toggle('selected', el.getAttribute('data-node-card') === name);
+      });
+      // Re-filter by switching target node for data fetch
+      if (name === '__cluster__') {
+        document.getElementById('targetNode').value = 'local';
+      } else {
+        var sel = document.getElementById('targetNode');
+        var opt = sel.querySelector('option[value="' + name + '"]');
+        if (opt) sel.value = name;
+        else sel.value = 'local';
+      }
+      localStorage.setItem('targetNode', document.getElementById('targetNode').value);
+      loadAll();
+    }
+
+    /* ===== Add Node Modal ===== */
+    function showAddNodeModal() {
+      var overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      overlay.innerHTML =
+        '<div class="modal-content">' +
+        '<div class="modal-header"><span>노드 추가</span><button type="button" class="modal-close" aria-label="닫기">&times;</button></div>' +
+        '<div class="modal-body">' +
+        '<div class="form-group"><label>노드 이름</label><input type="text" id="modalNodeName" placeholder="예: node-a"></div>' +
+        '<div class="form-group"><label>IP 주소</label><input type="text" id="modalNodeIP" placeholder="예: 10.0.0.12"></div>' +
+        '<div class="form-group"><label>포트</label><input type="number" id="modalNodePort" value="8000" min="1" max="65535"></div>' +
+        '<div class="form-group"><label>에이전트 토큰</label><input type="password" id="modalNodeToken" placeholder="ORCHESTRATOR_API_TOKEN 값"></div>' +
+        '<div class="modal-status" id="modalNodeStatus"></div>' +
+        '</div>' +
+        '<div class="modal-footer">' +
+        '<button type="button" class="btn btn-sm btn-outline" id="modalNodeTest">연결 테스트</button>' +
+        '<button type="button" class="btn btn-sm btn-outline" id="modalNodeCancel">취소</button>' +
+        '<button type="button" class="btn btn-sm" id="modalNodeSave">저장</button>' +
+        '</div></div>';
+      document.body.appendChild(overlay);
+
+      function close() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }
+      overlay.addEventListener('click', function(e) { if (e.target === overlay) close(); });
+      overlay.querySelector('.modal-close').addEventListener('click', close);
+      overlay.querySelector('#modalNodeCancel').addEventListener('click', close);
+
+      overlay.querySelector('#modalNodeTest').addEventListener('click', async function() {
+        var ip = overlay.querySelector('#modalNodeIP').value.trim();
+        var port = overlay.querySelector('#modalNodePort').value.trim() || '8000';
+        var token = overlay.querySelector('#modalNodeToken').value.trim();
+        var statusEl = overlay.querySelector('#modalNodeStatus');
+        if (!ip) { statusEl.textContent = 'IP 주소를 입력하세요.'; statusEl.className = 'modal-status fail'; return; }
+        statusEl.textContent = '연결 테스트 중…'; statusEl.className = 'modal-status';
+        try {
+          var url = 'http://' + ip + ':' + port + '/health';
+          var r = await fetch(url, { headers: token ? { 'Authorization': 'Bearer ' + token } : {} });
+          if (r.ok) { statusEl.textContent = '연결 성공'; statusEl.className = 'modal-status ok'; }
+          else { statusEl.textContent = '응답 오류: ' + r.status; statusEl.className = 'modal-status fail'; }
+        } catch (e) { statusEl.textContent = '연결 실패: ' + e.message; statusEl.className = 'modal-status fail'; }
+      });
+
+      overlay.querySelector('#modalNodeSave').addEventListener('click', async function() {
+        var name = overlay.querySelector('#modalNodeName').value.trim();
+        var ip = overlay.querySelector('#modalNodeIP').value.trim();
+        var port = overlay.querySelector('#modalNodePort').value.trim() || '8000';
+        var token = overlay.querySelector('#modalNodeToken').value.trim();
+        var statusEl = overlay.querySelector('#modalNodeStatus');
+        if (!name) { statusEl.textContent = '노드 이름을 입력하세요.'; statusEl.className = 'modal-status fail'; return; }
+        if (!ip) { statusEl.textContent = 'IP 주소를 입력하세요.'; statusEl.className = 'modal-status fail'; return; }
+        var base_url = 'http://' + ip + ':' + port;
+        try {
+          var r = await fetch(API + '/v1/cluster/nodes', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name, base_url: base_url, address: ip + ':' + port, token: token })
+          });
+          var data = await r.json();
+          appendLog('노드 추가: ' + name, data);
+          close();
+          loadAll();
+        } catch (e) {
+          statusEl.textContent = '저장 실패: ' + e.message;
+          statusEl.className = 'modal-status fail';
+        }
+      });
+    }
+
+    /* ===== Migration Confirmation Modal ===== */
+    function showMigrateModal(containerName, containerId, srcNode, dstNode, serviceName) {
+      var overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      overlay.innerHTML =
+        '<div class="modal-content">' +
+        '<div class="modal-header"><span>컨테이너 마이그레이션</span><button type="button" class="modal-close" aria-label="닫기">&times;</button></div>' +
+        '<div class="modal-body">' +
+        '<p>"<strong>' + escapeHtml(containerName) + '</strong>"을(를) <strong>' + escapeHtml(srcNode) + '</strong>에서 <strong>' + escapeHtml(dstNode) + '</strong>(으)로 마이그레이션할까요?</p>' +
+        '</div>' +
+        '<div class="modal-footer">' +
+        '<button type="button" class="btn btn-sm btn-outline" id="migModalCancel">취소</button>' +
+        '<button type="button" class="btn btn-sm" id="migModalConfirm">마이그레이션</button>' +
+        '</div></div>';
+      document.body.appendChild(overlay);
+
+      function close() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }
+      overlay.addEventListener('click', function(e) { if (e.target === overlay) close(); });
+      overlay.querySelector('.modal-close').addEventListener('click', close);
+      overlay.querySelector('#migModalCancel').addEventListener('click', close);
+      overlay.querySelector('#migModalConfirm').addEventListener('click', async function() {
+        close();
+        try {
+          var r = await fetch(API + '/v1/cluster/migrate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ container_id: containerId, container_name: containerName, source_node: srcNode, destination_node: dstNode, service_name: serviceName || '' })
+          });
+          var data = await r.json();
+          appendLog('마이그레이션: ' + containerName + ' (' + srcNode + ' -> ' + dstNode + ')', data);
+          loadAll();
+        } catch (e) {
+          appendLog('마이그레이션 실패', { success: false, message: e.message });
+        }
+      });
+    }
+
+    /* ===== Container Placement Grid ===== */
+    function renderPlacementGrid(placements, status) {
+      var section = document.getElementById('placementSection');
+      var grid = document.getElementById('placementGrid');
+      if (!status || !status.nodes || !status.nodes.length) {
+        section.style.display = 'none';
+        return;
+      }
+      section.style.display = '';
+      // Update placement section title with count
+      var titleEl = section.querySelector('.panel-title');
+      if (titleEl) {
+        var totalP = Array.isArray(placements) ? placements.length : 0;
+        titleEl.textContent = '컨테이너 배치 현황 (' + totalP + '개) — 드래그하여 마이그레이션';
+      }
+      var nodeMap = {};
+      status.nodes.forEach(function(n) { nodeMap[n.name] = n; });
+
+      // Group placements by node
+      var byNode = {};
+      status.nodes.forEach(function(n) { byNode[n.name] = []; });
+      (Array.isArray(placements) ? placements : []).forEach(function(p) {
+        var node = p.node || p.node_name || 'unknown';
+        if (!byNode[node]) byNode[node] = [];
+        byNode[node].push(p);
+      });
+
+      var html = '';
+      status.nodes.forEach(function(n) {
+        var st = n.status || 'offline';
+        var res = n.resources || {};
+        var cpuPct = res.cpu_used_percent != null ? Math.min(100, res.cpu_used_percent) : 0;
+        var memTotal = res.memory_total_mb || 1;
+        var memUsed = res.memory_used_mb || 0;
+        var memPct = Math.min(100, Math.round(memUsed / memTotal * 100));
+        var cpuBarCls = cpuPct > 80 ? 'high' : cpuPct > 50 ? 'mid' : 'low';
+        var memBarCls = memPct > 80 ? 'high' : memPct > 50 ? 'mid' : 'low';
+        var cntRunning = res.containers_running || 0;
+        var cntTotal = res.containers_total || 0;
+        html += '<div class="placement-column" data-place-node="' + escapeHtml(n.name) + '">';
+        html += '<div class="placement-column-header">';
+        html += '<div style="display:flex;justify-content:space-between;align-items:center;">';
+        html += '<span>' + escapeHtml(n.name) + ' <span class="badge badge-' + escapeHtml(st) + '">' + escapeHtml(st) + '</span></span>';
+        html += '<span class="text-muted" style="font-size:0.7rem;">' + cntRunning + '/' + cntTotal + '</span>';
+        html += '</div>';
+        html += '<div class="node-mini-bars">';
+        html += '<div class="usage-label"><span>CPU ' + cpuPct.toFixed(1) + '%</span><span>' + (res.cpu_cores || '?') + '코어</span></div>';
+        html += '<div class="usage-bar"><div class="usage-bar-fill ' + cpuBarCls + '" style="width:' + cpuPct + '%"></div></div>';
+        html += '<div class="usage-label" style="margin-top:2px;"><span>MEM ' + memPct + '%</span><span>' + memUsed + '/' + memTotal + 'MB</span></div>';
+        html += '<div class="usage-bar"><div class="usage-bar-fill ' + memBarCls + '" style="width:' + memPct + '%"></div></div>';
+        html += '</div></div>';
+        html += '<div class="placement-column-body" data-drop-node="' + escapeHtml(n.name) + '">';
+        var nodeContainers = byNode[n.name] || [];
+        if (nodeContainers.length === 0) {
+          html += '<div class="text-muted" style="font-size:0.75rem;text-align:center;padding:1rem 0;">컨테이너 없음</div>';
+        }
+        nodeContainers.forEach(function(p) {
+          var svc = p.service_name || p.service || p.container_name || '';
+          var colorCls = getServiceColor(svc);
+          var cName = p.container_name || p.name || p.container_id || '';
+          var pStatus = p.status || 'unknown';
+          var statusDot = pStatus === 'running' ? '🟢' : '🔴';
+          html += '<div class="container-chip ' + colorCls + '" draggable="true" data-drag-cid="' + escapeHtml(p.container_id || '') + '" data-drag-name="' + escapeHtml(cName) + '" data-drag-src="' + escapeHtml(n.name) + '" data-drag-svc="' + escapeHtml(svc) + '" title="' + escapeHtml(cName + ' (' + pStatus + ') - ' + (p.image || '')) + '">' + statusDot + ' ' + escapeHtml(cName) + '</div>';
+        });
+        html += '</div></div>';
+      });
+      grid.innerHTML = html;
+
+      // Drag and drop
+      var dragData = null;
+      grid.querySelectorAll('.container-chip[draggable]').forEach(function(chip) {
+        chip.addEventListener('dragstart', function(e) {
+          dragData = {
+            cid: this.getAttribute('data-drag-cid'),
+            name: this.getAttribute('data-drag-name'),
+            src: this.getAttribute('data-drag-src'),
+            svc: this.getAttribute('data-drag-svc') || ''
+          };
+          this.classList.add('dragging');
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', dragData.cid);
+        });
+        chip.addEventListener('dragend', function() {
+          this.classList.remove('dragging');
+          dragData = null;
+          grid.querySelectorAll('.placement-column').forEach(function(col) { col.classList.remove('drag-over'); });
+        });
+      });
+      grid.querySelectorAll('[data-drop-node]').forEach(function(zone) {
+        zone.addEventListener('dragover', function(e) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          this.closest('.placement-column').classList.add('drag-over');
+        });
+        zone.addEventListener('dragleave', function(e) {
+          if (!this.contains(e.relatedTarget)) {
+            this.closest('.placement-column').classList.remove('drag-over');
+          }
+        });
+        zone.addEventListener('drop', function(e) {
+          e.preventDefault();
+          this.closest('.placement-column').classList.remove('drag-over');
+          var dstNode = this.getAttribute('data-drop-node');
+          if (!dragData || dragData.src === dstNode) return;
+          showMigrateModal(dragData.name, dragData.cid, dragData.src, dstNode, dragData.svc);
+        });
+      });
+    }
+
+    /* ===== Migration Status Panel ===== */
+    function renderMigrations(migrations) {
+      var panel = document.getElementById('migrationPanel');
+      var body = document.getElementById('migrationBody');
+      if (!Array.isArray(migrations) || !migrations.length) {
+        panel.classList.remove('active');
+        return;
+      }
+      panel.classList.add('active');
+      var steps = ['exporting', 'transferring', 'importing', 'verifying', 'complete'];
+      var stepLabels = { exporting: '내보내기', transferring: '전송 중', importing: '가져오기', verifying: '검증 중', complete: '완료' };
+      var html = '';
+      migrations.forEach(function(m) {
+        var currentStep = (m.step || m.status || 'exporting').toLowerCase();
+        var stepIdx = steps.indexOf(currentStep);
+        if (stepIdx < 0) stepIdx = 0;
+        var pct = Math.round(((stepIdx + 1) / steps.length) * 100);
+        var isComplete = currentStep === 'complete';
+        var isError = currentStep === 'error' || currentStep === 'failed';
+        if (isError) pct = 100;
+        var fillCls = isError ? 'error' : isComplete ? 'complete' : '';
+        html += '<div class="migration-item">';
+        html += '<div class="migration-info"><span class="mig-name">' + escapeHtml(m.container_name || m.container_id || '—') + '</span>';
+        html += '<div class="mig-route">' + escapeHtml(m.source_node || '—') + ' → ' + escapeHtml(m.destination_node || '—') + '</div></div>';
+        html += '<div class="migration-progress"><div class="migration-progress-bar"><div class="migration-progress-fill ' + fillCls + '" style="width:' + pct + '%"></div></div>';
+        html += '<div class="migration-step">' + escapeHtml(stepLabels[currentStep] || currentStep) + '</div></div>';
+        html += '<div class="migration-status-text" style="color:' + (isError ? 'var(--danger)' : isComplete ? 'var(--success)' : 'var(--accent)') + '">' + pct + '%</div>';
+        html += '</div>';
+      });
+      body.innerHTML = html;
+    }
+    async function loadMigrations() {
+      try {
+        var resp = await fetch(API + '/v1/cluster/migrations');
+        if (!resp.ok) { renderMigrations([]); return; }
+        var data = await resp.json();
+        renderMigrations(data.migrations || data || []);
+      } catch (e) { renderMigrations([]); }
+    }
+
+    /* ===== Placements ===== */
+    async function loadPlacements() {
+      try {
+        var resp = await fetch(API + '/v1/cluster/placements');
+        if (!resp.ok) { allPlacements = []; return; }
+        var data = await resp.json();
+        allPlacements = data.placements || data || [];
+      } catch (e) { allPlacements = []; }
+    }
+
+    /* ===== Cluster Status ===== */
+    async function loadClusterStatus() {
+      try {
+        var resp = await fetch(API + '/v1/cluster/status');
+        if (!resp.ok) { clusterStatus = null; return; }
+        clusterStatus = await resp.json();
+      } catch (e) { clusterStatus = null; }
+    }
+
+    /* ===== Existing render functions ===== */
     function renderSystem(data) {
       if (!data) return;
       const docker = data.docker || {};
@@ -182,16 +936,145 @@
     }
 
     function renderServices(data) {
-      if (!Array.isArray(data) || data.length === 0) {
-        document.getElementById('servicesPanel').innerHTML = '<p class="text-muted">관리 중인 서비스 없음</p>';
+      var panel = document.getElementById('servicesPanel');
+      // Use cluster services data if available for accurate multi-node view
+      var clusterSvcs = (clusterStatus && clusterStatus.services) ? clusterStatus.services : null;
+      if (clusterSvcs && Object.keys(clusterSvcs).length > 0) {
+        var html = '<table><thead><tr><th>서비스</th><th>실행</th><th>노드 배치</th><th>스케일</th><th>동작</th></tr></thead><tbody>';
+        Object.keys(clusterSvcs).forEach(function(name) {
+          var s = clusterSvcs[name];
+          var nodeList = Object.keys(s.nodes || {}).map(function(n) {
+            return n + ':' + (s.nodes[n].running || 0);
+          }).join(', ');
+          html += '<tr>';
+          html += '<td><strong>' + escapeHtml(name) + '</strong></td>';
+          html += '<td><span class="badge badge-running">' + (s.running || 0) + '/' + (s.total || 0) + '</span></td>';
+          html += '<td style="font-size:0.8rem;">' + escapeHtml(nodeList) + '</td>';
+          html += '<td><span class="replica-control">';
+          html += '<input type="number" min="0" value="' + (s.total || 0) + '" data-csvc-input="' + escapeHtml(name) + '" style="width:3.5rem;">';
+          html += '<button type="button" class="btn btn-sm" data-csvc-scale="' + escapeHtml(name) + '">적용</button>';
+          html += '</span></td>';
+          html += '<td><button type="button" class="btn btn-sm btn-danger" data-csvc-stop="' + escapeHtml(name) + '">중지</button></td>';
+          html += '</tr>';
+        });
+        html += '</tbody></table>';
+        panel.innerHTML = html;
+
+        // Cluster scale button
+        panel.querySelectorAll('[data-csvc-scale]').forEach(function(el) {
+          el.addEventListener('click', async function() {
+            var svc = this.getAttribute('data-csvc-scale');
+            var input = panel.querySelector('input[data-csvc-input="' + svc + '"]');
+            var n = parseInt(input.value, 10);
+            if (isNaN(n) || n < 0) { alert('0 이상의 숫자를 입력하세요.'); return; }
+            try {
+              var r = await fetch(API + '/v1/cluster/scale', {
+                method: 'POST', headers: {'Content-Type':'application/json'},
+                body: JSON.stringify({service_name: svc, replicas: n})
+              });
+              var data = await r.json();
+              appendLog('클러스터 스케일: ' + svc + ' -> ' + n, data);
+              loadAll();
+            } catch(e) { appendLog('스케일 실패', {success:false, message:e.message}); }
+          });
+        });
+        // Cluster stop button
+        panel.querySelectorAll('[data-csvc-stop]').forEach(function(el) {
+          el.addEventListener('click', async function() {
+            var svc = this.getAttribute('data-csvc-stop');
+            if (!confirm(svc + ' 서비스의 모든 컨테이너를 중지할까요?')) return;
+            try {
+              var r = await fetch(API + '/v1/cluster/stop', {
+                method: 'POST', headers: {'Content-Type':'application/json'},
+                body: JSON.stringify({service_name: svc})
+              });
+              var data = await r.json();
+              appendLog('클러스터 중지: ' + svc, data);
+              loadAll();
+            } catch(e) { appendLog('중지 실패', {success:false, message:e.message}); }
+          });
+        });
         return;
       }
-      let html = '<table><thead><tr><th>서비스</th><th>이미지</th><th>레플리카</th><th>메모리</th><th>CPU</th><th>상태</th></tr></thead><tbody>';
-      data.forEach(s => {
-        html += '<tr><td>' + escapeHtml(s.name) + '</td><td>' + escapeHtml(s.image) + '</td><td>' + (s.replicas ?? 0) + '</td><td>' + escapeHtml(s.memory_limit || '—') + '</td><td>' + escapeHtml(s.cpu_limit || '—') + '</td><td><span class="badge badge-' + (s.status === 'running' ? 'running' : 'stopped') + '">' + escapeHtml(s.status) + '</span></td></tr>';
+      // Merged services list (local + cluster)
+      if (!Array.isArray(data) || data.length === 0) {
+        panel.innerHTML = '<p class="text-muted">관리 중인 서비스 없음</p>';
+        return;
+      }
+      html = '<table><thead><tr><th>서비스</th><th>이미지</th><th>실행</th><th>노드 배치</th><th>URL</th><th>스케일</th><th>동작</th></tr></thead><tbody>';
+      data.forEach(function(s) {
+        var running = s.running != null ? s.running : (s.status === 'running' ? s.replicas : 0);
+        var total = s.replicas != null ? s.replicas : 0;
+        var nodesStr = (s.nodes && s.nodes.length) ? s.nodes.join(', ') : '—';
+        // Build URL: show node IPs where service is running
+        var urlHtml = '—';
+        if (s.nodes && s.nodes.length) {
+          var nodeIps = [];
+          if (clusterStatus && clusterStatus.nodes) {
+            clusterStatus.nodes.forEach(function(n) {
+              var match = (s.nodes || []).find(function(ns) { return ns.startsWith(n.name + ':'); });
+              if (match) {
+                var ip = (n.address || '').split(':')[0];
+                if (ip) nodeIps.push(ip);
+              }
+            });
+          }
+          if (nodeIps.length) {
+            urlHtml = nodeIps.map(function(ip) {
+              var url = 'http://' + ip + '/' + s.name + '/';
+              return '<a href="' + url + '" target="_blank" style="color:var(--accent);font-size:0.8rem;">' + ip + '</a>';
+            }).join(', ');
+          }
+        }
+        html += '<tr>';
+        html += '<td><strong>' + escapeHtml(s.name) + '</strong></td>';
+        html += '<td style="font-size:0.8rem;">' + escapeHtml(s.image || '—') + '</td>';
+        html += '<td><span class="badge badge-' + (running > 0 ? 'running' : 'stopped') + '">' + running + '/' + total + '</span></td>';
+        html += '<td style="font-size:0.8rem;">' + escapeHtml(nodesStr) + '</td>';
+        html += '<td>' + urlHtml + '</td>';
+        html += '<td><span class="replica-control">';
+        html += '<input type="number" min="0" value="' + total + '" data-csvc-input="' + escapeHtml(s.name) + '" style="width:3.5rem;">';
+        html += '<button type="button" class="btn btn-sm" data-csvc-scale="' + escapeHtml(s.name) + '">적용</button>';
+        html += '</span></td>';
+        html += '<td><button type="button" class="btn btn-sm btn-danger" data-csvc-stop="' + escapeHtml(s.name) + '">중지</button></td>';
+        html += '</tr>';
       });
       html += '</tbody></table>';
-      document.getElementById('servicesPanel').innerHTML = html;
+      panel.innerHTML = html;
+
+      // Scale/Stop event bindings
+      panel.querySelectorAll('[data-csvc-scale]').forEach(function(el) {
+        el.addEventListener('click', async function() {
+          var svc = this.getAttribute('data-csvc-scale');
+          var input = panel.querySelector('input[data-csvc-input="' + svc + '"]');
+          var n = parseInt(input.value, 10);
+          if (isNaN(n) || n < 0) { alert('0 이상의 숫자를 입력하세요.'); return; }
+          try {
+            var r = await fetch(API + '/v1/cluster/scale', {
+              method: 'POST', headers: {'Content-Type':'application/json'},
+              body: JSON.stringify({service_name: svc, replicas: n})
+            });
+            var data = await r.json();
+            appendLog('클러스터 스케일: ' + svc + ' -> ' + n, data);
+            loadAll();
+          } catch(e) { appendLog('스케일 실패', {success:false, message:e.message}); }
+        });
+      });
+      panel.querySelectorAll('[data-csvc-stop]').forEach(function(el) {
+        el.addEventListener('click', async function() {
+          var svc = this.getAttribute('data-csvc-stop');
+          if (!confirm(svc + ' 서비스의 모든 컨테이너를 중지할까요?')) return;
+          try {
+            var r = await fetch(API + '/v1/cluster/stop', {
+              method: 'POST', headers: {'Content-Type':'application/json'},
+              body: JSON.stringify({service_name: svc})
+            });
+            var data = await r.json();
+            appendLog('클러스터 중지: ' + svc, data);
+            loadAll();
+          } catch(e) { appendLog('중지 실패', {success:false, message:e.message}); }
+        });
+      });
     }
 
     function renderImages(data) {
@@ -200,7 +1083,6 @@
         panel.innerHTML = '<p class="text-muted">이미지 없음</p>';
         return;
       }
-      // 펼침 메뉴(셀렉트 박스) + 레플리카 수 + 실행/삭제 버튼
       let html = '<div class="field"><label>이미지 선택</label><select id="imageSelect">';
       data.forEach((img, idx) => {
         const tag = (img.tags && img.tags[0]) ? img.tags[0] : (img.id || '');
@@ -303,11 +1185,18 @@
       function rowCells(c) {
         var st = c.stats;
         var name = c.name || c.id;
-        var cells = '<td>' + escapeHtml(name) + '</td><td>' + escapeHtml(c.image || '') + '</td>';
+        var cells = '<td><span class="c-name" data-c-inspect="' + escapeHtml(c.id) + '">' + escapeHtml(name) + '</span></td><td>' + escapeHtml(c.image || '') + '</td>';
         cells += '<td><span class="badge badge-' + (c.state === 'running' ? 'running' : 'stopped') + '">' + escapeHtml(c.status || c.state) + '</span></td>';
         cells += '<td>' + (c.managed ? '<span class="badge badge-managed">Y</span>' : '—') + '</td>';
         cells += '<td>' + escapeHtml(c.service || '—') + '</td>';
         cells += '<td>' + cellCpu(st) + '</td><td>' + cellMem(st) + '</td>';
+        var net = '—';
+        if (st && (st.net_rx_mb != null || st.net_tx_mb != null)) {
+          var rx = st.net_rx_mb != null ? st.net_rx_mb : 0;
+          var tx = st.net_tx_mb != null ? st.net_tx_mb : 0;
+          net = rx.toFixed(2) + ' / ' + tx.toFixed(2) + ' MB';
+        }
+        cells += '<td>' + net + '</td>';
         cells += '<td>';
         if (c.state === 'running') cells += '<button type="button" class="btn btn-sm btn-warn" data-c-stop="' + escapeHtml(c.id) + '">중지</button> ';
         cells += '<button type="button" class="btn btn-sm btn-danger" data-c-remove="' + escapeHtml(c.id) + '">삭제</button>';
@@ -315,7 +1204,8 @@
         return cells;
       }
 
-      var html = '<table><thead><tr><th>이름</th><th>이미지</th><th>상태</th><th>관리</th><th>서비스</th><th>CPU%</th><th>메모리</th><th>동작</th></tr></thead><tbody>';
+      var html = '<div class="containers-toolbar"><button type="button" class="btn btn-sm btn-warn" id="btnStopSelected">선택 중지</button><button type="button" class="btn btn-sm btn-danger" id="btnRemoveSelected" style="margin-left:0.5rem;">선택 삭제</button></div>';
+      html += '<table><thead><tr><th><input type="checkbox" id="containersSelectAll"></th><th>이름</th><th>이미지</th><th>상태</th><th>관리</th><th>서비스</th><th>CPU%</th><th>메모리</th><th>네트워크 (RX / TX)</th><th>동작</th></tr></thead><tbody>';
 
       groupNames.forEach(function(svc) {
         var list = byService[svc];
@@ -337,6 +1227,7 @@
         var memAgg = (memUsage || memLimit) ? memUsage.toFixed(1) + ' / ' + (memLimit ? memLimit.toFixed(1) : '?') + ' MB' : '—';
         var isExpanded = expandedGroups.has(svc);
         html += '<tr class="group-row" data-group-row="' + escapeHtml(svc) + '">';
+        html += '<td></td>';
         html += '<td><button type="button" class="toggle-group" data-group-toggle="' + escapeHtml(svc) + '" aria-label="펼치기/접기">' + (isExpanded ? '▼' : '▶') + '</button> ';
         html += escapeHtml(svc) + ' <span class="text-muted">(' + n + ')</span></td>';
         html += '<td>' + escapeHtml(first.image || '') + '</td>';
@@ -344,18 +1235,29 @@
         html += '<td>' + (first.managed ? '<span class="badge badge-managed">Y</span>' : '—') + '</td>';
         html += '<td>' + escapeHtml(svc) + '</td>';
         html += '<td>' + cpuAgg + '</td><td>' + memAgg + '</td>';
+        var netRx = 0, netTx = 0, netCnt = 0;
+        list.forEach(function(c) {
+          if (c.stats && (c.stats.net_rx_mb != null || c.stats.net_tx_mb != null)) {
+            netRx += c.stats.net_rx_mb || 0;
+            netTx += c.stats.net_tx_mb || 0;
+            netCnt++;
+          }
+        });
+        var netAgg = (netRx || netTx) ? netRx.toFixed(2) + ' / ' + netTx.toFixed(2) + ' MB' : '—';
+        html += '<td>' + netAgg + '</td>';
         html += '<td><span class="replica-control">';
         html += '<input type="number" min="0" value="' + replicaInputValue + '" data-replica-input="' + escapeHtml(svc) + '"> ';
         html += '<button type="button" class="btn btn-sm" data-replica-apply="' + escapeHtml(svc) + '">적용</button> ';
         html += '<button type="button" class="btn btn-sm" data-c-scale="' + escapeHtml(svc) + '">스케일</button>';
         html += '</span></td></tr>';
         list.forEach(function(c) {
-          html += '<tr class="group-member' + (isExpanded ? ' expanded' : '') + '" data-group="' + escapeHtml(svc) + '">' + rowCells(c) + '</tr>';
+          html += '<tr class="group-member' + (isExpanded ? ' expanded' : '') + '" data-group="' + escapeHtml(svc) + '">';
+          html += '<td><input type="checkbox" class="c-select" data-c-id="' + escapeHtml(c.id) + '"></td>' + rowCells(c) + '</tr>';
         });
       });
 
       singles.forEach(function(c) {
-        html += '<tr>' + rowCells(c) + '</tr>';
+        html += '<tr><td><input type="checkbox" class="c-select" data-c-id="' + escapeHtml(c.id) + '"></td>' + rowCells(c) + '</tr>';
       });
 
       html += '</tbody></table>';
@@ -391,10 +1293,110 @@
           scaleServiceWith(svc, n);
         });
       });
+
+      var selectAll = panel.querySelector('#containersSelectAll');
+      if (selectAll) {
+        selectAll.addEventListener('change', function() {
+          var checked = this.checked;
+          panel.querySelectorAll('input.c-select').forEach(function(cb) {
+            cb.checked = checked;
+          });
+        });
+      }
+      var btnStopSelected = panel.querySelector('#btnStopSelected');
+      if (btnStopSelected) {
+        btnStopSelected.addEventListener('click', function() {
+          var ids = [];
+          panel.querySelectorAll('input.c-select:checked').forEach(function(cb) {
+            var id = cb.getAttribute('data-c-id');
+            if (id) ids.push(id);
+          });
+          if (!ids.length) { alert('선택된 컨테이너가 없습니다.'); return; }
+          (async function() {
+            for (const id of ids) {
+              try {
+                const r = await apiFetch('/v1/containers/' + encodeURIComponent(id) + '/stop', { method: 'POST' });
+                const data = await r.json();
+                appendLog('컨테이너 중지: ' + id, data);
+              } catch (e) {
+                appendLog('컨테이너 중지', { success: false, message: e.message });
+              }
+            }
+            loadAll();
+          })();
+        });
+      }
+      var btnRemoveSelected = panel.querySelector('#btnRemoveSelected');
+      if (btnRemoveSelected) {
+        btnRemoveSelected.addEventListener('click', function() {
+          var ids = [];
+          panel.querySelectorAll('input.c-select:checked').forEach(function(cb) {
+            var id = cb.getAttribute('data-c-id');
+            if (id) ids.push(id);
+          });
+          if (!ids.length) { alert('선택된 컨테이너가 없습니다.'); return; }
+          if (!confirm('선택된 컨테이너 ' + ids.length + '개를 삭제할까요?')) return;
+          (async function() {
+            for (const id of ids) {
+              try {
+                const r = await apiFetch('/v1/containers/' + encodeURIComponent(id), { method: 'DELETE' });
+                const data = await r.json();
+                appendLog('컨테이너 삭제: ' + id, data);
+              } catch (e) {
+                appendLog('컨테이너 삭제', { success: false, message: e.message });
+              }
+            }
+            loadAll();
+          })();
+        });
+      }
+
+      // Click name to show docker inspect modal
+      panel.querySelectorAll('.c-name[data-c-inspect]').forEach(function(el) {
+        el.addEventListener('click', async function() {
+          var id = this.getAttribute('data-c-inspect');
+          if (!id) return;
+          var text;
+          try {
+            const data = await fetchJson('/v1/containers/' + encodeURIComponent(id) + '/inspect');
+            var d = data.details || data;
+            var attrs = d.attrs || d;
+            text = JSON.stringify(attrs, null, 2);
+          } catch (e) {
+            text = 'inspect 실패: ' + e.message;
+          }
+          showInspectModal(id, text);
+        });
+      });
+    }
+
+    function showInspectModal(id, text) {
+      var overlay = document.createElement('div');
+      overlay.className = 'inspect-overlay';
+      overlay.innerHTML =
+        '<div class="inspect-modal">' +
+        '<div class="inspect-modal-header">' +
+        '<div class="inspect-modal-title">컨테이너 inspect: ' + escapeHtml(id) + '</div>' +
+        '<button type="button" class="inspect-modal-close" aria-label="닫기">&times;</button>' +
+        '</div>' +
+        '<div class="inspect-modal-body"><pre></pre></div>' +
+        '</div>';
+      var pre;
+      document.body.appendChild(overlay);
+      pre = overlay.querySelector('.inspect-modal-body pre');
+      if (pre) pre.textContent = text;
+      function close() {
+        if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      }
+      overlay.addEventListener('click', function(e) {
+        if (e.target === overlay) close();
+      });
+      var btn = overlay.querySelector('.inspect-modal-close');
+      if (btn) btn.addEventListener('click', close);
     }
 
     function scaleServiceWith(serviceName, replicas) {
-      fetch(API + '/v1/services/scale', {
+      apiFetch('/v1/services/scale', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ service_name: serviceName, replicas: replicas })
@@ -427,7 +1429,7 @@
       const dryRun = document.getElementById('dryRun').checked;
       input.value = '';
       try {
-        const res = await fetch(API + '/v1/command', {
+        const res = await apiFetch('/v1/command', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ command: cmd, dry_run: dryRun })
@@ -449,7 +1451,7 @@
       if (opts.user) body.user = opts.user;
       if (opts.volume_mode) body.volume_mode = opts.volume_mode;
       try {
-        const r = await fetch(API + '/v1/containers/run', {
+        const r = await apiFetch('/v1/containers/run', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body)
@@ -465,7 +1467,7 @@
     async function removeImage(id) {
       if (!confirm('이미지 "' + id + '" 를 삭제할까요?')) return;
       try {
-        const r = await fetch(API + '/v1/images/' + encodeURIComponent(id), { method: 'DELETE' });
+        const r = await apiFetch('/v1/images/' + encodeURIComponent(id), { method: 'DELETE' });
         const data = await r.json();
         appendLog('이미지 삭제: ' + id, data);
         loadAll();
@@ -476,7 +1478,7 @@
 
     async function stopContainer(id) {
       try {
-        const r = await fetch(API + '/v1/containers/' + encodeURIComponent(id) + '/stop', { method: 'POST' });
+        const r = await apiFetch('/v1/containers/' + encodeURIComponent(id) + '/stop', { method: 'POST' });
         const data = await r.json();
         appendLog('컨테이너 중지: ' + id, data);
         loadAll();
@@ -494,7 +1496,7 @@
         return;
       }
       try {
-        const r = await fetch(API + '/v1/services/scale', {
+        const r = await apiFetch('/v1/services/scale', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ service_name: serviceName, replicas: n })
@@ -510,7 +1512,7 @@
     async function removeContainer(id) {
       if (!confirm('컨테이너 "' + id + '" 를 삭제할까요?')) return;
       try {
-        const r = await fetch(API + '/v1/containers/' + encodeURIComponent(id), { method: 'DELETE' });
+        const r = await apiFetch('/v1/containers/' + encodeURIComponent(id), { method: 'DELETE' });
         const data = await r.json();
         appendLog('컨테이너 삭제: ' + id, data);
         loadAll();
@@ -533,58 +1535,166 @@
 
     async function loadAll() {
       try {
-        const [health, system, services, containersResp, images] = await Promise.all([
-          fetch(API + '/health').then(r => r.ok ? r.json() : null).catch(() => null),
-          fetchJson('/v1/system'),
-          fetchJson('/v1/services'),
-          fetchJson('/v1/containers?stats=true'),
-          fetchJson('/v1/images')
+        await loadNodes();
+      } catch(e) { console.warn('loadNodes error:', e); }
+
+      // Load cluster data (non-blocking)
+      try {
+        await Promise.all([loadClusterStatus(), loadAlerts(), loadMigrations(), loadPlacements()]);
+      } catch(e) { console.warn('cluster data error:', e); }
+
+      // Load main data - always fetch from local to avoid proxy issues
+      var health = null, system = null, services = null, containersResp = null, images = null;
+      try {
+        [health, system, services, containersResp, images] = await Promise.all([
+          fetch(API + '/health').then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }),
+          fetch(API + '/v1/system').then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }),
+          fetch(API + '/v1/services').then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }),
+          fetch(API + '/v1/containers?stats=true').then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }),
+          fetch(API + '/v1/images').then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; })
         ]);
-        updateOperatorStatus(health);
-        renderSystem(system);
-        renderServices(services);
-        let containers = containersResp;
-        let containersError = null;
+      } catch(e) { console.warn('main data error:', e); }
+
+      try { updateOperatorStatus(health); } catch(e) { console.warn('renderHealth error:', e); }
+      try { renderSystem(system); } catch(e) { console.warn('renderSystem error:', e); }
+      try { renderServices(services); } catch(e) { console.warn('renderServices error:', e); }
+
+      try {
+        var containers = containersResp;
+        var containersError = null;
         if (containersResp && typeof containersResp === 'object' && 'containers' in containersResp) {
           containers = containersResp.containers || [];
           containersError = containersResp.error || null;
         }
         renderContainers(Array.isArray(containers) ? containers : [], containersError, services);
-        renderImages(images);
-        setLastUpdated();
-      } catch (e) {
-        updateOperatorStatus(null);
-        document.getElementById('systemPanel').innerHTML = '<p class="error-msg">로드 실패: ' + escapeHtml(e.message) + '</p>';
-        renderContainers([], e.message);
-      }
+      } catch(e) { console.warn('renderContainers error:', e); }
+
+      try { renderImages(images); } catch(e) { console.warn('renderImages error:', e); }
+
+      // Cluster UI
+      try { renderClusterHealthBadge(clusterStatus); } catch(e) { console.warn('renderHealthBadge error:', e); }
+      try { renderClusterBar(clusterStatus); } catch(e) { console.warn('renderClusterBar error:', e); }
+      try { renderNodeTabs(clusterStatus); } catch(e) { console.warn('renderNodeTabs error:', e); }
+      try { renderPlacementGrid(allPlacements, clusterStatus); } catch(e) { console.warn('renderPlacementGrid error:', e); }
+
+      setLastUpdated();
     }
 
-    // 자동 새로고침용: 컨테이너 목록 + 서비스(desired replicas) 갱신
+    // 자동 새로고침용
     async function loadContainersOnly() {
+      try { await loadNodes(); } catch(e) {}
+      try { await Promise.all([loadClusterStatus(), loadAlerts(), loadMigrations(), loadPlacements()]); } catch(e) {}
+
+      var containersResp = null, services = null;
       try {
-        const [containersResp, services] = await Promise.all([
-          fetchJson('/v1/containers?stats=true'),
-          fetchJson('/v1/services')
+        [containersResp, services] = await Promise.all([
+          fetch(API + '/v1/containers?stats=true').then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }),
+          fetch(API + '/v1/services').then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; })
         ]);
-        let containers = containersResp;
-        let containersError = null;
+      } catch(e) {}
+
+      try {
+        var containers = containersResp;
+        var containersError = null;
         if (containersResp && typeof containersResp === 'object' && 'containers' in containersResp) {
           containers = containersResp.containers || [];
           containersError = containersResp.error || null;
         }
-        var servicesList = Array.isArray(services) ? services : [];
-        renderContainers(Array.isArray(containers) ? containers : [], containersError, servicesList);
-        setLastUpdated();
+        renderContainers(Array.isArray(containers) ? containers : [], containersError, services);
+      } catch(e) { console.warn('renderContainers error:', e); }
+
+      try { renderServices(services); } catch(e) {}
+      try { renderClusterHealthBadge(clusterStatus); } catch(e) {}
+      try { renderClusterBar(clusterStatus); } catch(e) {}
+      try { renderNodeTabs(clusterStatus); } catch(e) {}
+      try { renderPlacementGrid(allPlacements, clusterStatus); } catch(e) {}
+
+      setLastUpdated();
+    }
+
+    async function loadNodes() {
+      try {
+        const resp = await fetchJsonLocal('/v1/cluster/nodes');
+        clusterNodes = (resp && resp.nodes) ? resp.nodes : [];
+        const sel = document.getElementById('targetNode');
+        if (!sel) return;
+        const current = localStorage.getItem('targetNode') || sel.value || 'local';
+        sel.innerHTML = '<option value="local">local</option>' + clusterNodes.map(n => (
+          '<option value=\"' + escapeHtml(n.name) + '\">' + escapeHtml(n.name) + '</option>'
+        )).join('');
+        sel.value = current;
       } catch (e) {
-        renderContainers([], e.message);
+        // ignore
       }
     }
 
+    /* ===== Event Bindings ===== */
     document.getElementById('btnRun').addEventListener('click', runCommand);
     document.getElementById('commandInput').addEventListener('keydown', function(e) {
       if (e.key === 'Enter') runCommand();
     });
     document.getElementById('btnRefresh').addEventListener('click', loadAll);
+    document.getElementById('targetNode').addEventListener('change', function() {
+      localStorage.setItem('targetNode', this.value || 'local');
+      loadAll();
+    });
+    document.getElementById('btnAddNode').addEventListener('click', function() {
+      showAddNodeModal();
+    });
+    // Cluster Deploy
+    document.getElementById('btnDeploy').addEventListener('click', async function() {
+      var imageEl = document.getElementById('deployImage');
+      var image = (imageEl.value || '').trim();
+      if (!image) { alert('이미지 경로를 입력하세요.'); imageEl.focus(); return; }
+      var name = (document.getElementById('deployName').value || '').trim();
+      var replicas = parseInt(document.getElementById('deployReplicas').value || '1', 10);
+      if (isNaN(replicas) || replicas < 1) replicas = 1;
+      var strategy = document.getElementById('deployStrategy').value || 'spread';
+      var logEl = document.getElementById('deployLog');
+      function lines(id) { var v = (document.getElementById(id).value || '').trim(); return v ? v.split(/\n/).map(function(s){ return s.trim(); }).filter(Boolean) : []; }
+      var body = { image: image, replicas: replicas, strategy: strategy };
+      if (name) body.name = name;
+      var env = lines('deployEnv'); if (env.length) body.environment = env;
+      var ports = lines('deployPorts'); if (ports.length) body.ports = ports;
+      var vols = lines('deployVolumes'); if (vols.length) body.volumes = vols;
+      var mem = (document.getElementById('deployMemory').value || '').trim(); if (mem) body.memory = mem;
+      var cpu = (document.getElementById('deployCpu').value || '').trim(); if (cpu) body.cpu = cpu;
+
+      logEl.innerHTML = '<span style="color:var(--accent);">배포 중... (이미지 Pull + 컨테이너 기동)</span>';
+      this.disabled = true;
+      try {
+        var r = await fetch(API + '/v1/cluster/deploy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        var data = await r.json();
+        if (data.success) {
+          logEl.innerHTML = '<span style="color:var(--success);">배포 완료: ' + escapeHtml(data.message) + '</span>';
+          appendLog('클러스터 배포: ' + image, data);
+        } else {
+          logEl.innerHTML = '<span style="color:var(--danger);">배포 실패: ' + escapeHtml(data.message || data.error || '') + '</span>';
+          appendLog('클러스터 배포 실패: ' + image, data);
+        }
+        // Show per-node results
+        if (data.details && data.details.results) {
+          var extra = '<div style="margin-top:0.3rem;font-size:0.8rem;">';
+          data.details.results.forEach(function(r) {
+            var icon = r.success ? '<span style="color:var(--success);">OK</span>' : '<span style="color:var(--danger);">FAIL</span>';
+            extra += '<div>' + icon + ' ' + escapeHtml(r.node) + ': ' + escapeHtml(r.message || r.error || '') + (r.created ? ' ('+r.created+'개)' : '') + '</div>';
+          });
+          extra += '</div>';
+          logEl.innerHTML += extra;
+        }
+        loadAll();
+      } catch (e) {
+        logEl.innerHTML = '<span style="color:var(--danger);">오류: ' + escapeHtml(e.message) + '</span>';
+      }
+      this.disabled = false;
+    });
+    document.getElementById('deployImage').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') document.getElementById('btnDeploy').click();
+    });
     document.getElementById('refreshInterval').addEventListener('change', function() {
       if (refreshTimer) clearInterval(refreshTimer);
       const sec = parseInt(this.value, 10);

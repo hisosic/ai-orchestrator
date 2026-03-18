@@ -11,6 +11,10 @@ class IntentAction(str, Enum):
     RESOURCE = "resource"
     STOP = "stop"
     LIST = "list"
+    MIGRATE = "migrate"
+    DRAIN = "drain"
+    CLUSTER_STATUS = "cluster_status"
+    NODE_LIST = "node_list"
     UNKNOWN = "unknown"
 
 
@@ -21,6 +25,7 @@ class ParsedIntent(BaseModel):
     image: Optional[str] = None
     memory: Optional[str] = None  # e.g. "512m", "1g"
     cpu: Optional[str] = None    # e.g. "0.5", "1"
+    target_node: Optional[str] = None  # for migrate/drain commands
     raw: str = ""
 
 

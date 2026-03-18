@@ -1,7 +1,10 @@
-# AI Container Orchestrator - Master Node
-# Multi-node cluster with Traefik ingress and DNS
-# Internal DNS: orch-internal network, *.local -> 127.0.0.1 (ingress)
-# Ingress: Traefik load-balances to replicas by service name
+# AI Container Orchestrator - Worker Node
+# 이 파일을 워커 노드(베어메탈 서버)에 복사하여 사용합니다.
+#
+# 사용법:
+#   1. .env 파일에서 ORCHESTRATOR_ROLE=worker, ORCHESTRATOR_MASTER_URL 설정
+#   2. docker network create orch-internal
+#   3. docker compose -f docker-compose.worker.yml up -d --build
 networks:
   orch-internal:
     name: orch-internal
@@ -11,17 +14,17 @@ services:
   orchestrator:
     build: .
     image: ai-orchestrator:latest
-    container_name: ai-orchestrator
+    container_name: ai-orchestrator-worker
     ports:
       - "8000:8000"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - orchestrator-data:/data
+      - worker-data:/data
     environment:
       - ORCHESTRATOR_STATE_DIR=${ORCHESTRATOR_STATE_DIR:-/data}
       - ORCHESTRATOR_API_TOKEN=${ORCHESTRATOR_API_TOKEN:-}
-      - ORCHESTRATOR_ROLE=${ORCHESTRATOR_ROLE:-master}
-      - ORCHESTRATOR_NODE_NAME=${ORCHESTRATOR_NODE_NAME:-master}
+      - ORCHESTRATOR_ROLE=worker
+      - ORCHESTRATOR_NODE_NAME=${ORCHESTRATOR_NODE_NAME:-}
       - ORCHESTRATOR_MASTER_URL=${ORCHESTRATOR_MASTER_URL:-}
       - ORCHESTRATOR_HEARTBEAT_INTERVAL=${ORCHESTRATOR_HEARTBEAT_INTERVAL:-10}
     networks:
@@ -52,22 +55,5 @@ services:
       - orch-internal
     restart: unless-stopped
 
-  # *.local → 127.0.0.1 (호스트 53/5353 충돌 방지로 15353 사용)
-  dns:
-    image: alpine:3.18
-    container_name: orch-dns
-    command:
-      - /bin/sh
-      - -c
-      - |
-        apk add --no-cache dnsmasq
-        echo "listen-address=0.0.0.0" > /etc/dnsmasq.d/local.conf
-        echo "address=/.local/127.0.0.1" >> /etc/dnsmasq.d/local.conf
-        exec dnsmasq -k -q
-    ports:
-      - "15353:53/udp"
-      - "15353:53/tcp"
-    restart: unless-stopped
-
 volumes:
-  orchestrator-data:
+  worker-data:

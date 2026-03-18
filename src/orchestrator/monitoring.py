@@ -95,8 +95,15 @@ def get_container_stats(container_id: str) -> Optional[Dict[str, Any]]:
 
 
 def _parse_stats(raw: Dict) -> Dict[str, Any]:
-    """Parse Docker stats response to cpu_percent, memory_usage, memory_limit."""
-    out = {"cpu_percent": 0.0, "memory_usage_mb": 0, "memory_limit_mb": 0, "memory_percent": 0.0}
+    """Parse Docker stats response to cpu_percent, memory_usage, memory_limit, network bytes."""
+    out = {
+        "cpu_percent": 0.0,
+        "memory_usage_mb": 0,
+        "memory_limit_mb": 0,
+        "memory_percent": 0.0,
+        "net_rx_mb": 0.0,
+        "net_tx_mb": 0.0,
+    }
     if not raw:
         return out
     try:
@@ -116,6 +123,17 @@ def _parse_stats(raw: Dict) -> Dict[str, Any]:
         out["memory_usage_mb"] = round(usage / (1024 * 1024), 2)
         out["memory_limit_mb"] = round(limit / (1024 * 1024), 2) if limit else 0
         out["memory_percent"] = round((usage / limit) * 100.0, 2) if limit else 0
+    except (KeyError, TypeError, ZeroDivisionError):
+        pass
+    try:
+        nets = raw.get("networks") or {}
+        rx = 0
+        tx = 0
+        for v in nets.values():
+            rx += v.get("rx_bytes", 0) or 0
+            tx += v.get("tx_bytes", 0) or 0
+        out["net_rx_mb"] = round(rx / (1024 * 1024), 2) if rx else 0.0
+        out["net_tx_mb"] = round(tx / (1024 * 1024), 2) if tx else 0.0
     except (KeyError, TypeError, ZeroDivisionError):
         pass
     return out

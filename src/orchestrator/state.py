@@ -2,7 +2,7 @@
 import json
 import os
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, TypedDict
 
 from .models import ServiceInfo
 
@@ -16,6 +16,16 @@ def _state_path() -> str:
         except OSError:
             base = os.path.join(os.path.dirname(__file__), "..", "..", ".state")
     return os.path.join(base, "services.json")
+
+
+def _nodes_path() -> str:
+    base = os.environ.get("ORCHESTRATOR_STATE_DIR", "/data")
+    if not base or base == "/data":
+        try:
+            Path("/data").mkdir(parents=True, exist_ok=True)
+        except OSError:
+            base = os.path.join(os.path.dirname(__file__), "..", "..", ".state")
+    return os.path.join(base, "nodes.json")
 
 
 def _ensure_dir():
@@ -42,6 +52,51 @@ def save_services(services: Dict[str, dict]) -> None:
     path = _state_path()
     with open(path, "w", encoding="utf-8") as f:
         json.dump(services, f, ensure_ascii=False, indent=2)
+
+
+class ClusterNode(TypedDict):
+    name: str
+    base_url: str
+    token: str
+
+
+def load_nodes() -> Dict[str, ClusterNode]:
+    _ensure_dir()
+    path = _nodes_path()
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f) or {}
+        if isinstance(data, dict):
+            return data
+        return {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_nodes(nodes: Dict[str, ClusterNode]) -> None:
+    _ensure_dir()
+    path = _nodes_path()
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(nodes, f, ensure_ascii=False, indent=2)
+
+
+def upsert_node(name: str, base_url: str, token: str) -> None:
+    nodes = load_nodes()
+    nodes[name] = {"name": name, "base_url": base_url, "token": token}
+    save_nodes(nodes)
+
+
+def delete_node(name: str) -> None:
+    nodes = load_nodes()
+    nodes.pop(name, None)
+    save_nodes(nodes)
+
+
+def list_nodes() -> List[ClusterNode]:
+    nodes = load_nodes()
+    return list(nodes.values())
 
 
 def get_service(name: str) -> Optional[dict]:

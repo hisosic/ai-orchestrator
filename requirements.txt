@@ -4,11 +4,11 @@ uvicorn[standard]>=0.27.0
 docker>=7.0.0
 pydantic>=2.5.0
 pydantic-settings>=2.1.0
+httpx>=0.26.0
+psutil>=5.9.0
 
 # Optional: for richer NL understanding (uncomment if using)
 # openai>=1.12.0
-# httpx>=0.26.0
 
 # Test
 pytest>=7.4.0
-httpx>=0.26.0

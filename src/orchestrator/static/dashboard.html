@@ -230,6 +230,27 @@
     .node-actions { display: flex; gap: 0.35rem; margin-top: 0.4rem; flex-wrap: wrap; }
     .node-actions .btn { font-size: 0.7rem; padding: 0.15rem 0.4rem; }
 
+    /* ===== Drop Delete Zone ===== */
+    .drop-delete-zone {
+      display: none;
+      margin-top: 0.75rem;
+      padding: 1rem;
+      border: 2px dashed var(--danger);
+      border-radius: var(--radius);
+      text-align: center;
+      color: var(--danger);
+      font-weight: 600;
+      font-size: 0.9rem;
+      background: rgba(248,81,73,0.05);
+      transition: background 0.2s, border-color 0.2s;
+    }
+    .drop-delete-zone.visible { display: block; }
+    .drop-delete-zone.drag-over {
+      background: rgba(248,81,73,0.15);
+      border-color: var(--danger);
+      box-shadow: 0 0 8px rgba(248,81,73,0.3);
+    }
+
     @media (max-width: 900px) {
       .grid { grid-template-columns: 1fr; }
       .node-card { flex: 0 0 180px; }
@@ -353,6 +374,7 @@
       <div class="panel-title">컨테이너 배치 현황 (드래그하여 마이그레이션)</div>
       <div class="panel-body">
         <div class="placement-grid" id="placementGrid"></div>
+        <div class="drop-delete-zone" id="dropDeleteZone">여기에 드롭하여 삭제</div>
       </div>
     </div>
 
@@ -777,6 +799,73 @@
       });
     }
 
+    function showDeleteModal(containerName, containerId, srcNode, serviceName) {
+      var overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      overlay.innerHTML =
+        '<div class="modal-content">' +
+        '<div class="modal-header"><span>컨테이너 삭제</span><button type="button" class="modal-close" aria-label="닫기">&times;</button></div>' +
+        '<div class="modal-body">' +
+        '<p><strong>' + escapeHtml(containerName) + '</strong> (' + escapeHtml(srcNode) + ')</p>' +
+        '<p style="color:var(--text-muted);font-size:0.85rem;">서비스: ' + escapeHtml(serviceName || '—') + '</p>' +
+        '<div style="margin-top:0.75rem;">' +
+        '<label style="display:block;cursor:pointer;padding:0.4rem 0;"><input type="radio" name="delType" value="one" checked> <strong>이 컨테이너만 삭제</strong> <span class="text-muted">— ' + escapeHtml(containerName) + ' on ' + escapeHtml(srcNode) + '</span></label>' +
+        (serviceName ? '<label style="display:block;cursor:pointer;padding:0.4rem 0;"><input type="radio" name="delType" value="all"> <strong style="color:var(--danger);">서비스 전체 삭제</strong> <span class="text-muted">— ' + escapeHtml(serviceName) + ' 서비스의 모든 컨테이너</span></label>' : '') +
+        '</div>' +
+        '</div>' +
+        '<div class="modal-footer">' +
+        '<button type="button" class="btn btn-sm btn-outline" id="delModalCancel">취소</button>' +
+        '<button type="button" class="btn btn-sm btn-danger" id="delModalConfirm">삭제</button>' +
+        '</div></div>';
+      document.body.appendChild(overlay);
+
+      function close() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }
+      overlay.addEventListener('click', function(e) { if (e.target === overlay) close(); });
+      overlay.querySelector('.modal-close').addEventListener('click', close);
+      overlay.querySelector('#delModalCancel').addEventListener('click', close);
+      overlay.querySelector('#delModalConfirm').addEventListener('click', async function() {
+        var delType = (overlay.querySelector('input[name="delType"]:checked') || {}).value || 'one';
+        close();
+
+        if (delType === 'all' && serviceName) {
+          appendLog('서비스 삭제 중: ' + serviceName, {success: true, message: '처리 중...'});
+          try {
+            var r = await fetch(API + '/v1/cluster/stop', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({service_name: serviceName})
+            });
+            var data = await r.json();
+            appendLog('서비스 삭제: ' + serviceName, data);
+          } catch(e) {
+            appendLog('서비스 삭제 실패', {success: false, message: e.message});
+          }
+        } else {
+          appendLog('컨테이너 삭제 중: ' + containerName + ' (' + srcNode + ')', {success: true, message: '처리 중...'});
+          try {
+            var nodeAddr = '';
+            if (clusterStatus && clusterStatus.nodes) {
+              clusterStatus.nodes.forEach(function(n) {
+                if (n.name === srcNode) nodeAddr = n.address || '';
+              });
+            }
+            var baseUrl = nodeAddr ? ('http://' + nodeAddr.split(':')[0] + ':8000') : API;
+            try { await fetch(baseUrl + '/v1/containers/' + encodeURIComponent(containerId) + '/stop', {method:'POST'}); } catch(e) {}
+            var r = await fetch(baseUrl + '/v1/containers/' + encodeURIComponent(containerId), {method:'DELETE'});
+            var data = await r.json();
+            if (!data.success) {
+              r = await fetch(baseUrl + '/v1/containers/' + encodeURIComponent(containerName), {method:'DELETE'});
+              data = await r.json();
+            }
+            appendLog('컨테이너 삭제: ' + containerName + ' (' + srcNode + ')', data);
+          } catch(e) {
+            appendLog('컨테이너 삭제 실패', {success: false, message: e.message});
+          }
+        }
+        loadAll();
+      });
+    }
+
     /* ===== Container Placement Grid ===== */
     function renderPlacementGrid(placements, status) {
       var section = document.getElementById('placementSection');
@@ -847,6 +936,8 @@
 
       // Drag and drop
       var dragData = null;
+      var deleteZone = document.getElementById('dropDeleteZone');
+
       grid.querySelectorAll('.container-chip[draggable]').forEach(function(chip) {
         chip.addEventListener('dragstart', function(e) {
           dragData = {
@@ -859,13 +950,18 @@
           this.classList.add('dragging');
           e.dataTransfer.effectAllowed = 'move';
           e.dataTransfer.setData('text/plain', dragData.cid);
+          // Show delete zone
+          if (deleteZone) deleteZone.classList.add('visible');
         });
         chip.addEventListener('dragend', function() {
           this.classList.remove('dragging');
           dragData = null;
           grid.querySelectorAll('.placement-column').forEach(function(col) { col.classList.remove('drag-over'); });
+          if (deleteZone) { deleteZone.classList.remove('visible', 'drag-over'); }
         });
       });
+
+      // Node drop zones (move/migrate)
       grid.querySelectorAll('[data-drop-node]').forEach(function(zone) {
         zone.addEventListener('dragover', function(e) {
           e.preventDefault();
@@ -885,6 +981,24 @@
           showMoveModal(dragData.name, dragData.cid, dragData.src, dstNode, dragData.svc, dragData.img);
         });
       });
+
+      // Delete drop zone
+      if (deleteZone) {
+        deleteZone.addEventListener('dragover', function(e) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          this.classList.add('drag-over');
+        });
+        deleteZone.addEventListener('dragleave', function(e) {
+          if (!this.contains(e.relatedTarget)) this.classList.remove('drag-over');
+        });
+        deleteZone.addEventListener('drop', function(e) {
+          e.preventDefault();
+          this.classList.remove('drag-over', 'visible');
+          if (!dragData) return;
+          showDeleteModal(dragData.name, dragData.cid, dragData.src, dragData.svc);
+        });
+      }
     }
 
     /* ===== Migration Status Panel ===== */

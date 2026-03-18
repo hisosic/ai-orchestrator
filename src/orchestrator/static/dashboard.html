@@ -347,7 +347,7 @@
       </div>
 
       <div class="panel" style="grid-column: 1 / -1;">
-        <div class="panel-title">컨테이너 목록 (중지 / 삭제)</div>
+        <div class="panel-title">클러스터 컨테이너 목록 (전체 노드)</div>
         <div class="panel-body" id="containersPanel"><span class="loading">불러오는 중…</span></div>
       </div>
     </div>
@@ -869,24 +869,29 @@
         return;
       }
       panel.classList.add('active');
-      var steps = ['exporting', 'transferring', 'importing', 'verifying', 'complete'];
-      var stepLabels = { exporting: '내보내기', transferring: '전송 중', importing: '가져오기', verifying: '검증 중', complete: '완료' };
+      var statusLabels = {
+        pending: '대기', exporting: '내보내기', transferring: '전송 중',
+        importing: '가져오기', verifying: '검증 중',
+        completed: '완료', complete: '완료', failed: '실패', rolled_back: '롤백'
+      };
       var html = '';
       migrations.forEach(function(m) {
-        var currentStep = (m.step || m.status || 'exporting').toLowerCase();
-        var stepIdx = steps.indexOf(currentStep);
-        if (stepIdx < 0) stepIdx = 0;
-        var pct = Math.round(((stepIdx + 1) / steps.length) * 100);
-        var isComplete = currentStep === 'complete';
-        var isError = currentStep === 'error' || currentStep === 'failed';
-        if (isError) pct = 100;
+        var status = (m.status || 'pending').toLowerCase();
+        // Use actual progress from API (0-100), not step-based calculation
+        var pct = m.progress != null ? m.progress : 0;
+        var isComplete = status === 'completed' || status === 'complete';
+        var isError = status === 'failed' || status === 'rolled_back';
+        if (isComplete) pct = 100;
+        if (isError && pct === 0) pct = 100;
         var fillCls = isError ? 'error' : isComplete ? 'complete' : '';
+        var label = statusLabels[status] || status;
+        var color = isError ? 'var(--danger)' : isComplete ? 'var(--success)' : 'var(--accent)';
         html += '<div class="migration-item">';
         html += '<div class="migration-info"><span class="mig-name">' + escapeHtml(m.container_name || m.container_id || '—') + '</span>';
         html += '<div class="mig-route">' + escapeHtml(m.source_node || '—') + ' → ' + escapeHtml(m.destination_node || '—') + '</div></div>';
         html += '<div class="migration-progress"><div class="migration-progress-bar"><div class="migration-progress-fill ' + fillCls + '" style="width:' + pct + '%"></div></div>';
-        html += '<div class="migration-step">' + escapeHtml(stepLabels[currentStep] || currentStep) + '</div></div>';
-        html += '<div class="migration-status-text" style="color:' + (isError ? 'var(--danger)' : isComplete ? 'var(--success)' : 'var(--accent)') + '">' + pct + '%</div>';
+        html += '<div class="migration-step">' + escapeHtml(label) + '</div></div>';
+        html += '<div class="migration-status-text" style="color:' + color + '">' + pct + '%</div>';
         html += '</div>';
       });
       body.innerHTML = html;
@@ -1150,222 +1155,115 @@
       });
     }
 
-    let expandedGroups = new Set();
+    let expandedNodes = new Set(['__all__']); // 기본 펼침
 
     function renderContainers(data, errorMsg, servicesOpt) {
-      const panel = document.getElementById('containersPanel');
-      var servicesList = Array.isArray(servicesOpt) ? servicesOpt : [];
-      function desiredReplicas(serviceName) {
-        var s = servicesList.find(function(x) { return (x.name || '') === serviceName; });
-        return s != null && typeof s.replicas === 'number' ? s.replicas : null;
-      }
-      if (errorMsg) {
-        panel.innerHTML = '<p class="error-msg">컨테이너 목록을 가져올 수 없습니다: ' + escapeHtml(errorMsg) + '</p><p class="text-muted">Docker 소켓이 마운트되었는지 확인하세요 (예: -v /var/run/docker.sock:/var/run/docker.sock)</p>';
-        return;
-      }
-      if (!Array.isArray(data) || data.length === 0) {
+      var panel = document.getElementById('containersPanel');
+
+      // Use cluster placements if available (shows ALL nodes)
+      var placements = allPlacements || [];
+      var nodes = (clusterStatus && clusterStatus.nodes) ? clusterStatus.nodes : [];
+
+      if (!placements.length && (!Array.isArray(data) || !data.length)) {
         panel.innerHTML = '<p class="text-muted">컨테이너 없음</p>';
         return;
       }
-      var byService = {};
-      var singles = [];
-      data.forEach(function(c) {
-        var svc = (c.service || '').trim();
-        if (svc) {
-          if (!byService[svc]) byService[svc] = [];
-          byService[svc].push(c);
-        } else {
-          singles.push(c);
-        }
-      });
-      var groupNames = Object.keys(byService).sort();
 
-      function cellCpu(st) { return st ? (st.cpu_percent + ' %') : '—'; }
-      function cellMem(st) { return st ? (st.memory_usage_mb + ' / ' + (st.memory_limit_mb || '?') + ' MB') : '—'; }
-      function rowCells(c) {
-        var st = c.stats;
-        var name = c.name || c.id;
-        var cells = '<td><span class="c-name" data-c-inspect="' + escapeHtml(c.id) + '">' + escapeHtml(name) + '</span></td><td>' + escapeHtml(c.image || '') + '</td>';
-        cells += '<td><span class="badge badge-' + (c.state === 'running' ? 'running' : 'stopped') + '">' + escapeHtml(c.status || c.state) + '</span></td>';
-        cells += '<td>' + (c.managed ? '<span class="badge badge-managed">Y</span>' : '—') + '</td>';
-        cells += '<td>' + escapeHtml(c.service || '—') + '</td>';
-        cells += '<td>' + cellCpu(st) + '</td><td>' + cellMem(st) + '</td>';
-        var net = '—';
-        if (st && (st.net_rx_mb != null || st.net_tx_mb != null)) {
-          var rx = st.net_rx_mb != null ? st.net_rx_mb : 0;
-          var tx = st.net_tx_mb != null ? st.net_tx_mb : 0;
-          net = rx.toFixed(2) + ' / ' + tx.toFixed(2) + ' MB';
-        }
-        cells += '<td>' + net + '</td>';
-        cells += '<td>';
-        if (c.state === 'running') cells += '<button type="button" class="btn btn-sm btn-warn" data-c-stop="' + escapeHtml(c.id) + '">중지</button> ';
-        cells += '<button type="button" class="btn btn-sm btn-danger" data-c-remove="' + escapeHtml(c.id) + '">삭제</button>';
-        cells += '</td>';
-        return cells;
+      // Group placements by node
+      var byNode = {};
+      nodes.forEach(function(n) { byNode[n.name] = { node: n, containers: [] }; });
+      placements.forEach(function(p) {
+        var nodeName = p.node_name || 'unknown';
+        if (!byNode[nodeName]) byNode[nodeName] = { node: null, containers: [] };
+        byNode[nodeName].containers.push(p);
+      });
+
+      // If no placements, fall back to local data grouped under "local"
+      if (!placements.length && Array.isArray(data) && data.length) {
+        byNode['local'] = { node: null, containers: data.map(function(c) {
+          return {
+            container_id: c.id, container_name: c.name, service_name: c.service || '',
+            image: c.image, node_name: 'local', status: c.state || c.status
+          };
+        })};
       }
 
-      var html = '<div class="containers-toolbar"><button type="button" class="btn btn-sm btn-warn" id="btnStopSelected">선택 중지</button><button type="button" class="btn btn-sm btn-danger" id="btnRemoveSelected" style="margin-left:0.5rem;">선택 삭제</button></div>';
-      html += '<table><thead><tr><th><input type="checkbox" id="containersSelectAll"></th><th>이름</th><th>이미지</th><th>상태</th><th>관리</th><th>서비스</th><th>CPU%</th><th>메모리</th><th>네트워크 (RX / TX)</th><th>동작</th></tr></thead><tbody>';
+      var nodeNames = Object.keys(byNode).sort();
+      var totalContainers = 0;
+      nodeNames.forEach(function(n) { totalContainers += byNode[n].containers.length; });
 
-      groupNames.forEach(function(svc) {
-        var list = byService[svc];
-        var n = list.length;
-        var desired = desiredReplicas(svc);
-        var replicaInputValue = desired !== null ? desired : n;
-        var running = list.filter(function(c) { return (c.state || '').toLowerCase() === 'running'; }).length;
-        var first = list[0];
-        var cpuSum = 0, cpuCnt = 0, memUsage = 0, memLimit = 0;
-        list.forEach(function(c) {
-          if (c.stats) {
-            cpuSum += c.stats.cpu_percent || 0;
-            cpuCnt++;
-            memUsage += c.stats.memory_usage_mb || 0;
-            memLimit += c.stats.memory_limit_mb || 0;
-          }
-        });
-        var cpuAgg = cpuCnt ? (cpuSum / cpuCnt).toFixed(2) + ' %' : '—';
-        var memAgg = (memUsage || memLimit) ? memUsage.toFixed(1) + ' / ' + (memLimit ? memLimit.toFixed(1) : '?') + ' MB' : '—';
-        var isExpanded = expandedGroups.has(svc);
-        html += '<tr class="group-row" data-group-row="' + escapeHtml(svc) + '">';
-        html += '<td></td>';
-        html += '<td><button type="button" class="toggle-group" data-group-toggle="' + escapeHtml(svc) + '" aria-label="펼치기/접기">' + (isExpanded ? '▼' : '▶') + '</button> ';
-        html += escapeHtml(svc) + ' <span class="text-muted">(' + n + ')</span></td>';
-        html += '<td>' + escapeHtml(first.image || '') + '</td>';
-        html += '<td><span class="badge badge-running">' + running + ' running</span></td>';
-        html += '<td>' + (first.managed ? '<span class="badge badge-managed">Y</span>' : '—') + '</td>';
-        html += '<td>' + escapeHtml(svc) + '</td>';
-        html += '<td>' + cpuAgg + '</td><td>' + memAgg + '</td>';
-        var netRx = 0, netTx = 0, netCnt = 0;
-        list.forEach(function(c) {
-          if (c.stats && (c.stats.net_rx_mb != null || c.stats.net_tx_mb != null)) {
-            netRx += c.stats.net_rx_mb || 0;
-            netTx += c.stats.net_tx_mb || 0;
-            netCnt++;
-          }
-        });
-        var netAgg = (netRx || netTx) ? netRx.toFixed(2) + ' / ' + netTx.toFixed(2) + ' MB' : '—';
-        html += '<td>' + netAgg + '</td>';
-        html += '<td><span class="replica-control">';
-        html += '<input type="number" min="0" value="' + replicaInputValue + '" data-replica-input="' + escapeHtml(svc) + '"> ';
-        html += '<button type="button" class="btn btn-sm" data-replica-apply="' + escapeHtml(svc) + '">적용</button> ';
-        html += '<button type="button" class="btn btn-sm" data-c-scale="' + escapeHtml(svc) + '">스케일</button>';
-        html += '</span></td></tr>';
-        list.forEach(function(c) {
-          html += '<tr class="group-member' + (isExpanded ? ' expanded' : '') + '" data-group="' + escapeHtml(svc) + '">';
-          html += '<td><input type="checkbox" class="c-select" data-c-id="' + escapeHtml(c.id) + '"></td>' + rowCells(c) + '</tr>';
-        });
+      var html = '<div style="margin-bottom:0.5rem;font-size:0.85rem;color:var(--text-muted);">';
+      html += '전체 ' + nodeNames.length + '개 노드, ' + totalContainers + '개 컨테이너';
+      html += '</div>';
+
+      nodeNames.forEach(function(nodeName) {
+        var info = byNode[nodeName];
+        var containers = info.containers;
+        var nodeObj = info.node;
+        var isExpanded = expandedNodes.has('__all__') || expandedNodes.has(nodeName);
+        var running = containers.filter(function(c) { return c.status === 'running'; }).length;
+        var res = nodeObj && nodeObj.resources ? nodeObj.resources : {};
+        var cpuPct = res.cpu_used_percent != null ? res.cpu_used_percent.toFixed(1) : '—';
+        var memUsed = res.memory_used_mb || 0;
+        var memTotal = res.memory_total_mb || 0;
+        var st = nodeObj ? nodeObj.status : 'unknown';
+        var badgeCls = st === 'healthy' ? 'running' : st === 'offline' ? 'stopped' : 'managed';
+
+        // Node header row
+        html += '<div style="background:rgba(88,166,255,0.06);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:0.5rem;">';
+        html += '<div style="padding:0.6rem 0.75rem;cursor:pointer;display:flex;justify-content:space-between;align-items:center;" data-node-toggle="' + escapeHtml(nodeName) + '">';
+        html += '<div>';
+        html += '<span style="font-weight:600;font-size:0.95rem;" data-node-arrow="' + escapeHtml(nodeName) + '">' + (isExpanded ? '▼' : '▶') + '</span> ';
+        html += '<strong>' + escapeHtml(nodeName) + '</strong>';
+        if (nodeObj) html += ' <span class="text-muted" style="font-size:0.8rem;">(' + escapeHtml(nodeObj.address || '') + ')</span>';
+        html += ' <span class="badge badge-' + badgeCls + '" style="margin-left:0.5rem;">' + escapeHtml(st) + '</span>';
+        html += '</div>';
+        html += '<div style="font-size:0.8rem;color:var(--text-muted);">';
+        html += '<span style="margin-right:1rem;">컨테이너: <strong>' + running + '</strong>/' + containers.length + '</span>';
+        if (memTotal) html += '<span style="margin-right:1rem;">MEM: ' + memUsed + '/' + memTotal + 'MB</span>';
+        if (cpuPct !== '—') html += '<span>CPU: ' + cpuPct + '%</span>';
+        html += '</div></div>';
+
+        // Container table (expanded)
+        html += '<div style="display:' + (isExpanded ? 'block' : 'none') + ';" data-node-body="' + escapeHtml(nodeName) + '">';
+        if (containers.length === 0) {
+          html += '<div style="padding:0.5rem 1rem;color:var(--text-muted);font-size:0.85rem;">컨테이너 없음</div>';
+        } else {
+          html += '<table style="font-size:0.85rem;"><thead><tr>';
+          html += '<th>컨테이너</th><th>서비스</th><th>이미지</th><th>상태</th>';
+          html += '</tr></thead><tbody>';
+          containers.forEach(function(c) {
+            var cName = c.container_name || c.name || c.container_id || '';
+            var svc = c.service_name || c.service || '';
+            var img = c.image || '';
+            var cStatus = c.status || 'unknown';
+            var statusCls = cStatus === 'running' ? 'running' : 'stopped';
+            var colorCls = getServiceColor(svc);
+            html += '<tr>';
+            html += '<td><span class="container-chip ' + colorCls + '" style="cursor:default;display:inline-block;">' + escapeHtml(cName) + '</span></td>';
+            html += '<td>' + escapeHtml(svc || '—') + '</td>';
+            html += '<td style="font-size:0.8rem;">' + escapeHtml(img) + '</td>';
+            html += '<td><span class="badge badge-' + statusCls + '">' + escapeHtml(cStatus) + '</span></td>';
+            html += '</tr>';
+          });
+          html += '</tbody></table>';
+        }
+        html += '</div></div>';
       });
 
-      singles.forEach(function(c) {
-        html += '<tr><td><input type="checkbox" class="c-select" data-c-id="' + escapeHtml(c.id) + '"></td>' + rowCells(c) + '</tr>';
-      });
-
-      html += '</tbody></table>';
       panel.innerHTML = html;
 
-      panel.querySelectorAll('[data-c-stop]').forEach(function(el) {
-        el.addEventListener('click', function() { stopContainer(this.getAttribute('data-c-stop')); });
-      });
-      panel.querySelectorAll('[data-c-scale]').forEach(function(el) {
-        el.addEventListener('click', function() { scaleService(this.getAttribute('data-c-scale')); });
-      });
-      panel.querySelectorAll('[data-c-remove]').forEach(function(el) {
-        el.addEventListener('click', function() { removeContainer(this.getAttribute('data-c-remove')); });
-      });
-      panel.querySelectorAll('[data-group-toggle]').forEach(function(el) {
+      // Toggle node expand/collapse
+      panel.querySelectorAll('[data-node-toggle]').forEach(function(el) {
         el.addEventListener('click', function() {
-          var svc = this.getAttribute('data-group-toggle');
-          if (expandedGroups.has(svc)) expandedGroups.delete(svc); else expandedGroups.add(svc);
-          var sel = '.group-member[data-group="' + (svc || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"]';
-          panel.querySelectorAll(sel).forEach(function(row) {
-            row.classList.toggle('expanded', expandedGroups.has(svc));
-          });
-          this.textContent = expandedGroups.has(svc) ? '▼' : '▶';
-        });
-      });
-      panel.querySelectorAll('[data-replica-apply]').forEach(function(el) {
-        el.addEventListener('click', function() {
-          var svc = this.getAttribute('data-replica-apply');
-          var input = panel.querySelector('input[data-replica-input="' + (svc || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"]');
-          if (!input) return;
-          var n = parseInt(input.value, 10);
-          if (isNaN(n) || n < 0) { alert('0 이상의 숫자를 입력하세요.'); return; }
-          scaleServiceWith(svc, n);
-        });
-      });
-
-      var selectAll = panel.querySelector('#containersSelectAll');
-      if (selectAll) {
-        selectAll.addEventListener('change', function() {
-          var checked = this.checked;
-          panel.querySelectorAll('input.c-select').forEach(function(cb) {
-            cb.checked = checked;
-          });
-        });
-      }
-      var btnStopSelected = panel.querySelector('#btnStopSelected');
-      if (btnStopSelected) {
-        btnStopSelected.addEventListener('click', function() {
-          var ids = [];
-          panel.querySelectorAll('input.c-select:checked').forEach(function(cb) {
-            var id = cb.getAttribute('data-c-id');
-            if (id) ids.push(id);
-          });
-          if (!ids.length) { alert('선택된 컨테이너가 없습니다.'); return; }
-          (async function() {
-            for (const id of ids) {
-              try {
-                const r = await apiFetch('/v1/containers/' + encodeURIComponent(id) + '/stop', { method: 'POST' });
-                const data = await r.json();
-                appendLog('컨테이너 중지: ' + id, data);
-              } catch (e) {
-                appendLog('컨테이너 중지', { success: false, message: e.message });
-              }
-            }
-            loadAll();
-          })();
-        });
-      }
-      var btnRemoveSelected = panel.querySelector('#btnRemoveSelected');
-      if (btnRemoveSelected) {
-        btnRemoveSelected.addEventListener('click', function() {
-          var ids = [];
-          panel.querySelectorAll('input.c-select:checked').forEach(function(cb) {
-            var id = cb.getAttribute('data-c-id');
-            if (id) ids.push(id);
-          });
-          if (!ids.length) { alert('선택된 컨테이너가 없습니다.'); return; }
-          if (!confirm('선택된 컨테이너 ' + ids.length + '개를 삭제할까요?')) return;
-          (async function() {
-            for (const id of ids) {
-              try {
-                const r = await apiFetch('/v1/containers/' + encodeURIComponent(id), { method: 'DELETE' });
-                const data = await r.json();
-                appendLog('컨테이너 삭제: ' + id, data);
-              } catch (e) {
-                appendLog('컨테이너 삭제', { success: false, message: e.message });
-              }
-            }
-            loadAll();
-          })();
-        });
-      }
-
-      // Click name to show docker inspect modal
-      panel.querySelectorAll('.c-name[data-c-inspect]').forEach(function(el) {
-        el.addEventListener('click', async function() {
-          var id = this.getAttribute('data-c-inspect');
-          if (!id) return;
-          var text;
-          try {
-            const data = await fetchJson('/v1/containers/' + encodeURIComponent(id) + '/inspect');
-            var d = data.details || data;
-            var attrs = d.attrs || d;
-            text = JSON.stringify(attrs, null, 2);
-          } catch (e) {
-            text = 'inspect 실패: ' + e.message;
-          }
-          showInspectModal(id, text);
+          var nodeName = this.getAttribute('data-node-toggle');
+          var body = panel.querySelector('[data-node-body="' + nodeName + '"]');
+          var arrow = panel.querySelector('[data-node-arrow="' + nodeName + '"]');
+          if (!body) return;
+          var visible = body.style.display !== 'none';
+          body.style.display = visible ? 'none' : 'block';
+          if (arrow) arrow.textContent = visible ? '▶' : '▼';
+          if (visible) expandedNodes.delete(nodeName); else expandedNodes.add(nodeName);
         });
       });
     }

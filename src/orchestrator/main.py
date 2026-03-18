@@ -245,6 +245,11 @@ def list_services(show_system: bool = False):
     # Build merged view: cluster placements are the source of truth
     cluster_svcs = _cluster_state.get_service_placement_summary()
     local_map = {s.name: s for s in local_services}
+    # Build node name -> IP map for endpoint URLs
+    node_ip_map = {}
+    for n in _cluster_state.list_nodes():
+        ip = n.address.split(":")[0] if ":" in n.address else n.address
+        node_ip_map[n.name] = ip
     result = []
 
     seen = set()
@@ -263,6 +268,13 @@ def list_services(show_system: bool = False):
         elif local:
             image = local.image
 
+        # Build endpoint URLs
+        endpoints = []
+        for node_name in nodes:
+            ip = node_ip_map.get(node_name, "")
+            if ip:
+                endpoints.append(f"http://{ip}/{svc_name}/")
+
         result.append({
             "name": svc_name,
             "image": image,
@@ -273,6 +285,7 @@ def list_services(show_system: bool = False):
             "status": "running" if info.get("running", 0) > 0 else "stopped",
             "container_ids": [],
             "nodes": node_list,
+            "endpoints": endpoints,
         })
 
     # Add local-only services not in cluster placements (skip stopped stale + system)

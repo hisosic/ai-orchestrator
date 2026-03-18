@@ -948,21 +948,11 @@
         var total = s.replicas != null ? s.replicas : 0;
         var nodesStr = (s.nodes && s.nodes.length) ? s.nodes.join(', ') : '—';
         var urlHtml = '—';
-        if (s.nodes && s.nodes.length && clusterStatus && clusterStatus.nodes) {
-          var nodeIps = [];
-          clusterStatus.nodes.forEach(function(n) {
-            var match = (s.nodes || []).find(function(ns) { return ns.startsWith(n.name + ':'); });
-            if (match) {
-              var ip = (n.address || '').split(':')[0];
-              if (ip) nodeIps.push(ip);
-            }
-          });
-          if (nodeIps.length) {
-            urlHtml = nodeIps.map(function(ip) {
-              var url = 'http://' + ip + '/' + s.name + '/';
-              return '<a href="' + url + '" target="_blank" style="color:var(--accent);font-size:0.8rem;">' + ip + '</a>';
-            }).join(', ');
-          }
+        var eps = s.endpoints || [];
+        if (eps.length) {
+          urlHtml = eps.map(function(url) {
+            return '<a href="' + escapeHtml(url) + '" target="_blank" style="color:var(--accent);font-family:\'JetBrains Mono\',monospace;font-size:0.78rem;">' + escapeHtml(url) + '</a>';
+          }).join('<br>');
         }
         html += '<tr>';
         html += '<td><strong>' + escapeHtml(s.name) + '</strong></td>';

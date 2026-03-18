@@ -43,6 +43,9 @@ class ContainerPlacement(BaseModel):
     status: str
     cpu_percent: float = 0.0
     memory_mb: float = 0.0
+    memory_limit_mb: float = 0.0
+    net_rx_mb: float = 0.0
+    net_tx_mb: float = 0.0
 
 class HeartbeatPayload(BaseModel):
     node_name: str

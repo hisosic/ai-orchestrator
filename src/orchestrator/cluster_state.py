@@ -98,6 +98,12 @@ class ClusterStateManager:
                 CREATE INDEX IF NOT EXISTS idx_migrations_status ON migrations(status);
                 CREATE INDEX IF NOT EXISTS idx_alerts_ack ON alerts(acknowledged);
             """)
+            # Add new columns if missing (migration for existing DBs)
+            for col, coltype in [("memory_limit_mb", "REAL DEFAULT 0"), ("net_rx_mb", "REAL DEFAULT 0"), ("net_tx_mb", "REAL DEFAULT 0")]:
+                try:
+                    conn.execute(f"ALTER TABLE container_placements ADD COLUMN {col} {coltype}")
+                except Exception:
+                    pass  # column already exists
 
     # --- Node Management ---
 
@@ -187,9 +193,11 @@ class ClusterStateManager:
             # Insert current placements
             for c in containers:
                 conn.execute("""
-                    INSERT INTO container_placements (container_id, container_name, service_name, image, node_name, status, cpu_percent, memory_mb, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (c.container_id, c.container_name, c.service_name, c.image, node_name, c.status, c.cpu_percent, c.memory_mb, now))
+                    INSERT OR REPLACE INTO container_placements (container_id, container_name, service_name, image, node_name, status, cpu_percent, memory_mb, memory_limit_mb, net_rx_mb, net_tx_mb, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (c.container_id, c.container_name, c.service_name, c.image, node_name, c.status,
+                      c.cpu_percent, c.memory_mb, getattr(c, 'memory_limit_mb', 0.0),
+                      getattr(c, 'net_rx_mb', 0.0), getattr(c, 'net_tx_mb', 0.0), now))
 
     def check_node_health(self, timeout_degraded: int = 30, timeout_offline: int = 90):
         """Check all nodes and update status based on heartbeat timeout.
@@ -235,7 +243,10 @@ class ClusterStateManager:
                 node_name=r["node_name"],
                 status=r["status"],
                 cpu_percent=r["cpu_percent"],
-                memory_mb=r["memory_mb"]
+                memory_mb=r["memory_mb"],
+                memory_limit_mb=r["memory_limit_mb"] if "memory_limit_mb" in r.keys() else 0.0,
+                net_rx_mb=r["net_rx_mb"] if "net_rx_mb" in r.keys() else 0.0,
+                net_tx_mb=r["net_tx_mb"] if "net_tx_mb" in r.keys() else 0.0,
             ) for r in rows]
 
     def get_service_placement_summary(self) -> Dict[str, dict]:

@@ -196,21 +196,62 @@ class WorkerAgent:
             pass
         return 0.0, 0.0
 
+    def _get_container_stats(self, container) -> dict:
+        """Get CPU/MEM stats for a single running container."""
+        try:
+            raw = container.stats(stream=False)
+            # CPU
+            cpu_delta = (raw.get("cpu_stats", {}).get("cpu_usage", {}).get("total_usage", 0)
+                         - raw.get("precpu_stats", {}).get("cpu_usage", {}).get("total_usage", 0))
+            sys_delta = (raw.get("cpu_stats", {}).get("system_cpu_usage", 0)
+                         - raw.get("precpu_stats", {}).get("system_cpu_usage", 0))
+            ncpu = len(raw.get("cpu_stats", {}).get("cpu_usage", {}).get("percpu_usage", []) or [1])
+            cpu_pct = round((cpu_delta / sys_delta) * ncpu * 100, 2) if sys_delta > 0 and cpu_delta > 0 else 0.0
+            # Memory
+            mem = raw.get("memory_stats", {})
+            mem_usage = round((mem.get("usage", 0) or 0) / 1024 / 1024, 1)
+            mem_limit = round((mem.get("limit", 0) or 0) / 1024 / 1024, 1)
+            # Network
+            nets = raw.get("networks", {})
+            net_rx = sum(v.get("rx_bytes", 0) for v in nets.values())
+            net_tx = sum(v.get("tx_bytes", 0) for v in nets.values())
+            return {
+                "cpu_percent": cpu_pct,
+                "memory_mb": mem_usage,
+                "memory_limit_mb": mem_limit,
+                "net_rx_mb": round(net_rx / 1024 / 1024, 2),
+                "net_tx_mb": round(net_tx / 1024 / 1024, 2),
+            }
+        except Exception:
+            return {"cpu_percent": 0.0, "memory_mb": 0.0, "memory_limit_mb": 0.0, "net_rx_mb": 0.0, "net_tx_mb": 0.0}
+
     def get_managed_containers(self) -> List[dict]:
-        """Get list of ALL running containers on this node for placement tracking."""
+        """Get list of ALL containers on this node with resource stats."""
         if not self.docker_client:
             return []
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
         result = []
         try:
             containers = self.docker_client.containers.list(all=True)
+            # Collect stats in parallel for running containers
+            stats_map = {}
+            running = [c for c in containers if c.status == "running"]
+            if running:
+                with ThreadPoolExecutor(max_workers=min(5, len(running))) as ex:
+                    futures = {ex.submit(self._get_container_stats, c): c.id[:12] for c in running}
+                    for fut in as_completed(futures):
+                        try:
+                            stats_map[futures[fut]] = fut.result()
+                        except Exception:
+                            pass
+
             for c in containers:
                 labels = c.labels or {}
                 service_name = labels.get("ai.orchestrator.service", "")
-                # Derive service name from container name if not labeled
                 if not service_name:
                     name = (c.name or "").strip("/")
-                    # e.g. "orch-nginx-0" -> "nginx", "ai-orchestrator" -> "ai-orchestrator"
                     if name.startswith("orch-") and "-" in name[5:]:
                         parts = name[5:].rsplit("-", 1)
                         if parts[-1].isdigit():
@@ -219,15 +260,20 @@ class WorkerAgent:
                             service_name = name
                     else:
                         service_name = name
+                cid = c.id[:12]
+                st = stats_map.get(cid, {})
                 result.append({
-                    "container_id": c.id[:12],
+                    "container_id": cid,
                     "container_name": (c.name or "").strip("/"),
                     "service_name": service_name,
                     "image": c.image.tags[0] if c.image.tags else str(c.image.id)[:12],
                     "node_name": self.node_name,
                     "status": c.status,
-                    "cpu_percent": 0.0,
-                    "memory_mb": 0.0
+                    "cpu_percent": st.get("cpu_percent", 0.0),
+                    "memory_mb": st.get("memory_mb", 0.0),
+                    "memory_limit_mb": st.get("memory_limit_mb", 0.0),
+                    "net_rx_mb": st.get("net_rx_mb", 0.0),
+                    "net_tx_mb": st.get("net_tx_mb", 0.0),
                 })
         except Exception as e:
             logger.error(f"Error listing containers: {e}")

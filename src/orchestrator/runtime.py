@@ -305,11 +305,28 @@ def execute_scale(client, service_name: str, replicas: int) -> Tuple[bool, str, 
     }
 
 
+# Services currently being migrated/moved - reconcile skips these
+_reconcile_skip = set()
+
+
+def reconcile_skip_add(service_name: str):
+    """Mark a service to skip reconcile (during migration/move)."""
+    _reconcile_skip.add(service_name)
+
+
+def reconcile_skip_remove(service_name: str):
+    """Unmark a service from reconcile skip."""
+    _reconcile_skip.discard(service_name)
+
+
 def reconcile_replicas(client=None) -> None:
-    """실시간 레플리카 유지: 상태의 desired replicas와 실제 실행 중인 컨테이너 수를 맞춤 (모든 replicas 수 대상)."""
+    """실시간 레플리카 유지: 상태의 desired replicas와 실제 실행 중인 컨테이너 수를 맞춤."""
     if client is None:
         client = _docker_client()
     for svc in state.list_services():
+        # Skip services being migrated/moved
+        if svc.name in _reconcile_skip:
+            continue
         desired = svc.replicas if svc.replicas is not None else 0
         try:
             current = _get_containers_for_service(client, svc.name)

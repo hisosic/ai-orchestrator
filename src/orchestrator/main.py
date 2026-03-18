@@ -802,20 +802,24 @@ async def cluster_move_container(req: Request):
             if not image:
                 return {"success": False, "error": "이미지를 확인할 수 없습니다. image 파라미터를 지정하세요."}
 
-        # Step 2: Reduce source replicas to prevent reconcile
+        # Step 2: Adjust source replicas BEFORE removing container
+        # (prevents reconcile from restarting it)
+        src_replicas = 0
         if service_name:
-            async with httpx.AsyncClient(timeout=15) as client:
-                svc_resp = await client.get(f"{src_url}/v1/services", headers=_headers(src_node))
-                src_replicas = 0
-                if svc_resp.status_code == 200:
-                    for s in svc_resp.json():
-                        if isinstance(s, dict) and s.get("name") == service_name:
-                            src_replicas = s.get("replicas", 0)
-                            break
-                if src_replicas > 0:
-                    await client.post(f"{src_url}/v1/services/scale", json={
-                        "service_name": service_name, "replicas": max(0, src_replicas - 1)
-                    }, headers=_headers(src_node))
+            try:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    svc_resp = await client.get(f"{src_url}/v1/services", headers=_headers(src_node))
+                    if svc_resp.status_code == 200:
+                        for s in svc_resp.json():
+                            if isinstance(s, dict) and s.get("name") == service_name:
+                                src_replicas = s.get("replicas", 0)
+                                break
+                    if src_replicas > 0:
+                        await client.post(f"{src_url}/v1/services/scale", json={
+                            "service_name": service_name, "replicas": max(0, src_replicas - 1)
+                        }, headers=_headers(src_node))
+            except Exception:
+                pass
 
         # Step 3: Stop and remove source container
         async with httpx.AsyncClient(timeout=30) as client:
@@ -827,37 +831,88 @@ async def cluster_move_container(req: Request):
             if resp.status_code != 200 and container_name:
                 await client.delete(f"{src_url}/v1/containers/{container_name}", headers=_headers(src_node))
 
-        # Step 4: Pull image on destination (auto_pull in run_container handles this)
-        # Step 5: Run container on destination
+        # Step 4: Pull image + run on destination
+        # Derive service/group name for the new container
+        svc_group = service_name
+        if not svc_group and container_name:
+            # "orch-rtest-0" -> "rtest"
+            name_clean = container_name.replace("orch-", "").strip("/")
+            parts = name_clean.rsplit("-", 1)
+            svc_group = parts[0] if len(parts) > 1 and parts[-1].isdigit() else name_clean
+
+        # Check how many containers of this service already exist on destination
+        # to avoid name conflict (orch-{svc}-0 might exist)
+        dst_existing = 0
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(f"{dst_url}/v1/containers", headers=_headers(dst_node))
+                if resp.status_code == 200:
+                    for c in resp.json().get("containers", []):
+                        if c.get("service") == svc_group or (svc_group and c.get("name", "").startswith(f"orch-{svc_group}-")):
+                            dst_existing += 1
+        except Exception:
+            pass
+
+        # If destination already has containers with this name, use scale endpoint
+        # which handles index allocation automatically
         async with httpx.AsyncClient(timeout=120) as client:
-            run_resp = await client.post(f"{dst_url}/v1/containers/run", json={
-                "image": image,
-                "name": service_name or container_name.replace("orch-", "").rsplit("-", 1)[0] if container_name.startswith("orch-") else container_name,
-                "replicas": 1,
-                "use_internal_network": True,
-            }, headers=_headers(dst_node))
+            if dst_existing > 0:
+                # Scale up by 1 on destination (handles name indexing)
+                run_resp = await client.post(f"{dst_url}/v1/services/scale", json={
+                    "service_name": svc_group, "replicas": dst_existing + 1,
+                }, headers=_headers(dst_node))
+            else:
+                # Fresh run
+                run_resp = await client.post(f"{dst_url}/v1/containers/run", json={
+                    "image": image,
+                    "name": svc_group,
+                    "replicas": 1,
+                    "use_internal_network": True,
+                }, headers=_headers(dst_node))
             run_data = run_resp.json()
 
         if not run_data.get("success"):
-            return {
+            result = {
                 "success": False,
                 "error": f"대상 노드에서 컨테이너 기동 실패: {run_data.get('message', '')}",
                 "details": run_data,
             }
+        else:
+            result = {
+                "success": True,
+                "message": f"'{container_name}' 이동 완료: {source_node} -> {destination_node} (이미지: {image})",
+                "details": {
+                    "container_name": container_name,
+                    "image": image,
+                    "source_node": source_node,
+                    "destination_node": destination_node,
+                    "new_containers": run_data.get("details", {}).get("container_ids", []),
+                },
+            }
 
-        return {
-            "success": True,
-            "message": f"'{container_name}' 이동 완료: {source_node} -> {destination_node} (이미지: {image})",
-            "details": {
-                "container_name": container_name,
-                "image": image,
-                "source_node": source_node,
-                "destination_node": destination_node,
-                "new_containers": run_data.get("details", {}).get("container_ids", []),
-            },
-        }
+        # If failed, restore source replicas
+        if not result.get("success") and service_name and src_replicas > 0:
+            try:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    await client.post(f"{src_url}/v1/services/scale", json={
+                        "service_name": service_name, "replicas": src_replicas
+                    }, headers=_headers(src_node))
+            except Exception:
+                pass
+
+        return result
 
     except Exception as e:
+        # Restore source replicas on exception
+        if service_name and src_replicas > 0:
+            try:
+                import httpx as _httpx
+                with _httpx.Client(timeout=10) as client:
+                    client.post(f"{src_url}/v1/services/scale", json={
+                        "service_name": service_name, "replicas": src_replicas
+                    }, headers=_headers(src_node))
+            except Exception:
+                pass
         return {"success": False, "error": str(e)}
 
 
@@ -997,6 +1052,22 @@ def agent_resources():
     from .agent import WorkerAgent
     agent = _worker_agent or WorkerAgent()
     return agent.get_node_resources()
+
+
+@app.post("/v1/agent/reconcile-skip")
+async def agent_reconcile_skip(req: Request):
+    """Set reconcile skip flag for a service (used during migration/move)."""
+    body = await req.json()
+    service_name = body.get("service_name", "")
+    skip = body.get("skip", False)
+    if not service_name:
+        return {"success": False}
+    from .runtime import reconcile_skip_add, reconcile_skip_remove
+    if skip:
+        reconcile_skip_add(service_name)
+    else:
+        reconcile_skip_remove(service_name)
+    return {"success": True, "service_name": service_name, "skip": skip}
 
 
 # ==========================================

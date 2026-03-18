@@ -938,17 +938,11 @@ async def cluster_move_container(req: Request):
             if not image:
                 return {"success": False, "error": "이미지를 확인할 수 없습니다. image 파라미터를 지정하세요."}
 
-        # Step 2: Pause reconcile on source+destination (do NOT change replicas)
+        # Step 2: Reduce source replicas by 1 (so reconcile won't restart)
         if service_name:
-            from .runtime import reconcile_skip_add
-            reconcile_skip_add(service_name)
             async with httpx.AsyncClient(timeout=10) as client:
                 try:
-                    await client.post(f"{src_url}/v1/agent/reconcile-skip", json={"service_name": service_name, "skip": True}, headers=_headers(src_node))
-                except Exception:
-                    pass
-                try:
-                    await client.post(f"{dst_url}/v1/agent/reconcile-skip", json={"service_name": service_name, "skip": True}, headers=_headers(dst_node))
+                    await client.post(f"{src_url}/v1/agent/adjust-replicas", json={"service_name": service_name, "delta": -1}, headers=_headers(src_node))
                 except Exception:
                     pass
 
@@ -962,7 +956,7 @@ async def cluster_move_container(req: Request):
             if resp.status_code != 200 and container_name:
                 await client.delete(f"{src_url}/v1/containers/{container_name}", headers=_headers(src_node))
 
-        # Step 4: Pull image + run 1 container on destination
+        # Step 4: Run 1 container on destination
         # NEVER use scale endpoint (it changes replicas permanently)
         # Find next available index to avoid name conflict
         svc_group = service_name
@@ -1002,40 +996,39 @@ async def cluster_move_container(req: Request):
             run_data = run_resp.json()
 
         if not run_data.get("success"):
-            result = {
+            # Rollback: restore source replicas
+            if service_name:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    try:
+                        await client.post(f"{src_url}/v1/agent/adjust-replicas", json={"service_name": service_name, "delta": +1}, headers=_headers(src_node))
+                    except Exception:
+                        pass
+            return {
                 "success": False,
-                "error": f"대상 노드에서 컨테이너 기동 실패: {run_data.get('message', '')}",
-                "details": run_data,
-            }
-        else:
-            result = {
-                "success": True,
-                "message": f"'{container_name}' 이동 완료: {source_node} -> {destination_node} (이미지: {image})",
-                "details": {
-                    "container_name": container_name,
-                    "image": image,
-                    "source_node": source_node,
-                    "destination_node": destination_node,
-                    "new_containers": run_data.get("details", {}).get("container_ids", []),
-                },
+                "error": f"대상 노드에서 컨테이너 기동 실패: {run_data.get('message', run_data.get('error',''))}",
             }
 
-        return result
+        # Step 5: Increase destination replicas by 1
+        if service_name:
+            async with httpx.AsyncClient(timeout=10) as client:
+                try:
+                    await client.post(f"{dst_url}/v1/agent/adjust-replicas", json={"service_name": service_name, "delta": +1}, headers=_headers(dst_node))
+                except Exception:
+                    pass
+
+        # Step 6: Force refresh Traefik routes immediately
+        try:
+            _sync_traefik_routes()
+        except Exception:
+            pass
+
+        return {
+            "success": True,
+            "message": f"'{container_name}' 이동 완료: {source_node} -> {destination_node} (이미지: {image})",
+        }
 
     except Exception as e:
         return {"success": False, "error": str(e)}
-
-    finally:
-        # Resume reconcile on all nodes
-        if service_name:
-            from .runtime import reconcile_skip_remove
-            reconcile_skip_remove(service_name)
-            try:
-                async with httpx.AsyncClient(timeout=10) as client:
-                    await client.post(f"{src_url}/v1/agent/reconcile-skip", json={"service_name": service_name, "skip": False}, headers=_headers(src_node))
-                    await client.post(f"{dst_url}/v1/agent/reconcile-skip", json={"service_name": service_name, "skip": False}, headers=_headers(dst_node))
-            except Exception:
-                pass
 
 
 @app.get("/v1/cluster/migrations")
@@ -1174,6 +1167,28 @@ def agent_resources():
     from .agent import WorkerAgent
     agent = _worker_agent or WorkerAgent()
     return agent.get_node_resources()
+
+
+@app.post("/v1/agent/adjust-replicas")
+async def agent_adjust_replicas(req: Request):
+    """Adjust replicas count in services.json WITHOUT creating/removing containers.
+    Used by move to keep reconcile in sync after container relocation."""
+    body = await req.json()
+    svc = (body.get("service_name") or "").strip()
+    delta = int(body.get("delta", 0))
+    if not svc:
+        return {"success": False}
+    info = state.get_service(svc)
+    if info:
+        new_replicas = max(0, info.get("replicas", 0) + delta)
+        state.upsert_service(svc, info["image"], replicas=new_replicas,
+                             memory_limit=info.get("memory_limit"), cpu_limit=info.get("cpu_limit"),
+                             container_ids=info.get("container_ids", []),
+                             environment=info.get("environment"), volumes=info.get("volumes"),
+                             ports=info.get("ports"), user=info.get("user"),
+                             volume_mode=info.get("volume_mode"))
+        return {"success": True, "service_name": svc, "replicas": new_replicas}
+    return {"success": False, "message": "service not found"}
 
 
 @app.post("/v1/agent/run-one")

@@ -942,7 +942,7 @@
         panel.innerHTML = '<p class="text-muted">배포된 서비스 없음 — 위 "클러스터 배포" 패널에서 이미지를 입력하여 배포하세요.</p>';
         return;
       }
-      var html = '<table><thead><tr><th>서비스</th><th>이미지</th><th>상태</th><th>노드 배치</th><th>URL</th><th>스케일</th><th>동작</th></tr></thead><tbody>';
+      var html = '<table><thead><tr><th>서비스</th><th>이미지</th><th>상태</th><th>노드 배치</th><th>Endpoint</th><th>스케일</th><th>동작</th></tr></thead><tbody>';
       data.forEach(function(s) {
         var running = s.running != null ? s.running : (s.status === 'running' ? s.replicas : 0);
         var total = s.replicas != null ? s.replicas : 0;

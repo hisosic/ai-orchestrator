@@ -245,16 +245,20 @@ def list_services(show_system: bool = False):
     # Build merged view: cluster placements are the source of truth
     cluster_svcs = _cluster_state.get_service_placement_summary()
     local_map = {s.name: s for s in local_services}
-    # Build node name -> IP map for endpoint URLs
-    node_ip_map = {}
+    # Build node name -> address map
+    node_info_map = {}
+    master_ip = None
+    master_node_name = os.environ.get("ORCHESTRATOR_NODE_NAME", "master")
     for n in _cluster_state.list_nodes():
         ip = n.address.split(":")[0] if ":" in n.address else n.address
-        node_ip_map[n.name] = ip
+        port = n.address.split(":")[1] if ":" in n.address else "8000"
+        node_info_map[n.name] = {"ip": ip, "port": port}
+        if n.role == "master" or n.name == master_node_name:
+            master_ip = ip
     result = []
 
     seen = set()
     for svc_name, info in cluster_svcs.items():
-        # Filter system services
         if not show_system and svc_name in SYSTEM_SERVICES:
             continue
         seen.add(svc_name)
@@ -269,11 +273,39 @@ def list_services(show_system: bool = False):
             image = local.image
 
         # Build endpoint URLs
+        # Traefik path routing: http://<node-ip>/<service-name>/
+        # Show endpoints for nodes that actually have the service
+        # Master node first if service is on master
         endpoints = []
-        for node_name in nodes:
-            ip = node_ip_map.get(node_name, "")
-            if ip:
-                endpoints.append(f"http://{ip}/{svc_name}/")
+        port_info = ""
+        if cluster_svc:
+            import json as _json
+            ports_raw = cluster_svc.get("ports", "[]")
+            try:
+                ports_list = _json.loads(ports_raw) if isinstance(ports_raw, str) else (ports_raw or [])
+            except Exception:
+                ports_list = []
+            if ports_list:
+                # e.g. ["8080:80"] -> show host port
+                for p in ports_list:
+                    parts = str(p).split(":")
+                    if len(parts) == 2:
+                        host_port = parts[0].strip()
+                        port_info = host_port
+
+        # Sort: master first, then other nodes
+        sorted_nodes = sorted(nodes.keys(), key=lambda n: (0 if n == master_node_name else 1, n))
+        for node_name in sorted_nodes:
+            ni = node_info_map.get(node_name, {})
+            ip = ni.get("ip", "")
+            if not ip:
+                continue
+            # Traefik routes on port 80
+            url = f"http://{ip}/{svc_name}/"
+            endpoints.append(url)
+            # If there's a host port mapping (not 80/443), add direct port endpoint too
+            if port_info and port_info not in ("80", "443"):
+                endpoints.append(f"http://{ip}:{port_info}/")
 
         result.append({
             "name": svc_name,

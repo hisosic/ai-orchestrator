@@ -671,10 +671,13 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
             <input type="text" id="pullImageName" placeholder="이미지 Pull (예: nginx:latest)" autocomplete="off">
             <button type="button" class="btn btn-sm" id="btnPullImage">Pull</button>
           </div>
-          <!-- Image search/filter (Task 4.2) -->
-          <input type="text" class="img-search-input" id="imageSearchInput" placeholder="이미지 검색 (이름으로 필터)..." autocomplete="off">
-          <!-- Image list -->
-          <div id="imagesPanel"><span class="loading">불러오는 중…</span></div>
+          <!-- Image list (collapsible) -->
+          <details style="margin-top:0.5rem;">
+            <summary style="cursor:pointer;font-size:0.9rem;font-weight:600;color:var(--text-muted);user-select:none;padding:0.4rem 0;">이미지 목록 <span style="font-size:0.8rem;">&#x25BC;</span></summary>
+            <!-- Image search/filter (Task 4.2) -->
+            <input type="text" class="img-search-input" id="imageSearchInput" placeholder="이미지 검색 (이름으로 필터)..." autocomplete="off" style="margin-top:0.5rem;">
+            <div id="imagesPanel"><span class="loading">불러오는 중…</span></div>
+          </details>
         </div>
       </div>
 
@@ -699,9 +702,9 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
             </div>
           </div>
           <!-- Task 6: Drag and Drop command blocks -->
-          <div class="cmd-block-area">
-            <div class="block-title">명령 블록 (드래그하여 조합)</div>
-            <div class="cmd-blocks-palette">
+          <details class="cmd-block-area">
+            <summary class="block-title" style="cursor:pointer;user-select:none;">명령 블록 (드래그하여 조합) <span style="float:right;font-size:0.8rem;color:var(--text-muted);">&#x25BC;</span></summary>
+            <div class="cmd-blocks-palette" style="margin-top:0.5rem;">
               <div class="cmd-block" data-action="deploy" draggable="true">&#x1F4E6; 배포</div>
               <div class="cmd-block" data-action="scale" draggable="true">&#x2696; 스케일</div>
               <div class="cmd-block" data-action="stop" draggable="true">&#x23F9; 중지</div>
@@ -715,7 +718,7 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
               <button type="button" class="btn btn-sm btn-success" id="btnComposeRun">조합 실행</button>
               <button type="button" class="btn btn-sm btn-outline" id="btnComposeClear">초기화</button>
             </div>
-          </div>
+          </details>
           <div class="log" id="commandLog"></div>
         </div>
       </div>

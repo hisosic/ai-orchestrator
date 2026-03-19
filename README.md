@@ -193,6 +193,258 @@ src/orchestrator/
     └── dashboard.html   # 웹 대시보드
 ```
 
+## 블록체인 QuickStart
+
+블록체인(Goloop) 네트워크를 자동 구성합니다. Validator + Citizen 노드를 한 번에 기동합니다.
+
+**API 호출:**
+```bash
+curl -X POST http://<master-ip>:8000/v1/quickstart/blockchain \
+  -H "Content-Type: application/json" \
+  -d '{"validators":4,"citizens":0,"channel":"seoul"}'
+```
+
+**상태 확인:**
+```bash
+curl http://<master-ip>:8000/v1/quickstart/blockchain/status
+```
+
+### 기동 단계별 상세
+
+#### Phase 0: 이전 배포 정리
+
+기존 블록체인 컨테이너와 데이터를 모두 제거합니다.
+
+<details>
+<summary>상세 명령어</summary>
+
+```bash
+# 동일 채널의 기존 컨테이너 제거
+docker ps -a --filter "label=blockchain.channel=${CHANNEL}" -q | xargs -r docker rm -f
+
+# 모든 블록체인 컨테이너 제거
+docker ps -a --filter "label=blockchain.channel" -q | xargs -r docker rm -f
+
+# 작업 디렉터리 초기화
+rm -rf ${WORK_DIR}/*
+mkdir -p ${WORK_DIR}
+chmod 777 ${WORK_DIR}
+```
+</details>
+
+#### Phase 1: 키스토어 생성
+
+각 노드(Validator + Citizen)에 대해 개별 키스토어를 생성합니다.
+
+<details>
+<summary>상세 명령어</summary>
+
+```bash
+# 각 노드별 디렉터리 생성
+mkdir -p ${WORK_DIR}/node-${i}/conf ${WORK_DIR}/node-${i}/data
+
+# 키스토어 생성 (goloop ks gen)
+docker run --rm --entrypoint "" \
+    -v "${CONF_DIR}:/work" -w /work \
+    "${IMAGE}" \
+    goloop ks gen --out /work/keystore.json --password "${KS_PW}"
+
+# 키 비밀번호 파일 생성
+echo -n "${KS_PW}" > ${CONF_DIR}/keysecret
+
+# 주소 추출
+python3 -c "import json; print(json.load(open('${CONF_DIR}/keystore.json'))['address'])"
+```
+</details>
+
+#### Phase 2: 제네시스 생성
+
+Validator 주소 목록으로 genesis.json을 생성합니다.
+
+<details>
+<summary>상세 명령어</summary>
+
+```bash
+# 제네시스 파일 생성 (goloop gn gen)
+docker run --rm --entrypoint "" \
+    -v "${GENESIS_DIR}:/work" -w /work \
+    "${IMAGE}" \
+    goloop gn gen \
+    --out /work/genesis.json \
+    --god "${GOD_ADDR}" \
+    --config "revision=0x8,minimizeBlockGen=0x1" \
+    ${VALIDATOR_ADDR_0} ${VALIDATOR_ADDR_1} ${VALIDATOR_ADDR_2} ${VALIDATOR_ADDR_3}
+
+# GOD_ADDR = 첫 번째 Validator 주소
+# Validator 주소 목록이 순서대로 전달됨
+```
+</details>
+
+#### Phase 3: 제네시스 스토리지 (gs.zip)
+
+genesis.json으로부터 gs.zip을 생성하고 모든 노드에 배포합니다.
+
+<details>
+<summary>상세 명령어</summary>
+
+```bash
+# gs.zip 생성 (goloop gs gen)
+docker run --rm --entrypoint "" \
+    -v "${GENESIS_DIR}:/work" -w /work \
+    "${IMAGE}" \
+    goloop gs gen --input /work/genesis.json --out /work/gs.zip
+
+# 모든 노드에 gs.zip 복사
+for i in $(seq 1 $((TOTAL - 1))); do
+    cp "${GENESIS_DIR}/gs.zip" "${WORK_DIR}/node-${i}/conf/gs.zip"
+done
+```
+</details>
+
+#### Phase 4: 라이선스 생성
+
+issuer 키스토어로 전체 노드에 대한 무기한 라이선스를 발급합니다.
+
+<details>
+<summary>상세 명령어</summary>
+
+```bash
+# 라이선스 생성 (goloop lc gen)
+docker run --rm --entrypoint "" \
+    -v "${BLOCKCHAIN_SRC}:/issuer:ro" \
+    -v "${WORK_DIR}:/work" -w /work \
+    "${IMAGE}" \
+    goloop lc gen \
+    --keystore /issuer/issuer.json \
+    --password "${ISSUER_PW}" \
+    --out /work/license.json \
+    --duration infinite \
+    --subject "${CHANNEL}" \
+    ${ALL_NODE_ADDRESSES}
+
+# 모든 노드에 라이선스 배포
+for i in $(seq 0 $((TOTAL - 1))); do
+    cp "${WORK_DIR}/license.json" "${WORK_DIR}/node-${i}/conf/license.json"
+done
+```
+</details>
+
+#### Phase 5: 컨테이너 기동
+
+각 노드를 Docker 컨테이너로 실행합니다. Seed 노드는 순환 구조로 연결됩니다.
+
+<details>
+<summary>상세 명령어</summary>
+
+```bash
+# goloop.env 환경변수 파일 (각 노드별 생성)
+cat > "${NODE_DIR}/goloop.env" <<EOF
+GOLOOP_NODE_DIR=/goloop/data
+GOLOOP_ENGINES=python
+GOLOOP_P2P=${CONTAINER_NAME}:8080
+GOLOOP_P2P_LISTEN=:8080
+GOLOOP_RPC_ADDR=:9080
+GOLOOP_RPC_DUMP=false
+GOLOOP_KEY_STORE=/goloop/conf/keystore.json
+GOLOOP_KEY_SECRET=/goloop/conf/keysecret
+GOLOOP_LICENSE_FILE=/goloop/conf/license.json
+GOLOOP_CONSOLE_LEVEL=warn
+GOLOOP_LOG_LEVEL=${LOG_LEVEL}
+GOLOOP_LOG_WRITER_FILENAME=/goloop/data/log/goloop.log
+GOLOOP_LOG_WRITER_COMPRESS=true
+GOLOOP_LOG_WRITER_MAXSIZE=100
+EOF
+
+# 컨테이너 실행
+docker run -d \
+    --name "blockchain-${CHANNEL}-${i}" \
+    --network "${NETWORK}" \
+    --env-file "${NODE_DIR}/goloop.env" \
+    -v "${NODE_DIR}/conf:/goloop/conf" \
+    -v "${NODE_DIR}/data:/goloop/data" \
+    -p "${P2P_PORT}:8080" \
+    -p "${RPC_PORT}:9080" \
+    --ulimit nofile=98304:98304 \
+    -l "blockchain.role=${ROLE}" \
+    -l "blockchain.channel=${CHANNEL}" \
+    -l "blockchain.index=${i}" \
+    -l "blockchain.p2p_port=${P2P_PORT}" \
+    -l "blockchain.rpc_port=${RPC_PORT}" \
+    "${IMAGE}"
+
+# Seed 노드 연결 구조:
+#   Validator: 순환 연결 (node-0→node-1→node-2→...→node-0)
+#   Citizen:   첫 1~2개 Validator에 연결
+```
+</details>
+
+#### Phase 6: 체인 조인 및 시작
+
+각 노드에서 체인에 조인하고 합의를 시작합니다.
+
+<details>
+<summary>상세 명령어</summary>
+
+```bash
+# 컨테이너 초기화 대기 (8초)
+sleep 8
+
+# Validator 노드 조인
+docker exec "blockchain-${CHANNEL}-${i}" \
+    goloop chain join \
+    --genesis /goloop/conf/gs.zip \
+    --seed "blockchain-${CHANNEL}-${SEED_1}:8080,blockchain-${CHANNEL}-${SEED_2}:8080" \
+    --channel ${CHANNEL}
+
+# Citizen 노드 조인 (--role 0 플래그 추가)
+docker exec "blockchain-${CHANNEL}-${i}" \
+    goloop chain join \
+    --genesis /goloop/conf/gs.zip \
+    --seed "blockchain-${CHANNEL}-0:8080,blockchain-${CHANNEL}-1:8080" \
+    --channel ${CHANNEL} \
+    --role 0
+
+# 체인 시작
+docker exec "blockchain-${CHANNEL}-${i}" \
+    goloop chain start "${CHANNEL}"
+```
+</details>
+
+#### Phase 7: 검증
+
+모든 노드의 체인 상태를 확인합니다.
+
+<details>
+<summary>상세 명령어</summary>
+
+```bash
+# 안정화 대기 (3초)
+sleep 3
+
+# 각 노드 체인 상태 확인
+for i in $(seq 0 $((TOTAL - 1))); do
+    docker exec "blockchain-${CHANNEL}-${i}" goloop chain ls
+done
+
+# RPC로 블록 높이 확인
+curl -s http://localhost:${RPC_PORT}/api/v3/${CHANNEL} \
+    -d '{"jsonrpc":"2.0","method":"icx_getLastBlock","id":1}'
+```
+</details>
+
+### 설정 파라미터
+
+| 파라미터 | 기본값 | 설명 |
+|----------|--------|------|
+| `validators` | `4` | Validator 노드 수 (1~20) |
+| `citizens` | `0` | Citizen 노드 수 |
+| `channel` | `seoul` | 블록체인 채널명 |
+| `image` | `goloop:v1.2.5-seoul-test` | 컨테이너 이미지 |
+| `p2p_port` | `7100` | P2P 베이스 포트 |
+| `rpc_port` | `9100` | RPC 베이스 포트 |
+| `log_level` | `trace` | 로그 레벨 |
+| `network` | `orch-internal` | Docker 네트워크 |
+
 ## 문서
 
 - [아키텍처](docs/ARCHITECTURE.md)

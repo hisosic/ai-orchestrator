@@ -3254,6 +3254,10 @@ func autoHealLoop() {
 				if p.ServiceName == "" {
 					continue
 				}
+				// Skip temporary quickstart containers.
+				if strings.HasPrefix(p.ContainerName, "qs-") || strings.HasPrefix(p.ServiceName, "qs-") {
+					continue
+				}
 
 				// Cooldown check.
 				autoHealMu.Lock()

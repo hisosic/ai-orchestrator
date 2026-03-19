@@ -1898,17 +1898,18 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
       var rep = data.replicas || '';
       var host = window.location.origin;
       if (action === 'deploy' || action === 'run') {
-        return 'curl -X POST ' + host + '/v1/containers/run -H "Content-Type: application/json" -d '{"image":"' + (img || svc) + '","replicas":' + (rep || 1) + '}'';
+        return "curl -X POST " + host + "/v1/containers/run -H 'Content-Type: application/json' -d '{\"image\":\"" + (img || svc) + "\",\"replicas\":" + (rep || 1) + "}'";
       } else if (action === 'scale') {
-        return 'curl -X POST ' + host + '/v1/services/scale -H "Content-Type: application/json" -d '{"service_name":"' + svc + '","replicas":' + (rep || 1) + '}'';
+        return "curl -X POST " + host + "/v1/services/scale -H 'Content-Type: application/json' -d '{\"service_name\":\"" + svc + "\",\"replicas\":" + (rep || 1) + "}'";
       } else if (action === 'stop') {
-        return 'curl -X POST ' + host + '/v1/containers/' + svc + '/stop';
+        return "curl -X POST " + host + "/v1/containers/" + svc + "/stop";
       } else if (action === 'status' || action === 'list') {
-        return 'curl ' + host + '/v1/services';
+        return "curl " + host + "/v1/services";
       } else if (action === 'migrate') {
-        return 'curl -X POST ' + host + '/v1/migrate -H "Content-Type: application/json" -d '{"container_id":"' + svc + '","target_node":"' + (data.target_node || '') + '"}'';
+        return "curl -X POST " + host + "/v1/migrate -H 'Content-Type: application/json' -d '{\"container_id\":\"" + svc + "\",\"target_node\":\"" + (data.target_node || "") + "\"}'";
+
       }
-      return 'curl -X POST ' + host + '/v1/command -H "Content-Type: application/json" -d '{"command":"' + svc + '"}'';
+      return "curl -X POST " + host + "/v1/command -H 'Content-Type: application/json' -d '{\"command\":\"" + svc + "\"}'";
     }
 
     function formatIntent(data) {

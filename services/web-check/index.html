@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>web-check | Service Health Dashboard</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #c9d1d9; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+  .dashboard { width: 600px; padding: 2rem; }
+  h1 { font-size: 1.5rem; color: #58a6ff; margin-bottom: 0.5rem; }
+  .subtitle { color: #8b949e; margin-bottom: 2rem; font-size: 0.9rem; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 1.2rem; margin-bottom: 1rem; }
+  .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.8rem; }
+  .card-title { font-size: 1.1rem; font-weight: 600; }
+  .badge { padding: 0.2rem 0.6rem; border-radius: 12px; font-size: 0.75rem; font-weight: 600; }
+  .badge-ok { background: #238636; color: #fff; }
+  .badge-fail { background: #da3633; color: #fff; }
+  .badge-checking { background: #d29922; color: #fff; }
+  .detail { font-size: 0.85rem; color: #8b949e; line-height: 1.8; }
+  .detail span { color: #c9d1d9; font-family: 'JetBrains Mono', 'Fira Code', monospace; }
+  .arrow { text-align: center; color: #30363d; font-size: 1.5rem; margin: 0.5rem 0; }
+  .architecture { text-align: center; color: #8b949e; font-size: 0.8rem; margin-bottom: 1.5rem; padding: 0.8rem; background: #161b22; border-radius: 8px; border: 1px solid #30363d; font-family: monospace; letter-spacing: 0.05em; }
+  .ts { text-align: right; color: #484f58; font-size: 0.75rem; margin-top: 1rem; }
+  .pulse { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; animation: pulse 2s infinite; }
+  .pulse-ok { background: #3fb950; }
+  .pulse-fail { background: #f85149; }
+  .pulse-checking { background: #d29922; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+</style>
+</head>
+<body>
+<div class="dashboard">
+  <h1>&#x1f50d; web-check</h1>
+  <p class="subtitle">3-Tier Service Health Monitor</p>
+
+  <div class="architecture">
+    [ web-check :80 ] &rarr; [ was :8080 ] &rarr; [ db (Redis) :6379 ]
+  </div>
+
+  <!-- WEB-CHECK self -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title"><span class="pulse pulse-ok" id="webPulse"></span> web-check (Frontend)</span>
+      <span class="badge badge-ok" id="webBadge">OK</span>
+    </div>
+    <div class="detail">
+      역할: <span>Nginx Reverse Proxy + Status Page</span><br>
+      포트: <span>80</span><br>
+      상태: <span id="webStatus">Running</span>
+    </div>
+  </div>
+
+  <div class="arrow">&#x25BC;</div>
+
+  <!-- WAS -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title"><span class="pulse pulse-checking" id="wasPulse"></span> was (Application)</span>
+      <span class="badge badge-checking" id="wasBadge">확인중...</span>
+    </div>
+    <div class="detail">
+      역할: <span>Application Server (Python)</span><br>
+      호스트: <span id="wasHost">orch-was-0:8080</span><br>
+      상태: <span id="wasStatus">확인중...</span><br>
+      hostname: <span id="wasHostname">-</span>
+    </div>
+  </div>
+
+  <div class="arrow">&#x25BC;</div>
+
+  <!-- DB -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title"><span class="pulse pulse-checking" id="dbPulse"></span> db (Database)</span>
+      <span class="badge badge-checking" id="dbBadge">확인중...</span>
+    </div>
+    <div class="detail">
+      역할: <span>Redis 7 (Key-Value Store)</span><br>
+      호스트: <span id="dbHost">orch-db-0:6379</span><br>
+      상태: <span id="dbStatus">확인중...</span><br>
+      IP: <span id="dbIP">-</span>
+    </div>
+  </div>
+
+  <p class="ts" id="timestamp">마지막 확인: -</p>
+</div>
+
+<script>
+function setBadge(id, ok) {
+  var el = document.getElementById(id);
+  el.className = 'badge ' + (ok ? 'badge-ok' : 'badge-fail');
+  el.textContent = ok ? 'OK' : 'FAIL';
+}
+function setPulse(id, ok) {
+  var el = document.getElementById(id);
+  el.className = 'pulse ' + (ok ? 'pulse-ok' : 'pulse-fail');
+}
+
+async function checkServices() {
+  // Check WAS
+  try {
+    var r = await fetch('/api/health', { signal: AbortSignal.timeout(3000) });
+    var d = await r.json();
+    setBadge('wasBadge', true);
+    setPulse('wasPulse', true);
+    document.getElementById('wasStatus').textContent = 'Running (' + d.hostname + ')';
+    document.getElementById('wasHostname').textContent = d.hostname || '-';
+  } catch(e) {
+    setBadge('wasBadge', false);
+    setPulse('wasPulse', false);
+    document.getElementById('wasStatus').textContent = '연결 실패: ' + e.message;
+    document.getElementById('wasHostname').textContent = '-';
+  }
+
+  // Check DB (via WAS)
+  try {
+    var r2 = await fetch('/api/db-check', { signal: AbortSignal.timeout(5000) });
+    var d2 = await r2.json();
+    var ok = d2.db_reachable === true;
+    setBadge('dbBadge', ok);
+    setPulse('dbPulse', ok);
+    document.getElementById('dbStatus').textContent = ok ? 'Connected (PONG)' : '연결 실패';
+    document.getElementById('dbHost').textContent = d2.db_host + ':' + d2.db_port;
+    document.getElementById('dbIP').textContent = d2.db_ip || '-';
+  } catch(e) {
+    setBadge('dbBadge', false);
+    setPulse('dbPulse', false);
+    document.getElementById('dbStatus').textContent = 'WAS 경유 확인 실패';
+    document.getElementById('dbIP').textContent = '-';
+  }
+
+  document.getElementById('timestamp').textContent = '마지막 확인: ' + new Date().toLocaleTimeString('ko-KR');
+}
+
+checkServices();
+setInterval(checkServices, 5000);
+</script>
+</body>
+</html>

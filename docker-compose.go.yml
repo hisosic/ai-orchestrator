@@ -1,0 +1,76 @@
+# Go 버전 AI Container Orchestrator - Master Node
+# 사용법:
+#   docker network create orch-internal
+#   docker compose -f docker-compose.go.yml up -d --build
+
+services:
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile.go
+    container_name: ai-orchestrator
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - orchestrator-data:/data
+      - traefik-dynamic:/traefik-dynamic
+      - /tmp/host-net-dev:/host/net/dev:ro
+    environment:
+      - ORCHESTRATOR_ROLE=master
+      - ORCHESTRATOR_NODE_NAME=master
+      - ORCHESTRATOR_HEARTBEAT_INTERVAL=10
+      - ORCHESTRATOR_STATE_DIR=/data
+      - ORCHESTRATOR_API_TOKEN=${ORCHESTRATOR_API_TOKEN:-}
+      - ORCHESTRATOR_ADVERTISE_ADDR=${ORCHESTRATOR_ADVERTISE_ADDR:-}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - orch-internal
+
+  traefik:
+    image: traefik:v2.10
+    container_name: orch-traefik
+    restart: unless-stopped
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedByDefault=false"
+      - "--providers.docker.network=orch-internal"
+      - "--providers.file.directory=/etc/traefik/dynamic"
+      - "--providers.file.watch=true"
+      - "--entrypoints.web.address=:80"
+    ports:
+      - "80:80"
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-dynamic:/etc/traefik/dynamic:ro
+    networks:
+      - orch-internal
+
+  dns:
+    image: alpine:3.18
+    container_name: orch-dns
+    restart: unless-stopped
+    command: >
+      sh -c "apk add --no-cache dnsmasq &&
+             echo 'address=/.local/127.0.0.1' > /etc/dnsmasq.d/local.conf &&
+             dnsmasq --no-daemon --log-queries --port=53"
+    ports:
+      - "15353:53/udp"
+      - "15353:53/tcp"
+    networks:
+      - orch-internal
+
+volumes:
+  orchestrator-data:
+  traefik-dynamic:
+
+networks:
+  orch-internal:
+    external: true

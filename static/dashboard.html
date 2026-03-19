@@ -1,0 +1,3324 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Container Orchestrator — Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --text-muted: #8b949e;
+      --accent: #58a6ff;
+      --success: #3fb950;
+      --warn: #d29922;
+      --danger: #f85149;
+      --radius: 8px;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font-family: 'Outfit', sans-serif; font-size: 14px; line-height: 1.5; min-height: 100vh; }
+    .layout { max-width: 1600px; margin: 0 auto; padding: 1.5rem; }
+    header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 1px solid var(--border); }
+    h1 { font-size: 1.5rem; font-weight: 700; margin: 0; letter-spacing: -0.02em; }
+    .header-meta { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+    .refresh-control { display: flex; align-items: center; gap: 0.5rem; }
+    .refresh-control label { color: var(--text-muted); }
+    .refresh-control select { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); padding: 0.35rem 0.6rem; font-family: inherit; }
+    .last-updated { color: var(--text-muted); font-size: 0.85rem; }
+    .btn { background: var(--accent); color: #fff; border: none; border-radius: var(--radius); padding: 0.4rem 0.9rem; font-family: inherit; font-weight: 600; cursor: pointer; }
+    .btn:hover { filter: brightness(1.1); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-sm { padding: 0.25rem 0.5rem; font-size: 0.8rem; }
+    .btn-danger { background: var(--danger); }
+    .btn-warn { background: var(--warn); color: #000; }
+    .btn-success { background: var(--success); color: #fff; }
+    .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text-muted); }
+    .btn-outline:hover { border-color: var(--accent); color: var(--accent); }
+    .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+    .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+    .panel-title { padding: 0.75rem 1rem; font-weight: 600; border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.03); }
+    .panel-body { padding: 1rem; overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
+    th { color: var(--text-muted); font-weight: 600; }
+    tr:last-child td { border-bottom: none; }
+    .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
+    .badge-running { background: rgba(63,185,80,0.2); color: var(--success); }
+    .badge-stopped { background: rgba(139,148,158,0.2); color: var(--text-muted); }
+    .badge-managed { background: rgba(88,166,255,0.2); color: var(--accent); }
+    .badge-healthy { background: rgba(63,185,80,0.2); color: var(--success); }
+    .badge-degraded { background: rgba(210,153,34,0.2); color: var(--warn); }
+    .badge-offline { background: rgba(248,81,73,0.2); color: var(--danger); }
+    .badge-cordoned { background: rgba(210,153,34,0.2); color: var(--warn); }
+    .loading { color: var(--text-muted); }
+    .text-muted { color: var(--text-muted); }
+    .error-msg { color: var(--danger); }
+
+    .console-wrap { grid-column: 1 / -1; }
+    .console-wrap .panel-body { padding: 0; display: flex; flex-direction: column; }
+    .command-row { display: flex; gap: 0.5rem; padding: 1rem; border-bottom: 1px solid var(--border); align-items: center; flex-wrap: wrap; }
+    .command-row input[type="text"] {
+      flex: 1;
+      min-width: 200px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.6rem 0.8rem;
+      border-radius: var(--radius);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.9rem;
+    }
+    .command-row input::placeholder { color: var(--text-muted); }
+    .command-row input:focus { outline: none; border-color: var(--accent); }
+    .command-row label { display: flex; align-items: center; gap: 0.4rem; cursor: pointer; color: var(--text-muted); }
+    .command-row input[type="checkbox"] { width: auto; min-width: auto; }
+    .log { padding: 1rem; font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; max-height: 260px; overflow-y: auto; background: #0a0c10; }
+    .log-entry { margin-bottom: 0.5rem; }
+    .log-entry .ts { color: var(--text-muted); margin-right: 0.5rem; }
+    .log-entry .cmd { color: var(--accent); }
+    .log-entry .ok { color: var(--success); }
+    .log-entry .err { color: var(--danger); }
+    .log-entry .msg { color: var(--text); }
+    .operator-status { font-size: 0.85rem; padding: 0.25rem 0.5rem; border-radius: 4px; background: rgba(63,185,80,0.15); color: var(--success); font-weight: 600; }
+    .operator-status.error { background: rgba(248,81,73,0.15); color: var(--danger); }
+    tr.group-row { background: rgba(88,166,255,0.06); }
+    tr.group-row td { font-weight: 600; vertical-align: middle; }
+    tr.group-member { display: none; }
+    tr.group-member.expanded { display: table-row; }
+    tr.group-member td:first-child { padding-left: 2rem; }
+    .replica-control { display: inline-flex; align-items: center; gap: 0.35rem; }
+    .replica-control input[type="number"] { width: 3.5rem; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 0.25rem 0.4rem; border-radius: 4px; font-family: inherit; }
+    .toggle-group { background: none; border: none; color: var(--accent); cursor: pointer; padding: 0.2rem 0.4rem; font-size: 0.9rem; }
+    .field label { display: block; color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.25rem; }
+    .field textarea, .field input[type="text"] { width: 100%; max-width: 320px; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 0.4rem; border-radius: var(--radius); font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; }
+    .field textarea { resize: vertical; min-height: 2.5rem; }
+    .containers-toolbar { display: flex; justify-content: flex-end; gap: 0.5rem; margin-bottom: 0.5rem; }
+    .inspect-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 2000; }
+    .inspect-modal { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); max-width: 900px; width: 90%; max-height: 80vh; display: flex; flex-direction: column; box-shadow: 0 12px 30px rgba(0,0,0,0.6); }
+    .inspect-modal-header { padding: 0.75rem 1rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; font-weight: 600; }
+    .inspect-modal-title { font-size: 0.95rem; }
+    .inspect-modal-close { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 1rem; }
+    .inspect-modal-close:hover { color: var(--text); }
+    .inspect-modal-body { padding: 0.75rem 1rem 1rem; overflow: auto; }
+    .inspect-modal-body pre { margin: 0; font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; white-space: pre; }
+
+
+    /* ===== Task 5: Command Preview ===== */
+    .command-preview { margin:0;padding:0.75rem 1rem;background:rgba(88,166,255,0.08);border-bottom:1px solid var(--border);font-family:'JetBrains Mono',monospace;font-size:0.82rem;display:none; }
+    .command-preview.active { display:block; }
+    .command-preview .preview-label { color:var(--accent);font-weight:600;margin-bottom:0.35rem; }
+    .command-preview .preview-intent { color:var(--text);margin-bottom:0.3rem; }
+    .command-preview .preview-cli { background:var(--bg);padding:0.4rem 0.6rem;border-radius:4px;color:var(--success);word-break:break-all;margin-bottom:0.4rem; }
+    .command-preview .preview-actions { display:flex;gap:0.5rem; }
+    /* ===== Task 6: Drag Command Blocks ===== */
+    .cmd-block-area { padding:0.75rem 1rem;border-bottom:1px solid var(--border); }
+    .cmd-block-area .block-title { font-size:0.8rem;color:var(--text-muted);margin-bottom:0.5rem;font-weight:600; }
+    .cmd-blocks-palette { display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.5rem; }
+    .cmd-block { display:inline-flex;align-items:center;gap:0.3rem;padding:0.35rem 0.75rem;border-radius:20px;font-size:0.82rem;font-weight:600;cursor:grab;user-select:none;transition:transform 0.15s; }
+    .cmd-block:active { cursor:grabbing;transform:scale(1.08); }
+    .cmd-block[data-action="deploy"] { background:rgba(63,185,80,0.2);color:var(--success);border:1px solid var(--success); }
+    .cmd-block[data-action="scale"] { background:rgba(88,166,255,0.2);color:var(--accent);border:1px solid var(--accent); }
+    .cmd-block[data-action="stop"] { background:rgba(248,81,73,0.2);color:var(--danger);border:1px solid var(--danger); }
+    .cmd-block[data-action="migrate"] { background:rgba(163,113,247,0.2);color:#a371f7;border:1px solid #a371f7; }
+    .cmd-block[data-action="status"] { background:rgba(210,153,34,0.2);color:var(--warn);border:1px solid var(--warn); }
+    .cmd-compose-zone { min-height:60px;border:2px dashed var(--border);border-radius:var(--radius);padding:0.5rem;display:flex;flex-direction:column;gap:0.5rem;transition:border-color 0.2s; }
+    .cmd-compose-zone.drag-over { border-color:var(--accent);background:rgba(88,166,255,0.05); }
+    .cmd-compose-zone .placeholder { color:var(--text-muted);font-size:0.8rem;text-align:center;padding:0.5rem; }
+    .compose-item { display:flex;align-items:center;gap:0.5rem;padding:0.4rem 0.6rem;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);font-size:0.82rem;flex-wrap:wrap; }
+    .compose-item .compose-label { font-weight:600;min-width:60px; }
+    .compose-item input[type="text"],.compose-item input[type="number"] { background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.25rem 0.4rem;border-radius:4px;font-family:inherit;font-size:0.8rem;width:120px; }
+    .compose-item .compose-remove { background:none;border:none;color:var(--danger);cursor:pointer;font-size:1rem;margin-left:auto; }
+    .cmd-compose-actions { display:flex;gap:0.5rem;margin-top:0.5rem; }
+    /* ===== Task 7: Workflow Builder ===== */
+    .workflow-builder { margin-top:1rem;border-top:1px solid var(--border);padding-top:1rem; }
+    .workflow-builder .wf-title { font-size:0.95rem;font-weight:600;margin-bottom:0.5rem; }
+    .wf-palette { display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.75rem; }
+    .wf-drag-item { display:inline-flex;align-items:center;gap:0.3rem;padding:0.35rem 0.7rem;border-radius:20px;font-size:0.82rem;font-weight:600;cursor:grab;user-select:none;background:rgba(88,166,255,0.15);color:var(--accent);border:1px solid var(--accent);transition:transform 0.15s; }
+    .wf-drag-item:active { cursor:grabbing;transform:scale(1.08); }
+    .wf-drop-zone { min-height:80px;border:2px dashed var(--border);border-radius:var(--radius);padding:0.5rem;display:flex;flex-direction:column;gap:0.5rem;transition:border-color 0.2s;margin-bottom:0.75rem; }
+    .wf-drop-zone.drag-over { border-color:var(--accent);background:rgba(88,166,255,0.05); }
+    .wf-drop-zone .placeholder { color:var(--text-muted);font-size:0.8rem;text-align:center;padding:1rem; }
+    .wf-step { display:flex;align-items:center;gap:0.6rem;padding:0.5rem 0.7rem;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);font-size:0.82rem;cursor:grab; }
+    .wf-step .wf-step-num { background:var(--accent);color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:0.7rem;font-weight:700;flex-shrink:0; }
+    .wf-step .wf-step-name { font-weight:600;min-width:70px; }
+    .wf-step input { background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.2rem 0.4rem;border-radius:4px;font-family:inherit;font-size:0.78rem;width:140px; }
+    .wf-step input.wf-replicas { width:50px; }
+    .wf-step .wf-step-status { margin-left:auto;font-size:0.75rem;font-weight:600; }
+    .wf-step .wf-step-status.waiting { color:var(--text-muted); }
+    .wf-step .wf-step-status.running { color:var(--accent); }
+    .wf-step .wf-step-status.done { color:var(--success); }
+    .wf-step .wf-step-status.failed { color:var(--danger); }
+    .wf-step .wf-remove { background:none;border:none;color:var(--danger);cursor:pointer;font-size:1rem; }
+    .wf-actions { display:flex;gap:0.5rem; }
+    /* ===== Alert Banner ===== */
+    .alert-banner { display: none; padding: 0.6rem 1rem; font-size: 0.85rem; font-weight: 600; border-radius: var(--radius); margin-bottom: 1rem; align-items: center; gap: 0.75rem; }
+    .alert-banner.active { display: flex; }
+    .alert-banner.level-critical { background: rgba(248,81,73,0.18); border: 1px solid var(--danger); color: var(--danger); }
+    .alert-banner.level-warning { background: rgba(210,153,34,0.18); border: 1px solid var(--warn); color: var(--warn); }
+    .alert-banner .alert-text { flex: 1; }
+    .alert-banner .alert-count { font-size: 0.75rem; opacity: 0.8; margin-left: 0.5rem; }
+    .alert-banner .btn { font-size: 0.75rem; padding: 0.2rem 0.6rem; }
+    .alert-details { display: none; margin-bottom: 1rem; }
+    .alert-details.expanded { display: block; }
+    .alert-details table { font-size: 0.8rem; }
+    .alert-details .badge { font-size: 0.7rem; }
+
+    /* ===== Cluster Overview Bar ===== */
+    .cluster-bar { display: none; overflow-x: auto; gap: 0.75rem; margin-bottom: 1.5rem; padding-bottom: 0.5rem; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+    .cluster-bar.active { display: flex; }
+    .cluster-bar::-webkit-scrollbar { height: 6px; }
+    .cluster-bar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    .node-card { flex: 0 0 220px; background: var(--surface); border: 2px solid var(--border); border-radius: var(--radius); padding: 0.75rem; cursor: pointer; transition: border-color 0.2s, box-shadow 0.2s; }
+    .node-card:hover { box-shadow: 0 0 0 1px rgba(88,166,255,0.3); }
+    .node-card.selected { box-shadow: 0 0 0 2px var(--accent); }
+    .node-card.healthy { border-color: var(--success); }
+    .node-card.degraded, .node-card.cordoned { border-color: var(--warn); }
+    .node-card.offline { border-color: var(--danger); }
+    .node-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
+    .node-card-name { font-weight: 600; font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 130px; }
+    .node-card-ip { color: var(--text-muted); font-size: 0.7rem; font-family: 'JetBrains Mono', monospace; margin-top: 0.15rem; }
+    .node-card-containers { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.4rem; }
+
+    .usage-bar { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; margin-top: 0.35rem; }
+    .usage-bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
+    .usage-bar-fill.cpu { background: var(--accent); }
+    .usage-bar-fill.mem { background: #a371f7; }
+    .usage-bar-fill.low { background: var(--success); }
+    .usage-bar-fill.mid { background: var(--warn); }
+    .usage-bar-fill.high { background: var(--danger); }
+    .usage-label { display: flex; justify-content: space-between; font-size: 0.7rem; color: var(--text-muted); margin-top: 0.2rem; }
+
+    /* ===== Node Tabs ===== */
+    .tabs { display: flex; gap: 0; margin-bottom: 1.5rem; border-bottom: 2px solid var(--border); overflow-x: auto; scrollbar-width: none; }
+    .tabs::-webkit-scrollbar { display: none; }
+    .tab { padding: 0.5rem 1rem; font-size: 0.85rem; font-weight: 600; color: var(--text-muted); background: none; border: none; border-bottom: 2px solid transparent; margin-bottom: -2px; cursor: pointer; white-space: nowrap; font-family: inherit; transition: color 0.2s, border-color 0.2s; }
+    .tab:hover { color: var(--text); }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .tab .tab-status { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 0.4rem; vertical-align: middle; }
+    .tab .tab-status.healthy { background: var(--success); }
+    .tab .tab-status.degraded, .tab .tab-status.cordoned { background: var(--warn); }
+    .tab .tab-status.offline { background: var(--danger); }
+
+    .cluster-health-badge { font-size: 0.8rem; padding: 0.2rem 0.6rem; border-radius: 4px; font-weight: 600; }
+    .cluster-health-badge.all-healthy { background: rgba(63,185,80,0.15); color: var(--success); }
+    .cluster-health-badge.partial { background: rgba(210,153,34,0.15); color: var(--warn); }
+    .cluster-health-badge.critical { background: rgba(248,81,73,0.15); color: var(--danger); }
+
+    /* ===== Modal Overlay (generic) ===== */
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 3000; }
+    .modal-content { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); max-width: 500px; width: 90%; box-shadow: 0 12px 30px rgba(0,0,0,0.6); }
+    .modal-header { padding: 0.75rem 1rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; font-weight: 600; }
+    .modal-close { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 1.1rem; }
+    .modal-close:hover { color: var(--text); }
+    .modal-body { padding: 1rem; }
+    .modal-body .form-group { margin-bottom: 0.75rem; }
+    .modal-body .form-group label { display: block; color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.25rem; font-weight: 600; }
+    .modal-body .form-group input[type="text"],
+    .modal-body .form-group input[type="number"],
+    .modal-body .form-group input[type="password"] {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.5rem 0.6rem;
+      border-radius: var(--radius);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.85rem;
+    }
+    .modal-body .form-group input:focus { outline: none; border-color: var(--accent); }
+    .modal-footer { padding: 0.75rem 1rem; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 0.5rem; }
+    .modal-status { font-size: 0.8rem; margin-top: 0.25rem; min-height: 1.2em; }
+    .modal-status.ok { color: var(--success); }
+    .modal-status.fail { color: var(--danger); }
+
+    /* ===== Container Placement Grid ===== */
+    .placement-grid { display: flex; gap: 1rem; overflow-x: auto; padding-bottom: 0.5rem; min-height: 120px; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+    .placement-grid::-webkit-scrollbar { height: 6px; }
+    .placement-grid::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    .placement-column { flex: 0 0 220px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); display: flex; flex-direction: column; min-height: 150px; }
+    .placement-column.drag-over { border-color: var(--accent); background: rgba(88,166,255,0.05); }
+    .placement-column-header { padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.03); font-weight: 600; font-size: 0.85rem; }
+    .placement-column-header .node-mini-bars { margin-top: 0.35rem; }
+    .placement-column-body { padding: 0.5rem; flex: 1; display: flex; flex-direction: column; gap: 0.35rem; min-height: 60px; }
+
+    .container-chip { padding: 0.3rem 0.6rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600; font-family: 'JetBrains Mono', monospace; cursor: grab; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border: 1px solid transparent; transition: opacity 0.2s; }
+    .container-chip:active { cursor: grabbing; }
+    .container-chip.dragging { opacity: 0.4; }
+    .container-chip.svc-0 { background: rgba(88,166,255,0.2); color: var(--accent); border-color: rgba(88,166,255,0.3); }
+    .container-chip.svc-1 { background: rgba(163,113,247,0.2); color: #a371f7; border-color: rgba(163,113,247,0.3); }
+    .container-chip.svc-2 { background: rgba(63,185,80,0.2); color: var(--success); border-color: rgba(63,185,80,0.3); }
+    .container-chip.svc-3 { background: rgba(210,153,34,0.2); color: var(--warn); border-color: rgba(210,153,34,0.3); }
+    .container-chip.svc-4 { background: rgba(248,81,73,0.2); color: var(--danger); border-color: rgba(248,81,73,0.3); }
+    .container-chip.svc-5 { background: rgba(219,171,255,0.2); color: #dbabff; border-color: rgba(219,171,255,0.3); }
+    .container-chip.svc-default { background: rgba(139,148,158,0.15); color: var(--text-muted); border-color: rgba(139,148,158,0.2); }
+
+    /* ===== Migration Panel ===== */
+    .migration-panel { display: none; margin-bottom: 1.5rem; }
+    .migration-panel.active { display: block; }
+    .migration-item { display: flex; align-items: center; gap: 1rem; padding: 0.6rem 0; border-bottom: 1px solid var(--border); font-size: 0.85rem; }
+    .migration-item:last-child { border-bottom: none; }
+    .migration-info { flex: 1; }
+    .migration-info .mig-name { font-weight: 600; }
+    .migration-info .mig-route { color: var(--text-muted); font-size: 0.8rem; }
+    .migration-progress { width: 200px; }
+    .migration-progress-bar { height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
+    .migration-progress-fill { height: 100%; background: var(--accent); border-radius: 4px; transition: width 0.5s; }
+    .migration-progress-fill.complete { background: var(--success); }
+    .migration-progress-fill.error { background: var(--danger); }
+    .migration-step { font-size: 0.7rem; color: var(--text-muted); margin-top: 0.15rem; }
+    .migration-status-text { font-size: 0.8rem; font-weight: 600; min-width: 80px; text-align: right; }
+
+    /* ===== Node Context Menu ===== */
+    .node-actions { display: flex; gap: 0.35rem; margin-top: 0.4rem; flex-wrap: wrap; }
+    .node-actions .btn { font-size: 0.7rem; padding: 0.15rem 0.4rem; }
+
+    /* ===== Drop Delete Zone ===== */
+    .drop-delete-zone {
+      display: none;
+      margin-top: 0.75rem;
+      padding: 1rem;
+      border: 2px dashed var(--danger);
+      border-radius: var(--radius);
+      text-align: center;
+      color: var(--danger);
+      font-weight: 600;
+      font-size: 0.9rem;
+      background: rgba(248,81,73,0.05);
+      transition: background 0.2s, border-color 0.2s;
+    }
+    .drop-delete-zone.visible { display: block; }
+    .drop-delete-zone.drag-over {
+      background: rgba(248,81,73,0.15);
+      border-color: var(--danger);
+      box-shadow: 0 0 8px rgba(248,81,73,0.3);
+    }
+
+    @media (max-width: 900px) {
+      .grid { grid-template-columns: 1fr; }
+      .node-card { flex: 0 0 180px; }
+      .placement-column { flex: 0 0 180px; }
+    }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+    .live-off { background: var(--text-muted) !important; animation: none !important; }
+
+    /* ===== AI Chat Widget ===== */
+    .chat-fab {
+      position: fixed; bottom: 1.5rem; right: 1.5rem; z-index: 5000;
+      width: 60px; height: 60px; border-radius: 50%; border: none;
+      background: var(--accent); color: #fff; font-size: 1.6rem;
+      cursor: pointer; box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+      display: flex; align-items: center; justify-content: center;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .chat-fab:hover { transform: scale(1.08); box-shadow: 0 6px 24px rgba(0,0,0,0.5); }
+    .chat-fab .chat-badge {
+      position: absolute; top: -2px; right: -2px;
+      width: 18px; height: 18px; border-radius: 50%;
+      background: var(--danger); color: #fff;
+      font-size: 0.65rem; font-weight: 700;
+      display: none; align-items: center; justify-content: center;
+      line-height: 1;
+    }
+    .chat-fab .chat-badge.visible { display: flex; }
+
+    .chat-panel {
+      position: fixed; bottom: 6rem; right: 1.5rem; z-index: 5000;
+      width: 350px; height: 500px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+      display: flex; flex-direction: column;
+      transform: translateY(20px); opacity: 0;
+      visibility: hidden; transition: transform 0.25s ease, opacity 0.25s ease, visibility 0.25s;
+    }
+    .chat-panel.open {
+      transform: translateY(0); opacity: 1; visibility: visible;
+    }
+    .chat-header {
+      padding: 0.7rem 1rem; border-bottom: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: center;
+      background: rgba(255,255,255,0.03); border-radius: var(--radius) var(--radius) 0 0;
+    }
+    .chat-header-title { font-weight: 700; font-size: 0.95rem; }
+    .chat-header-close {
+      background: none; border: none; color: var(--text-muted);
+      cursor: pointer; font-size: 1.1rem; padding: 0.2rem;
+    }
+    .chat-header-close:hover { color: var(--text); }
+    .chat-messages {
+      flex: 1; overflow-y: auto; padding: 0.75rem; display: flex;
+      flex-direction: column; gap: 0.6rem;
+      scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+    }
+    .chat-messages::-webkit-scrollbar { width: 5px; }
+    .chat-messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    .chat-bubble {
+      max-width: 85%; padding: 0.55rem 0.75rem; border-radius: var(--radius);
+      font-size: 0.85rem; line-height: 1.45; word-wrap: break-word;
+    }
+    .chat-bubble.system {
+      align-self: flex-start; background: var(--bg); color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .chat-bubble.user {
+      align-self: flex-end; background: var(--accent); color: #fff;
+    }
+    .chat-bubble .chat-ts {
+      display: block; font-size: 0.65rem; margin-top: 0.3rem;
+      opacity: 0.6;
+    }
+    .chat-bubble.system .chat-ts { color: var(--text-muted); }
+    .chat-bubble.user .chat-ts { color: rgba(255,255,255,0.6); }
+    .chat-typing {
+      align-self: flex-start; padding: 0.5rem 0.75rem;
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: var(--radius); font-size: 0.8rem; color: var(--text-muted);
+      display: none;
+    }
+    .chat-typing.visible { display: block; }
+    .chat-typing span { animation: pulse 1.2s infinite; }
+    .chat-chips {
+      display: flex; gap: 0.4rem; flex-wrap: wrap; padding: 0.5rem 0.75rem;
+      border-top: 1px solid var(--border);
+    }
+    .chat-chip {
+      background: var(--bg); border: 1px solid var(--border); color: var(--text-muted);
+      border-radius: 99px; padding: 0.25rem 0.65rem; font-size: 0.75rem;
+      cursor: pointer; font-family: inherit; transition: border-color 0.2s, color 0.2s;
+    }
+    .chat-chip:hover { border-color: var(--accent); color: var(--accent); }
+    .chat-input-row {
+      display: flex; gap: 0.4rem; padding: 0.6rem 0.75rem;
+      border-top: 1px solid var(--border);
+    }
+    .chat-input-row input {
+      flex: 1; background: var(--bg); border: 1px solid var(--border);
+      color: var(--text); padding: 0.5rem 0.65rem; border-radius: var(--radius);
+      font-family: inherit; font-size: 0.85rem;
+    }
+    .chat-input-row input::placeholder { color: var(--text-muted); }
+    .chat-input-row input:focus { outline: none; border-color: var(--accent); }
+    .chat-input-row button {
+      background: var(--accent); color: #fff; border: none;
+      border-radius: var(--radius); padding: 0.5rem 0.75rem;
+      font-weight: 600; cursor: pointer; font-family: inherit; font-size: 0.85rem;
+    }
+    .chat-input-row button:hover { filter: brightness(1.1); }
+
+    @media (max-width: 500px) {
+      .chat-panel { width: calc(100vw - 2rem); right: 1rem; left: 1rem; }
+    }
+
+    /* Task 4: Deploy improvements */
+    .preset-row { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
+    .preset-btn { background: var(--surface); border: 1px solid var(--border); color: var(--text-muted); border-radius: var(--radius); padding: 0.25rem 0.6rem; font-size: 0.78rem; cursor: pointer; font-family: inherit; transition: all 0.15s; }
+    .preset-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .replica-adjust { display: inline-flex; align-items: center; gap: 0; }
+    .replica-adjust button { background: var(--surface); border: 1px solid var(--border); color: var(--text); width: 28px; height: 34px; cursor: pointer; font-size: 1rem; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+    .replica-adjust button:first-child { border-radius: var(--radius) 0 0 var(--radius); border-right: none; }
+    .replica-adjust button:last-child { border-radius: 0 var(--radius) var(--radius) 0; border-left: none; }
+    .replica-adjust button:hover { background: var(--accent); color: #fff; }
+    .replica-adjust input { border-radius: 0 !important; }
+    .deploy-history { margin-top: 0.75rem; padding: 0 1rem; }
+    .deploy-history-title { font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.3rem; }
+    .deploy-history-item { font-size: 0.78rem; padding: 0.2rem 0; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; gap: 0.5rem; }
+    .deploy-history-item .dh-time { color: var(--text-muted); flex-shrink: 0; }
+    .deploy-history-item .dh-ok { color: var(--success); }
+    .deploy-history-item .dh-fail { color: var(--danger); }
+    .img-size-green { color: var(--success); font-weight: 600; }
+    .img-size-yellow { color: var(--warn); font-weight: 600; }
+    .img-size-red { color: var(--danger); font-weight: 600; }
+    .template-row { display: flex; gap: 0.4rem; align-items: center; margin-top: 0.5rem; flex-wrap: wrap; }
+    .template-row select { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 0.35rem 0.5rem; border-radius: var(--radius); font-family: inherit; font-size: 0.82rem; }
+    .template-row button { font-size: 0.78rem; padding: 0.25rem 0.5rem; }
+    .img-search-input { width: 100%; padding: 0.4rem 0.6rem; margin-bottom: 0.5rem; background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: var(--radius); font-family: inherit; font-size: 0.85rem; }
+    .img-search-input::placeholder { color: var(--text-muted); }
+    .img-search-input:focus { outline: none; border-color: var(--accent); }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .deploy-spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: middle; margin-right: 0.4rem; }
+    .per-node-result { margin-top: 0.3rem; font-size: 0.8rem; }
+    .per-node-result div { padding: 0.15rem 0; }
+    .pull-row { display: flex; gap: 0.4rem; margin-top: 0.5rem; }
+    .pull-row input { flex: 1; padding: 0.35rem 0.5rem; background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: var(--radius); font-family: inherit; font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <!-- Alert Banner -->
+    <div class="alert-banner" id="alertBanner">
+      <span class="alert-text" id="alertText"></span>
+      <span class="alert-count" id="alertCount"></span>
+      <button type="button" class="btn btn-sm" id="btnAlertAck">확인</button>
+      <button type="button" class="btn btn-sm btn-outline" id="btnAlertViewAll">모두 보기</button>
+    </div>
+    <div class="alert-details" id="alertDetails">
+      <div class="panel">
+        <div class="panel-title">전체 알림</div>
+        <div class="panel-body" id="alertDetailBody"></div>
+      </div>
+    </div>
+
+    <header>
+      <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">
+        <h1>AI Container Orchestrator — Dashboard</h1>
+        <span class="cluster-health-badge" id="clusterHealthBadge" style="display:none;"></span>
+      </div>
+      <div class="header-meta">
+        <span id="operatorStatus" class="operator-status" title="운영 상태 (헬스)">—</span>
+        <div class="refresh-control">
+          <label for="targetNode">대상</label>
+          <select id="targetNode">
+            <option value="local" selected>local</option>
+          </select>
+        </div>
+        <button type="button" class="btn btn-sm" id="btnAddNode">노드 추가</button>
+        <button type="button" class="btn btn-sm btn-success" id="btnAutoHeal" title="자동 복구 토글" onclick="toggleAutoHeal()">자동복구 ON</button>
+        <div class="refresh-control">
+          <span id="liveIndicator" style="width:8px;height:8px;border-radius:50%;background:var(--success);display:inline-block;animation:pulse 2s infinite;"></span>
+          <label style="cursor:pointer;" onclick="toggleLive()"><span id="liveLabel">실시간</span></label>
+        </div>
+        <span class="last-updated" id="lastUpdated">—</span>
+        <button type="button" class="btn" id="btnRefresh">새로고침</button>
+      </div>
+    </header>
+
+    <!-- Cluster Overview Bar -->
+    <div class="cluster-bar" id="clusterBar"></div>
+
+    <!-- Node Tabs -->
+    <div class="tabs" id="nodeTabs" style="display:none;">
+      <button type="button" class="tab active" data-tab-node="__cluster__">클러스터</button>
+    </div>
+
+    <!-- 0. QuickStart (collapsible) -->
+    <details class="panel" style="margin-bottom: 1.5rem;" id="qsPanel">
+      <summary class="panel-title" style="cursor:pointer;user-select:none;">QuickStart <span style="float:right;font-size:0.8rem;color:var(--text-muted);">&#x25BC;</span></summary>
+      <div class="panel-body" style="display:flex;flex-wrap:wrap;gap:1rem;align-items:flex-start;">
+        <!-- Blockchain Card -->
+        <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:1rem;min-width:340px;flex:1;">
+          <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.8rem;">
+            <span style="font-size:1.3rem;">&#x26d3;</span>
+            <strong style="font-size:1rem;">Blockchain Network</strong>
+            <span style="font-size:0.75rem;color:var(--text-muted);margin-left:auto;">ICON Goloop</span>
+          </div>
+          <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-bottom:0.5rem;">
+            <label style="font-size:0.8rem;color:var(--text-muted);min-width:55px;">서비스명</label>
+            <input type="text" id="qsBlockchainServiceName" value="blockchain" style="width:100px;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.35rem;border-radius:var(--radius);font-family:inherit;font-size:0.8rem;">
+            <label style="font-size:0.8rem;color:var(--text-muted);min-width:55px;">합의노드</label>
+            <input type="number" id="qsBlockchainValidators" value="4" min="1" max="20" style="width:55px;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.35rem;border-radius:var(--radius);font-family:inherit;">
+            <label style="font-size:0.8rem;color:var(--text-muted);min-width:40px;">시티즌</label>
+            <input type="number" id="qsBlockchainCitizens" value="0" min="0" max="10" style="width:55px;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.35rem;border-radius:var(--radius);font-family:inherit;">
+            <button type="button" class="btn btn-success" id="btnQsBlockchain" style="padding:0.35rem 1rem;">기동</button>
+            <button type="button" class="btn" id="btnQsBlockchainDist" style="padding:0.35rem 1rem;background:#a371f7;">분산배포</button>
+            <button type="button" class="btn btn-sm btn-danger" id="btnQsBlockchainStop" style="padding:0.35rem 0.6rem;">중지</button>
+          </div>
+          <details style="margin-bottom:0.5rem;">
+            <summary style="cursor:pointer;font-size:0.8rem;color:var(--text-muted);">옵션</summary>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.4rem 0.8rem;margin-top:0.5rem;font-size:0.8rem;">
+              <div><label style="color:var(--text-muted);">채널명</label><input type="text" id="qsBlockchainChannel" value="seoul" style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.3rem;border-radius:var(--radius);font-family:inherit;"></div>
+              <div><label style="color:var(--text-muted);">이미지</label><input type="text" id="qsBlockchainImage" value="" placeholder="(기본 goloop)" style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.3rem;border-radius:var(--radius);font-family:inherit;font-size:0.75rem;"></div>
+              <div><label style="color:var(--text-muted);">P2P 시작포트</label><input type="number" id="qsBlockchainP2P" value="7100" min="1024" max="65000" style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.3rem;border-radius:var(--radius);font-family:inherit;"></div>
+              <div><label style="color:var(--text-muted);">RPC 시작포트</label><input type="number" id="qsBlockchainRPC" value="9100" min="1024" max="65000" style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.3rem;border-radius:var(--radius);font-family:inherit;"></div>
+              <div><label style="color:var(--text-muted);">로그 레벨</label><select id="qsBlockchainLogLevel" style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.3rem;border-radius:var(--radius);font-family:inherit;"><option value="trace">trace</option><option value="debug">debug</option><option value="info">info</option><option value="warn" selected>warn</option><option value="error">error</option></select></div>
+              <div><label style="color:var(--text-muted);">네트워크</label><input type="text" id="qsBlockchainNetwork" value="orch-internal" style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.3rem;border-radius:var(--radius);font-family:inherit;"></div>
+            </div>
+          </details>
+          <details style="margin-bottom:0.5rem;">
+            <summary style="cursor:pointer;font-size:0.8rem;color:var(--text-muted);">Goloop 환경변수</summary>
+            <div style="margin-top:0.5rem;font-size:0.8rem;">
+              <textarea id="qsBlockchainEnvVars" rows="6" placeholder="GOLOOP_ENGINES=python&#10;GOLOOP_RPC_DUMP=false&#10;GOLOOP_CONSOLE_LEVEL=warn&#10;GOLOOP_LOG_WRITER_COMPRESS=true&#10;GOLOOP_LOG_WRITER_MAXSIZE=100&#10;GOLOOP_EE_SOCKET=&#10;GOLOOP_BACKUP_DIR=" style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.4rem;border-radius:var(--radius);font-family:'JetBrains Mono',monospace;font-size:0.75rem;resize:vertical;">GOLOOP_ENGINES=python
+GOLOOP_RPC_DUMP=false
+GOLOOP_CONSOLE_LEVEL=warn
+GOLOOP_LOG_WRITER_COMPRESS=true
+GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
+              <div style="color:var(--text-muted);font-size:0.7rem;margin-top:0.2rem;">KEY=VALUE 형식, 줄바꿈 구분. 자동 설정 항목(P2P, RPC, KEY_STORE 등)은 제외됨.</div>
+            </div>
+          </details>
+          <div id="qsBlockchainStatus" style="font-size:0.8rem;color:var(--text-muted);"></div>
+          <div id="qsBlockchainNodes" style="margin-top:0.5rem;font-size:0.8rem;"></div>
+        </div>
+        <!-- Task 7: Workflow Builder -->
+        <div class="workflow-builder" style="flex-basis:100%;padding:0 1rem 1rem;">
+          <div class="wf-title">워크플로 빌더 (순차 기동)</div>
+          <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.5rem;">컨테이너 이미지를 드래그하여 기동 순서를 만드세요</div>
+          <div class="wf-palette" id="wfPalette">
+            <div class="wf-drag-item" draggable="true" data-image="iconloop/goloop-icon" data-name="goloop">&#x26d3; goloop</div>
+            <div class="wf-drag-item" draggable="true" data-image="nginx:latest" data-name="nginx">&#x1F310; nginx</div>
+            <div class="wf-drag-item" draggable="true" data-image="redis:latest" data-name="redis">&#x1F534; redis</div>
+            <div class="wf-drag-item" draggable="true" data-image="" data-name="custom">&#x2699; custom image</div>
+          </div>
+          <div class="wf-drop-zone" id="wfDropZone">
+            <div class="placeholder">이미지를 여기에 드롭하여 순서를 정하세요</div>
+          </div>
+          <div class="wf-actions">
+            <button type="button" class="btn btn-sm btn-success" id="btnWfRun">순차 기동</button>
+            <button type="button" class="btn btn-sm btn-outline" id="btnWfClear">초기화</button>
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <!-- QuickStart Workflow Modal -->
+    <div id="qsWorkflowModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:1000;align-items:center;justify-content:center;">
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:1.5rem;width:520px;max-width:90vw;max-height:80vh;overflow-y:auto;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+          <h3 style="margin:0;font-size:1.1rem;" id="qsModalTitle">Blockchain QuickStart</h3>
+          <button type="button" onclick="closeQsModal()" style="background:none;border:none;color:var(--text-muted);font-size:1.2rem;cursor:pointer;">&times;</button>
+        </div>
+        <div id="qsModalSteps" style="font-size:0.85rem;"></div>
+        <div id="qsModalNodes" style="margin-top:1rem;font-size:0.8rem;"></div>
+        <div style="text-align:right;margin-top:1rem;">
+          <button type="button" class="btn btn-sm" onclick="closeQsModal()">닫기</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 1. Container Placement Grid -->
+    <div class="panel" id="placementSection" style="display:none; margin-bottom: 1.5rem;">
+      <div class="panel-title">컨테이너 배치 현황 (드래그하여 마이그레이션)</div>
+      <div class="panel-body">
+        <div class="placement-grid" id="placementGrid"></div>
+        <div class="drop-delete-zone" id="dropDeleteZone">여기에 드롭하여 삭제</div>
+      </div>
+    </div>
+
+    <!-- Migration Status Panel -->
+    <div class="migration-panel" id="migrationPanel">
+      <div class="panel">
+        <div class="panel-title">마이그레이션 현황</div>
+        <div class="panel-body" id="migrationBody"></div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <!-- 2. Service Management -->
+      <div class="panel" style="grid-column: 1 / -1;">
+        <div class="panel-title">서비스 관리 (스케일 / Endpoint / 중지)</div>
+        <div class="panel-body" id="servicesPanel"><span class="loading">불러오는 중…</span></div>
+      </div>
+
+      <!-- 3. Images + Deploy (merged) -->
+      <div class="panel" style="grid-column: 1 / -1;">
+        <div class="panel-title">이미지 / 배포</div>
+        <div class="panel-body">
+          <!-- Deploy section -->
+          <div style="margin-bottom:1rem;">
+            <!-- Preset buttons (Task 4.4) -->
+            <div class="preset-row">
+              <span style="color:var(--text-muted);font-size:0.78rem;margin-right:0.2rem;">프리셋:</span>
+              <button type="button" class="preset-btn" data-image="nginx:latest" data-name="nginx">nginx</button>
+              <button type="button" class="preset-btn" data-image="redis:7" data-name="redis">redis</button>
+              <button type="button" class="preset-btn" data-image="postgres:16" data-name="postgres">postgres</button>
+              <button type="button" class="preset-btn" data-image="httpd:latest" data-name="httpd">httpd</button>
+            </div>
+            <div class="command-row" style="flex-wrap:wrap;gap:0.5rem;">
+              <input type="text" id="deployImage" placeholder="이미지 경로 (예: nginx:latest, redis:7, ghcr.io/org/app:v1.0)" style="flex:2;min-width:250px;" autocomplete="off">
+              <input type="text" id="deployName" placeholder="서비스명 (자동생성)" style="flex:0.8;min-width:100px;" autocomplete="off">
+              <!-- Replica +/- buttons (Task 4.9) -->
+              <div class="replica-adjust">
+                <button type="button" id="btnReplicaMinus" title="레플리카 -1">−</button>
+                <input type="number" id="deployReplicas" value="1" min="1" max="100" style="width:50px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.5rem;font-family:inherit;text-align:center;" title="레플리카 수">
+                <button type="button" id="btnReplicaPlus" title="레플리카 +1">+</button>
+              </div>
+              <select id="deployStrategy" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.5rem;border-radius:var(--radius);font-family:inherit;" title="배치 전략">
+                <option value="spread">분산 (spread)</option>
+                <option value="least-loaded">최소부하 (least-loaded)</option>
+                <option value="binpack">압축 (binpack)</option>
+              </select>
+              <button type="button" class="btn btn-success" id="btnDeploy">배포</button>
+            </div>
+            <!-- Distributed deploy: node selector (Task 3) -->
+            <div style="padding:0.4rem 1rem 0.2rem;display:flex;align-items:flex-start;gap:0.75rem;flex-wrap:wrap;">
+              <label style="display:flex;align-items:center;gap:0.3rem;cursor:pointer;font-size:0.85rem;color:var(--text-muted);white-space:nowrap;margin-top:0.15rem;">
+                <input type="checkbox" id="deployDistributed"> 분산 배포 (노드 선택)
+              </label>
+              <div id="deployNodeSelector" style="display:none;flex:1;min-width:200px;">
+                <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.25rem;">배포 대상 노드:</div>
+                <div id="deployNodeList" style="display:flex;flex-wrap:wrap;gap:0.4rem;"></div>
+              </div>
+            </div>
+            <details style="padding:0.5rem 1rem 0.75rem;">
+              <summary class="text-muted" style="cursor:pointer;font-size:0.85rem;">고급 옵션 (환경변수, 포트, 볼륨, 리소스 제한)</summary>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;margin-top:0.5rem;">
+                <div class="field"><label>환경변수 (KEY=value, 줄바꿈)</label><textarea id="deployEnv" rows="2" placeholder="APP_ENV=prod&#10;DEBUG=0" style="max-width:100%;"></textarea></div>
+                <div class="field"><label>포트 (호스트:컨테이너, 줄바꿈)</label><textarea id="deployPorts" rows="2" placeholder="8080:80&#10;8443:443" style="max-width:100%;"></textarea></div>
+                <div class="field"><label>볼륨 (호스트:컨테이너, 줄바꿈)</label><textarea id="deployVolumes" rows="2" placeholder="/data:/app/data" style="max-width:100%;"></textarea></div>
+                <div style="display:flex;gap:0.5rem;">
+                  <div class="field"><label>메모리 제한</label><input type="text" id="deployMemory" placeholder="512m / 1g" style="max-width:100%;"></div>
+                  <div class="field"><label>CPU 제한</label><input type="text" id="deployCpu" placeholder="0.5 / 1" style="max-width:100%;"></div>
+                </div>
+              </div>
+            </details>
+            <div id="deployLog" style="padding:0 1rem 0.5rem;font-size:0.85rem;"></div>
+            <!-- Deploy option template save/load (Task 4.10) -->
+            <div class="template-row" style="padding:0 1rem;">
+              <span style="color:var(--text-muted);font-size:0.78rem;">템플릿:</span>
+              <select id="templateSelect"><option value="">-- 선택 --</option></select>
+              <button type="button" class="btn btn-sm" id="btnTemplateLoad">불러오기</button>
+              <button type="button" class="btn btn-sm btn-success" id="btnTemplateSave">저장</button>
+              <button type="button" class="btn btn-sm btn-danger" id="btnTemplateDelete">삭제</button>
+            </div>
+            <!-- Deploy history (Task 4.1) -->
+            <div class="deploy-history" id="deployHistory"></div>
+          </div>
+          <!-- Image pull (Task 4.7) -->
+          <div class="pull-row" style="padding:0 0 0.5rem;">
+            <input type="text" id="pullImageName" placeholder="이미지 Pull (예: nginx:latest)" autocomplete="off">
+            <button type="button" class="btn btn-sm" id="btnPullImage">Pull</button>
+          </div>
+          <!-- Image search/filter (Task 4.2) -->
+          <input type="text" class="img-search-input" id="imageSearchInput" placeholder="이미지 검색 (이름으로 필터)..." autocomplete="off">
+          <!-- Image list -->
+          <div id="imagesPanel"><span class="loading">불러오는 중…</span></div>
+        </div>
+      </div>
+
+      <!-- 4. Command Console (Task 5 + Task 6) -->
+      <div class="panel console-wrap" style="grid-column: 1 / -1;">
+        <div class="panel-title">명령 콘솔 (자연어 또는 명령어)</div>
+        <div class="panel-body">
+          <div class="command-row">
+            <input type="text" id="commandInput" placeholder="예: nginx 배포해줘 / nginx를 3개로 스케일해줘 / nginx 컨테이너 종료해줘 / 서비스 목록" autocomplete="off">
+            <label><input type="checkbox" id="dryRun"> Dry run</label>
+            <button type="button" class="btn" id="btnPreview" style="background:var(--warn);color:#000;">미리보기</button>
+            <button type="button" class="btn" id="btnRun">실행</button>
+          </div>
+          <!-- Task 5: Preview area -->
+          <div class="command-preview" id="commandPreview">
+            <div class="preview-label">명령 미리보기</div>
+            <div class="preview-intent" id="previewIntent"></div>
+            <div class="preview-cli" id="previewCli"></div>
+            <div class="preview-actions">
+              <button type="button" class="btn btn-sm btn-success" id="btnPreviewConfirm">확인 후 실행</button>
+              <button type="button" class="btn btn-sm btn-outline" id="btnPreviewCancel">취소</button>
+            </div>
+          </div>
+          <!-- Task 6: Drag and Drop command blocks -->
+          <div class="cmd-block-area">
+            <div class="block-title">명령 블록 (드래그하여 조합)</div>
+            <div class="cmd-blocks-palette">
+              <div class="cmd-block" data-action="deploy" draggable="true">&#x1F4E6; 배포</div>
+              <div class="cmd-block" data-action="scale" draggable="true">&#x2696; 스케일</div>
+              <div class="cmd-block" data-action="stop" draggable="true">&#x23F9; 중지</div>
+              <div class="cmd-block" data-action="migrate" draggable="true">&#x1F500; 마이그레이션</div>
+              <div class="cmd-block" data-action="status" draggable="true">&#x1F4CB; 상태확인</div>
+            </div>
+            <div class="cmd-compose-zone" id="cmdComposeZone">
+              <div class="placeholder">블록을 여기에 드롭하여 명령을 조합하세요</div>
+            </div>
+            <div class="cmd-compose-actions">
+              <button type="button" class="btn btn-sm btn-success" id="btnComposeRun">조합 실행</button>
+              <button type="button" class="btn btn-sm btn-outline" id="btnComposeClear">초기화</button>
+            </div>
+          </div>
+          <div class="log" id="commandLog"></div>
+        </div>
+      </div>
+
+      <!-- 5. System Info -->
+      <div class="panel" style="grid-column: 1 / -1;">
+        <div class="panel-title">시스템 / 환경</div>
+        <div class="panel-body" id="systemPanel"><span class="loading">불러오는 중…</span></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API = '';
+    let refreshTimer = null;
+    let clusterNodes = [];
+    let clusterStatus = null;
+    let activeAlerts = [];
+    let selectedTabNode = '__cluster__';
+    let allPlacements = [];
+    let serviceColorMap = {};
+    let serviceColorIdx = 0;
+    // Tracks pending scale requests: { serviceName: { value: N, until: timestamp } }
+    let pendingScales = {};
+
+    /* ===== Utility ===== */
+    function getTargetNode() {
+      const el = document.getElementById('targetNode');
+      const v = el ? (el.value || 'local') : 'local';
+      return v || 'local';
+    }
+    function apiUrl(path) {
+      const node = getTargetNode();
+      if (!node || node === 'local') return API + path;
+      return API + '/v1/cluster/' + encodeURIComponent(node) + '/proxy?path=' + encodeURIComponent(path);
+    }
+    async function apiFetch(path, opts) {
+      return fetch(apiUrl(path), opts || {});
+    }
+    async function fetchJsonLocal(path) {
+      const r = await fetch(API + path);
+      if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+      return r.json();
+    }
+    function now() {
+      const d = new Date();
+      return d.toLocaleTimeString('ko-KR', { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3,'0');
+    }
+    function setLastUpdated() { document.getElementById('lastUpdated').textContent = '마지막 갱신: ' + now(); }
+    async function fetchJson(path) {
+      const r = await apiFetch(path);
+      if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+      return r.json();
+    }
+    function escapeHtml(s) {
+      if (s == null) return '';
+      const div = document.createElement('div');
+      div.textContent = s;
+      return div.innerHTML;
+    }
+    function getServiceColor(svc) {
+      if (!svc) return 'svc-default';
+      if (serviceColorMap[svc] !== undefined) return 'svc-' + serviceColorMap[svc];
+      serviceColorMap[svc] = serviceColorIdx % 6;
+      serviceColorIdx++;
+      return 'svc-' + serviceColorMap[svc];
+    }
+
+    /* ===== Alert Banner ===== */
+    function renderAlerts(alerts) {
+      activeAlerts = Array.isArray(alerts) ? alerts : [];
+      var banner = document.getElementById('alertBanner');
+      var details = document.getElementById('alertDetails');
+      if (!activeAlerts.length) {
+        banner.classList.remove('active', 'level-critical', 'level-warning');
+        details.classList.remove('expanded');
+        return;
+      }
+      var hasCritical = activeAlerts.some(function(a) { return a.level === 'critical'; });
+      banner.className = 'alert-banner active ' + (hasCritical ? 'level-critical' : 'level-warning');
+      var latest = activeAlerts[0];
+      document.getElementById('alertText').textContent = latest.message || latest.type || '알림';
+      document.getElementById('alertCount').textContent = activeAlerts.length > 1 ? '(+' + (activeAlerts.length - 1) + '건)' : '';
+    }
+    function renderAlertDetails() {
+      if (!activeAlerts.length) return;
+      var html = '<table><thead><tr><th>시간</th><th>수준</th><th>유형</th><th>메시지</th><th>동작</th></tr></thead><tbody>';
+      activeAlerts.forEach(function(a) {
+        var lvl = a.level || 'warning';
+        html += '<tr><td>' + escapeHtml(a.timestamp || '—') + '</td>';
+        html += '<td><span class="badge badge-' + (lvl === 'critical' ? 'offline' : 'degraded') + '">' + escapeHtml(lvl) + '</span></td>';
+        html += '<td>' + escapeHtml(a.type || '—') + '</td>';
+        html += '<td>' + escapeHtml(a.message || '') + '</td>';
+        html += '<td><button type="button" class="btn btn-sm btn-outline" data-ack-alert="' + escapeHtml(a.id || '') + '">확인</button></td></tr>';
+      });
+      html += '</tbody></table>';
+      document.getElementById('alertDetailBody').innerHTML = html;
+      document.getElementById('alertDetailBody').querySelectorAll('[data-ack-alert]').forEach(function(el) {
+        el.addEventListener('click', function() { ackAlert(this.getAttribute('data-ack-alert')); });
+      });
+    }
+    async function ackAlert(id) {
+      if (!id) return;
+      try {
+        await fetch(API + '/v1/cluster/alerts/' + encodeURIComponent(id) + '/ack', { method: 'POST' });
+        appendLog('알림 확인: ' + id, { success: true, message: '확인됨' });
+        loadAlerts();
+      } catch (e) {
+        appendLog('알림 확인 실패', { success: false, message: e.message });
+      }
+    }
+    async function loadAlerts() {
+      try {
+        var resp = await fetch(API + '/v1/cluster/alerts');
+        if (!resp.ok) { renderAlerts([]); return; }
+        var data = await resp.json();
+        renderAlerts(data.alerts || data || []);
+      } catch (e) { renderAlerts([]); }
+    }
+    document.getElementById('btnAlertAck').addEventListener('click', function() {
+      if (activeAlerts.length && activeAlerts[0].id) ackAlert(activeAlerts[0].id);
+    });
+    document.getElementById('btnAlertViewAll').addEventListener('click', function() {
+      var det = document.getElementById('alertDetails');
+      var isExpanded = det.classList.contains('expanded');
+      if (isExpanded) { det.classList.remove('expanded'); }
+      else { renderAlertDetails(); det.classList.add('expanded'); }
+    });
+
+    /* ===== Cluster Health Badge ===== */
+    function renderClusterHealthBadge(status) {
+      var badge = document.getElementById('clusterHealthBadge');
+      if (!status || !status.nodes || !status.nodes.length) {
+        badge.style.display = 'none';
+        return;
+      }
+      badge.style.display = '';
+      var nodes = status.nodes;
+      var total = nodes.length;
+      var healthy = nodes.filter(function(n) { return n.status === 'healthy' || n.status === 'online'; }).length;
+      var offline = nodes.filter(function(n) { return n.status === 'offline' || n.status === 'unreachable'; }).length;
+      if (healthy === total) {
+        badge.className = 'cluster-health-badge all-healthy';
+        badge.textContent = total + '/' + total + ' 노드 정상';
+      } else if (offline > 0) {
+        badge.className = 'cluster-health-badge ' + (offline === total ? 'critical' : 'partial');
+        badge.textContent = healthy + '/' + total + ' 노드 - ' + offline + ' 오프라인';
+      } else {
+        badge.className = 'cluster-health-badge partial';
+        badge.textContent = healthy + '/' + total + ' 노드 정상';
+      }
+    }
+
+    /* ===== Cluster Overview Bar ===== */
+    function renderClusterBar(status) {
+      var bar = document.getElementById('clusterBar');
+      if (!status || !status.nodes || !status.nodes.length) {
+        bar.classList.remove('active');
+        return;
+      }
+      bar.classList.add('active');
+      var html = '';
+      status.nodes.forEach(function(n) {
+        var st = n.status || 'offline';
+        var cls = (st === 'healthy' || st === 'online') ? 'healthy' : (st === 'offline' || st === 'unreachable') ? 'offline' : 'degraded';
+        var res = n.resources || {};
+        var cpuPct = res.cpu_used_percent != null ? Math.min(100, Math.max(0, res.cpu_used_percent)) : 0;
+        var memTotal = res.memory_total_mb || 1;
+        var memUsed = res.memory_used_mb || 0;
+        var memPct = Math.min(100, Math.round(memUsed / memTotal * 100));
+        var cpuBarCls = cpuPct > 80 ? 'high' : cpuPct > 50 ? 'mid' : 'low';
+        var memBarCls = memPct > 80 ? 'high' : memPct > 50 ? 'mid' : 'low';
+        var selected = (selectedTabNode === n.name) ? ' selected' : '';
+        html += '<div class="node-card ' + cls + selected + '" data-node-card="' + escapeHtml(n.name) + '">';
+        html += '<div class="node-card-header"><span class="node-card-name">' + escapeHtml(n.name) + '</span>';
+        html += '<span class="badge badge-' + cls + '">' + escapeHtml(st) + '</span></div>';
+        html += '<div class="node-card-ip">' + escapeHtml(n.address || '—') + '</div>';
+        html += '<div class="usage-label"><span>CPU ' + (res.cpu_cores || '?') + '코어</span><span>' + cpuPct.toFixed(1) + '%</span></div>';
+        html += '<div class="usage-bar"><div class="usage-bar-fill ' + cpuBarCls + '" style="width:' + cpuPct + '%"></div></div>';
+        html += '<div class="usage-label"><span>메모리</span><span>' + memUsed + '/' + memTotal + 'MB (' + memPct + '%)</span></div>';
+        html += '<div class="usage-bar"><div class="usage-bar-fill ' + memBarCls + '" style="width:' + memPct + '%"></div></div>';
+        var netRx = res.net_rx_mb != null ? res.net_rx_mb : 0;
+        var netTx = res.net_tx_mb != null ? res.net_tx_mb : 0;
+        var netRxStr = netRx > 1024 ? (netRx/1024).toFixed(1) + 'GB' : netRx.toFixed(0) + 'MB';
+        var netTxStr = netTx > 1024 ? (netTx/1024).toFixed(1) + 'GB' : netTx.toFixed(0) + 'MB';
+        html += '<div class="usage-label"><span>네트워크</span><span>RX ' + netRxStr + ' / TX ' + netTxStr + '</span></div>';
+        html += '<div class="node-card-containers">컨테이너: ' + (n.container_count != null ? n.container_count : (res.containers_running || '—')) + '</div>';
+        html += '<div class="node-actions">';
+        if (st === 'cordoned') {
+          html += '<button type="button" class="btn btn-sm btn-success" data-node-uncordon="' + escapeHtml(n.name) + '">해제</button>';
+        } else if (st !== 'offline' && st !== 'unreachable') {
+          html += '<button type="button" class="btn btn-sm btn-warn" data-node-cordon="' + escapeHtml(n.name) + '">차단</button>';
+        }
+        html += '<button type="button" class="btn btn-sm btn-warn" data-node-drain="' + escapeHtml(n.name) + '">드레인</button>';
+        html += '<button type="button" class="btn btn-sm btn-danger" data-node-remove="' + escapeHtml(n.name) + '">제거</button>';
+        html += '</div></div>';
+      });
+      bar.innerHTML = html;
+
+      bar.querySelectorAll('[data-node-card]').forEach(function(el) {
+        el.addEventListener('click', function(e) {
+          if (e.target.closest('button')) return;
+          var name = this.getAttribute('data-node-card');
+          selectTab(name);
+        });
+      });
+      bar.querySelectorAll('[data-node-cordon]').forEach(function(el) {
+        el.addEventListener('click', function() { cordonNode(this.getAttribute('data-node-cordon')); });
+      });
+      bar.querySelectorAll('[data-node-uncordon]').forEach(function(el) {
+        el.addEventListener('click', function() { uncordonNode(this.getAttribute('data-node-uncordon')); });
+      });
+      bar.querySelectorAll('[data-node-drain]').forEach(function(el) {
+        el.addEventListener('click', function() { drainNode(this.getAttribute('data-node-drain')); });
+      });
+      bar.querySelectorAll('[data-node-remove]').forEach(function(el) {
+        el.addEventListener('click', function() { removeNode(this.getAttribute('data-node-remove')); });
+      });
+    }
+
+    /* ===== Node Management ===== */
+    async function cordonNode(name) {
+      try {
+        var r = await fetch(API + '/v1/cluster/nodes/' + encodeURIComponent(name) + '/cordon', { method: 'POST' });
+        var data = await r.json();
+        appendLog('노드 차단: ' + name, data);
+        loadAll();
+      } catch (e) { appendLog('노드 차단 실패', { success: false, message: e.message }); }
+    }
+    async function uncordonNode(name) {
+      try {
+        var r = await fetch(API + '/v1/cluster/nodes/' + encodeURIComponent(name) + '/uncordon', { method: 'POST' });
+        var data = await r.json();
+        appendLog('노드 차단 해제: ' + name, data);
+        loadAll();
+      } catch (e) { appendLog('노드 차단 해제 실패', { success: false, message: e.message }); }
+    }
+    async function drainNode(name) {
+      if (!confirm('노드 "' + name + '"의 모든 컨테이너를 다른 노드로 이전할까요?')) return;
+      try {
+        var r = await fetch(API + '/v1/cluster/nodes/' + encodeURIComponent(name) + '/drain', { method: 'POST' });
+        var data = await r.json();
+        appendLog('노드 드레인: ' + name, data);
+        loadAll();
+      } catch (e) { appendLog('노드 드레인 실패', { success: false, message: e.message }); }
+    }
+    async function removeNode(name) {
+      if (!confirm('노드 "' + name + '"을 클러스터에서 제거할까요?')) return;
+      try {
+        var r = await fetch(API + '/v1/cluster/nodes/' + encodeURIComponent(name), { method: 'DELETE' });
+        var data = await r.json();
+        appendLog('노드 제거: ' + name, data);
+        loadAll();
+      } catch (e) { appendLog('노드 제거 실패', { success: false, message: e.message }); }
+    }
+
+    /* ===== Node Tabs ===== */
+    function renderNodeTabs(status) {
+      var tabsEl = document.getElementById('nodeTabs');
+      if (!status || !status.nodes || !status.nodes.length) {
+        tabsEl.style.display = 'none';
+        return;
+      }
+      tabsEl.style.display = '';
+      var html = '<button type="button" class="tab' + (selectedTabNode === '__cluster__' ? ' active' : '') + '" data-tab-node="__cluster__">클러스터</button>';
+      status.nodes.forEach(function(n) {
+        var st = n.status || 'offline';
+        var cls = (st === 'healthy' || st === 'online') ? 'healthy' : (st === 'offline' || st === 'unreachable') ? 'offline' : 'degraded';
+        var active = selectedTabNode === n.name ? ' active' : '';
+        html += '<button type="button" class="tab' + active + '" data-tab-node="' + escapeHtml(n.name) + '"><span class="tab-status ' + cls + '"></span>' + escapeHtml(n.name) + '</button>';
+      });
+      tabsEl.innerHTML = html;
+      tabsEl.querySelectorAll('.tab').forEach(function(el) {
+        el.addEventListener('click', function() { selectTab(this.getAttribute('data-tab-node')); });
+      });
+    }
+    function selectTab(name) {
+      selectedTabNode = name;
+      document.querySelectorAll('.tab').forEach(function(el) {
+        el.classList.toggle('active', el.getAttribute('data-tab-node') === name);
+      });
+      document.querySelectorAll('.node-card').forEach(function(el) {
+        el.classList.toggle('selected', el.getAttribute('data-node-card') === name);
+      });
+      // Re-filter by switching target node for data fetch
+      if (name === '__cluster__') {
+        document.getElementById('targetNode').value = 'local';
+      } else {
+        var sel = document.getElementById('targetNode');
+        var opt = sel.querySelector('option[value="' + name + '"]');
+        if (opt) sel.value = name;
+        else sel.value = 'local';
+      }
+      localStorage.setItem('targetNode', document.getElementById('targetNode').value);
+      loadAll();
+    }
+
+    /* ===== Add Node Modal ===== */
+    function showAddNodeModal() {
+      var overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      overlay.innerHTML =
+        '<div class="modal-content" style="max-width:520px;">' +
+        '<div class="modal-header"><span>신규 노드 추가</span><button type="button" class="modal-close" aria-label="닫기">&times;</button></div>' +
+        '<div class="modal-body">' +
+        '<div style="display:flex;gap:0.5rem;margin-bottom:0.5rem;">' +
+          '<div class="form-group" style="flex:1;"><label>노드 이름</label><input type="text" id="modalNodeName" placeholder="예: worker-101"></div>' +
+          '<div class="form-group" style="flex:1.5;"><label>IP 주소</label><input type="text" id="modalNodeIP" placeholder="예: 10.0.0.12"></div>' +
+        '</div>' +
+        '<div style="display:flex;gap:0.5rem;margin-bottom:0.5rem;">' +
+          '<div class="form-group" style="flex:0.7;"><label>SSH 계정</label><input type="text" id="modalSSHUser" value="root" placeholder="root"></div>' +
+          '<div class="form-group" style="flex:0.8;"><label>인증 방식</label><select id="modalAuthType" style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.4rem;border-radius:var(--radius);font-family:inherit;"><option value="password">비밀번호</option><option value="key">SSH 키</option></select></div>' +
+        '</div>' +
+        '<div id="modalAuthFields">' +
+          '<div class="form-group" id="modalPassGroup"><label>SSH 비밀번호</label><input type="password" id="modalSSHPass" placeholder="비밀번호"></div>' +
+          '<div class="form-group" id="modalKeyGroup" style="display:none;"><label>SSH 키 경로 (서버 내부)</label><input type="text" id="modalSSHKey" placeholder="/ssh-keys/loopvm.pem" value="/ssh-keys/loopvm.pem"></div>' +
+        '</div>' +
+        '<div class="modal-status" id="modalNodeStatus"></div>' +
+        '<pre id="modalProvisionLog" style="display:none;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:0.6rem;font-size:0.75rem;max-height:300px;overflow-y:auto;white-space:pre-wrap;margin-top:0.5rem;"></pre>' +
+        '</div>' +
+        '<div class="modal-footer">' +
+        '<button type="button" class="btn btn-sm btn-outline" id="modalNodeCancel">취소</button>' +
+        '<button type="button" class="btn btn-sm btn-success" id="modalNodeProvision">설치 &amp; 등록</button>' +
+        '</div></div>';
+      document.body.appendChild(overlay);
+
+      function close() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }
+      overlay.addEventListener('click', function(e) { if (e.target === overlay) close(); });
+      overlay.querySelector('.modal-close').addEventListener('click', close);
+      overlay.querySelector('#modalNodeCancel').addEventListener('click', close);
+
+      // Auth type toggle
+      overlay.querySelector('#modalAuthType').addEventListener('change', function() {
+        var passGroup = overlay.querySelector('#modalPassGroup');
+        var keyGroup = overlay.querySelector('#modalKeyGroup');
+        if (this.value === 'key') {
+          passGroup.style.display = 'none';
+          keyGroup.style.display = 'block';
+        } else {
+          passGroup.style.display = 'block';
+          keyGroup.style.display = 'none';
+        }
+      });
+
+      overlay.querySelector('#modalNodeProvision').addEventListener('click', async function() {
+        var btn = this;
+        var name = overlay.querySelector('#modalNodeName').value.trim();
+        var ip = overlay.querySelector('#modalNodeIP').value.trim();
+        var sshUser = overlay.querySelector('#modalSSHUser').value.trim() || 'root';
+        var authType = overlay.querySelector('#modalAuthType').value;
+        var sshPass = overlay.querySelector('#modalSSHPass').value;
+        var sshKey = overlay.querySelector('#modalSSHKey').value.trim();
+        var statusEl = overlay.querySelector('#modalNodeStatus');
+        var logEl = overlay.querySelector('#modalProvisionLog');
+
+        if (!ip) { statusEl.textContent = 'IP 주소를 입력하세요.'; statusEl.className = 'modal-status fail'; return; }
+        if (authType === 'password' && !sshPass) { statusEl.textContent = 'SSH 비밀번호를 입력하세요.'; statusEl.className = 'modal-status fail'; return; }
+        if (authType === 'key' && !sshKey) { statusEl.textContent = 'SSH 키 경로를 입력하세요.'; statusEl.className = 'modal-status fail'; return; }
+        if (!name) name = 'worker-' + ip.split('.').pop();
+
+        btn.disabled = true;
+        statusEl.textContent = '프로비저닝 시작...'; statusEl.className = 'modal-status';
+        logEl.style.display = 'block';
+        logEl.textContent = '노드 설치를 시작합니다...\n';
+
+        try {
+          var r = await fetch(API + '/v1/cluster/nodes/provision', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ node_ip: ip, node_name: name, ssh_user: sshUser, ssh_password: sshPass, auth_type: authType, ssh_key_path: sshKey })
+          });
+          var d = await r.json();
+          if (!d.success) {
+            statusEl.textContent = d.message || '실패'; statusEl.className = 'modal-status fail';
+            btn.disabled = false;
+            return;
+          }
+          statusEl.textContent = '설치 진행 중... (실시간 로그)'; statusEl.className = 'modal-status';
+        } catch(e) {
+          statusEl.textContent = '요청 실패: ' + e.message; statusEl.className = 'modal-status fail';
+          btn.disabled = false;
+          return;
+        }
+
+        // Poll provision log
+        var pollTimer = setInterval(async function() {
+          try {
+            var lr = await fetch(API + '/v1/cluster/nodes/provision/log');
+            var ld = await lr.json();
+            logEl.textContent = ld.log || '';
+            logEl.scrollTop = logEl.scrollHeight;
+            if (ld.done) {
+              clearInterval(pollTimer);
+              if (ld.log.indexOf('Complete') >= 0) {
+                statusEl.innerHTML = '<span style="color:var(--success);">&#x2705; 노드 설치 및 등록 완료</span>';
+                statusEl.className = 'modal-status ok';
+                loadAll();
+              } else {
+                statusEl.innerHTML = '<span style="color:var(--danger);">&#x274c; 설치 실패 — 로그를 확인하세요</span>';
+                statusEl.className = 'modal-status fail';
+              }
+              btn.disabled = false;
+            }
+          } catch(e) {}
+        }, 2000);
+      });
+
+      // Keep old manual registration as hidden option
+      var oldSave = overlay.querySelector('#modalNodeSave');
+      if (oldSave) oldSave.addEventListener('click', async function() {
+        var name = overlay.querySelector('#modalNodeName').value.trim();
+        var ip = overlay.querySelector('#modalNodeIP').value.trim();
+        var port = overlay.querySelector('#modalNodePort').value.trim() || '8000';
+        var token = overlay.querySelector('#modalNodeToken').value.trim();
+        var statusEl = overlay.querySelector('#modalNodeStatus');
+        if (!name) { statusEl.textContent = '노드 이름을 입력하세요.'; statusEl.className = 'modal-status fail'; return; }
+        if (!ip) { statusEl.textContent = 'IP 주소를 입력하세요.'; statusEl.className = 'modal-status fail'; return; }
+        var base_url = 'http://' + ip + ':' + port;
+        try {
+          var r = await fetch(API + '/v1/cluster/nodes', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name, base_url: base_url, address: ip + ':' + port, token: token })
+          });
+          var data = await r.json();
+          appendLog('노드 추가: ' + name, data);
+          close();
+          loadAll();
+        } catch (e) {
+          statusEl.textContent = '저장 실패: ' + e.message;
+          statusEl.className = 'modal-status fail';
+        }
+      });
+    }
+
+    /* ===== Migration Confirmation Modal ===== */
+    function showMoveModal(containerName, containerId, srcNode, dstNode, serviceName, imageName) {
+      var overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      overlay.innerHTML =
+        '<div class="modal-content">' +
+        '<div class="modal-header"><span>컨테이너 이동</span><button type="button" class="modal-close" aria-label="닫기">&times;</button></div>' +
+        '<div class="modal-body">' +
+        '<p>"<strong>' + escapeHtml(containerName) + '</strong>"을(를)</p>' +
+        '<p><strong>' + escapeHtml(srcNode) + '</strong> → <strong>' + escapeHtml(dstNode) + '</strong> (으)로 이동합니다.</p>' +
+        '<table style="margin-top:0.5rem;font-size:0.85rem;"><tbody>' +
+        '<tr><th style="width:80px;">이미지</th><td style="font-family:\'JetBrains Mono\',monospace;font-size:0.8rem;">' + escapeHtml(imageName || '자동 감지') + '</td></tr>' +
+        '<tr><th>서비스</th><td>' + escapeHtml(serviceName || '—') + '</td></tr>' +
+        '</tbody></table>' +
+        '<div style="margin-top:0.75rem;">' +
+        '<label style="font-size:0.85rem;color:var(--text-muted);display:block;margin-bottom:0.3rem;">이동 방식</label>' +
+        '<label style="display:block;cursor:pointer;padding:0.3rem 0;"><input type="radio" name="moveType" value="move" checked> <strong>이동</strong> <span class="text-muted">— 기존 이미지 사용, 대상에 없으면 Pull (빠름)</span></label>' +
+        '<label style="display:block;cursor:pointer;padding:0.3rem 0;"><input type="radio" name="moveType" value="migrate"> <strong>마이그레이션</strong> <span class="text-muted">— 컨테이너 상태를 그대로 복제 (느림, 상태 보존)</span></label>' +
+        '</div>' +
+        '</div>' +
+        '<div class="modal-footer">' +
+        '<button type="button" class="btn btn-sm btn-outline" id="migModalCancel">취소</button>' +
+        '<button type="button" class="btn btn-sm btn-success" id="migModalConfirm">이동</button>' +
+        '</div></div>';
+      document.body.appendChild(overlay);
+
+      function close() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }
+      overlay.addEventListener('click', function(e) { if (e.target === overlay) close(); });
+      overlay.querySelector('.modal-close').addEventListener('click', close);
+      overlay.querySelector('#migModalCancel').addEventListener('click', close);
+      overlay.querySelector('#migModalConfirm').addEventListener('click', async function() {
+        var moveType = (overlay.querySelector('input[name="moveType"]:checked') || {}).value || 'move';
+        close();
+        if (moveType === 'move') {
+          // Fast move: use existing image
+          try {
+            appendLog('이동 중: ' + containerName + ' (' + srcNode + ' -> ' + dstNode + ')', {success: true, message: '처리 중...'});
+            var r = await fetch(API + '/v1/cluster/move', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ container_id: containerId, container_name: containerName, source_node: srcNode, destination_node: dstNode, service_name: serviceName || '', image: imageName || '' })
+            });
+            var data = await r.json();
+            appendLog('이동: ' + containerName + ' (' + srcNode + ' -> ' + dstNode + ')', data);
+            loadAll();
+          } catch (e) {
+            appendLog('이동 실패', { success: false, message: e.message });
+          }
+        } else {
+          // Full migration: docker commit + transfer
+          try {
+            appendLog('마이그레이션 중: ' + containerName + ' (' + srcNode + ' -> ' + dstNode + ')', {success: true, message: '처리 중...'});
+            var r = await fetch(API + '/v1/cluster/migrate', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ container_id: containerId, container_name: containerName, source_node: srcNode, destination_node: dstNode, service_name: serviceName || '' })
+            });
+            var data = await r.json();
+            appendLog('마이그레이션: ' + containerName + ' (' + srcNode + ' -> ' + dstNode + ')', data);
+            loadAll();
+          } catch (e) {
+            appendLog('마이그레이션 실패', { success: false, message: e.message });
+          }
+        }
+      });
+    }
+
+    function showDeleteModal(containerName, containerId, srcNode, serviceName) {
+      var overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      overlay.innerHTML =
+        '<div class="modal-content">' +
+        '<div class="modal-header"><span>컨테이너 삭제</span><button type="button" class="modal-close" aria-label="닫기">&times;</button></div>' +
+        '<div class="modal-body">' +
+        '<p><strong>' + escapeHtml(containerName) + '</strong> (' + escapeHtml(srcNode) + ')</p>' +
+        '<p style="color:var(--text-muted);font-size:0.85rem;">서비스: ' + escapeHtml(serviceName || '—') + '</p>' +
+        '<div style="margin-top:0.75rem;">' +
+        '<label style="display:block;cursor:pointer;padding:0.4rem 0;"><input type="radio" name="delType" value="one" checked> <strong>이 컨테이너만 삭제</strong> <span class="text-muted">— ' + escapeHtml(containerName) + ' on ' + escapeHtml(srcNode) + '</span></label>' +
+        (serviceName ? '<label style="display:block;cursor:pointer;padding:0.4rem 0;"><input type="radio" name="delType" value="all"> <strong style="color:var(--danger);">서비스 전체 삭제</strong> <span class="text-muted">— ' + escapeHtml(serviceName) + ' 서비스의 모든 컨테이너</span></label>' : '') +
+        '</div>' +
+        '</div>' +
+        '<div class="modal-footer">' +
+        '<button type="button" class="btn btn-sm btn-outline" id="delModalCancel">취소</button>' +
+        '<button type="button" class="btn btn-sm btn-danger" id="delModalConfirm">삭제</button>' +
+        '</div></div>';
+      document.body.appendChild(overlay);
+
+      function close() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }
+      overlay.addEventListener('click', function(e) { if (e.target === overlay) close(); });
+      overlay.querySelector('.modal-close').addEventListener('click', close);
+      overlay.querySelector('#delModalCancel').addEventListener('click', close);
+      overlay.querySelector('#delModalConfirm').addEventListener('click', async function() {
+        var delType = (overlay.querySelector('input[name="delType"]:checked') || {}).value || 'one';
+        close();
+
+        if (delType === 'all' && serviceName) {
+          appendLog('서비스 삭제 중: ' + serviceName, {success: true, message: '처리 중...'});
+          try {
+            var r = await fetch(API + '/v1/cluster/stop', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({service_name: serviceName})
+            });
+            var data = await r.json();
+            appendLog('서비스 삭제: ' + serviceName, data);
+          } catch(e) {
+            appendLog('서비스 삭제 실패', {success: false, message: e.message});
+          }
+        } else {
+          appendLog('컨테이너 삭제 중: ' + containerName + ' (' + srcNode + ')', {success: true, message: '처리 중...'});
+          try {
+            var r = await fetch(API + '/v1/cluster/container/stop', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({container_id: containerId, container_name: containerName, node_name: srcNode})
+            });
+            var data = await r.json();
+            appendLog('컨테이너 삭제: ' + containerName + ' (' + srcNode + ')', data);
+          } catch(e) {
+            appendLog('컨테이너 삭제 실패', {success: false, message: e.message});
+          }
+        }
+        loadAll();
+      });
+    }
+
+    /* ===== Container Placement Grid ===== */
+    function renderPlacementGrid(placements, status) {
+      var section = document.getElementById('placementSection');
+      var grid = document.getElementById('placementGrid');
+      if (!status || !status.nodes || !status.nodes.length) {
+        section.style.display = 'none';
+        return;
+      }
+      section.style.display = '';
+      // Update placement section title with count
+      var titleEl = section.querySelector('.panel-title');
+      if (titleEl) {
+        var totalP = Array.isArray(placements) ? placements.length : 0;
+        titleEl.textContent = '컨테이너 배치 현황 (' + totalP + '개) — 드래그하여 마이그레이션';
+      }
+      var nodeMap = {};
+      status.nodes.forEach(function(n) { nodeMap[n.name] = n; });
+
+      // Group placements by node
+      var byNode = {};
+      status.nodes.forEach(function(n) { byNode[n.name] = []; });
+      (Array.isArray(placements) ? placements : []).forEach(function(p) {
+        var node = p.node || p.node_name || 'unknown';
+        if (!byNode[node]) byNode[node] = [];
+        byNode[node].push(p);
+      });
+
+      var html = '';
+      status.nodes.forEach(function(n) {
+        var st = n.status || 'offline';
+        var res = n.resources || {};
+        var cpuPct = res.cpu_used_percent != null ? Math.min(100, res.cpu_used_percent) : 0;
+        var memTotal = res.memory_total_mb || 1;
+        var memUsed = res.memory_used_mb || 0;
+        var memPct = Math.min(100, Math.round(memUsed / memTotal * 100));
+        var cpuBarCls = cpuPct > 80 ? 'high' : cpuPct > 50 ? 'mid' : 'low';
+        var memBarCls = memPct > 80 ? 'high' : memPct > 50 ? 'mid' : 'low';
+        var cntRunning = res.containers_running || 0;
+        var cntTotal = res.containers_total || 0;
+        html += '<div class="placement-column" data-place-node="' + escapeHtml(n.name) + '">';
+        html += '<div class="placement-column-header">';
+        html += '<div style="display:flex;justify-content:space-between;align-items:center;">';
+        html += '<span>' + escapeHtml(n.name) + ' <span class="badge badge-' + escapeHtml(st) + '">' + escapeHtml(st) + '</span></span>';
+        html += '<span class="text-muted" style="font-size:0.7rem;">' + cntRunning + '/' + cntTotal + '</span>';
+        html += '</div>';
+        html += '<div class="node-mini-bars">';
+        html += '<div class="usage-label"><span>CPU ' + cpuPct.toFixed(1) + '%</span><span>' + (res.cpu_cores || '?') + '코어</span></div>';
+        html += '<div class="usage-bar"><div class="usage-bar-fill ' + cpuBarCls + '" style="width:' + cpuPct + '%"></div></div>';
+        html += '<div class="usage-label" style="margin-top:2px;"><span>MEM ' + memPct + '%</span><span>' + memUsed + '/' + memTotal + 'MB</span></div>';
+        html += '<div class="usage-bar"><div class="usage-bar-fill ' + memBarCls + '" style="width:' + memPct + '%"></div></div>';
+        var pNetRx = res.net_rx_mb != null ? res.net_rx_mb : 0;
+        var pNetTx = res.net_tx_mb != null ? res.net_tx_mb : 0;
+        var pRxStr = pNetRx > 1024 ? (pNetRx/1024).toFixed(1)+'G' : pNetRx.toFixed(0)+'M';
+        var pTxStr = pNetTx > 1024 ? (pNetTx/1024).toFixed(1)+'G' : pNetTx.toFixed(0)+'M';
+        html += '<div class="usage-label" style="margin-top:2px;"><span>NET</span><span>RX ' + pRxStr + ' / TX ' + pTxStr + '</span></div>';
+        html += '</div></div>';
+        html += '<div class="placement-column-body" data-drop-node="' + escapeHtml(n.name) + '">';
+        var nodeContainers = byNode[n.name] || [];
+        if (nodeContainers.length === 0) {
+          html += '<div class="text-muted" style="font-size:0.75rem;text-align:center;padding:1rem 0;">컨테이너 없음</div>';
+        }
+        nodeContainers.forEach(function(p) {
+          var svc = p.service_name || p.service || p.container_name || '';
+          var colorCls = getServiceColor(svc);
+          var cName = p.container_name || p.name || p.container_id || '';
+          var pStatus = p.status || 'unknown';
+          var statusDot = pStatus === 'running' ? '🟢' : '🔴';
+          var cpuP = p.cpu_percent != null ? p.cpu_percent.toFixed(1) : '0.0';
+          var memM = p.memory_mb != null ? p.memory_mb.toFixed(0) : '0';
+          var memL = p.memory_limit_mb != null && p.memory_limit_mb > 0 ? p.memory_limit_mb.toFixed(0) : '';
+          var nRx = p.net_rx_mb != null ? p.net_rx_mb : 0;
+          var nTx = p.net_tx_mb != null ? p.net_tx_mb : 0;
+          var nRxS = nRx > 100 ? (nRx/1024).toFixed(1)+'G' : nRx.toFixed(1)+'M';
+          var nTxS = nTx > 100 ? (nTx/1024).toFixed(1)+'G' : nTx.toFixed(1)+'M';
+          var statLine = 'CPU ' + cpuP + '% · MEM ' + memM + (memL ? '/' + memL : '') + 'MB · NET ' + nRxS + '/' + nTxS;
+          var tipText = cName + ' (' + pStatus + ')\n' + (p.image || '') + '\n' + statLine;
+          html += '<div class="container-chip ' + colorCls + '" draggable="true" data-drag-cid="' + escapeHtml(p.container_id || '') + '" data-drag-name="' + escapeHtml(cName) + '" data-drag-src="' + escapeHtml(n.name) + '" data-drag-svc="' + escapeHtml(svc) + '" data-drag-img="' + escapeHtml(p.image || '') + '" title="' + escapeHtml(tipText) + '">';
+          html += statusDot + ' ' + escapeHtml(cName);
+          html += '<div style="font-size:0.65rem;color:var(--text-muted);margin-top:1px;">CPU ' + cpuP + '% · MEM ' + memM + 'MB · NET ' + nRxS + '/' + nTxS + '</div>';
+          html += '</div>';
+        });
+        html += '</div></div>';
+      });
+      grid.innerHTML = html;
+
+      // Drag and drop
+      var dragData = null;
+      var deleteZone = document.getElementById('dropDeleteZone');
+
+      grid.querySelectorAll('.container-chip[draggable]').forEach(function(chip) {
+        chip.addEventListener('dragstart', function(e) {
+          dragData = {
+            cid: this.getAttribute('data-drag-cid'),
+            name: this.getAttribute('data-drag-name'),
+            src: this.getAttribute('data-drag-src'),
+            svc: this.getAttribute('data-drag-svc') || '',
+            img: this.getAttribute('data-drag-img') || ''
+          };
+          this.classList.add('dragging');
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', dragData.cid);
+          // Show delete zone
+          if (deleteZone) deleteZone.classList.add('visible');
+        });
+        chip.addEventListener('dragend', function() {
+          this.classList.remove('dragging');
+          dragData = null;
+          grid.querySelectorAll('.placement-column').forEach(function(col) { col.classList.remove('drag-over'); });
+          if (deleteZone) { deleteZone.classList.remove('visible', 'drag-over'); }
+        });
+      });
+
+      // Node drop zones (move/migrate)
+      grid.querySelectorAll('[data-drop-node]').forEach(function(zone) {
+        zone.addEventListener('dragover', function(e) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          this.closest('.placement-column').classList.add('drag-over');
+        });
+        zone.addEventListener('dragleave', function(e) {
+          if (!this.contains(e.relatedTarget)) {
+            this.closest('.placement-column').classList.remove('drag-over');
+          }
+        });
+        zone.addEventListener('drop', function(e) {
+          e.preventDefault();
+          this.closest('.placement-column').classList.remove('drag-over');
+          var dstNode = this.getAttribute('data-drop-node');
+          if (!dragData || dragData.src === dstNode) return;
+          showMoveModal(dragData.name, dragData.cid, dragData.src, dstNode, dragData.svc, dragData.img);
+        });
+      });
+
+      // Delete drop zone
+      if (deleteZone) {
+        deleteZone.addEventListener('dragover', function(e) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          this.classList.add('drag-over');
+        });
+        deleteZone.addEventListener('dragleave', function(e) {
+          if (!this.contains(e.relatedTarget)) this.classList.remove('drag-over');
+        });
+        deleteZone.addEventListener('drop', function(e) {
+          e.preventDefault();
+          this.classList.remove('drag-over', 'visible');
+          if (!dragData) return;
+          showDeleteModal(dragData.name, dragData.cid, dragData.src, dragData.svc);
+        });
+      }
+    }
+
+    /* ===== Migration Status Panel ===== */
+    function renderMigrations(migrations) {
+      var panel = document.getElementById('migrationPanel');
+      var body = document.getElementById('migrationBody');
+      if (!Array.isArray(migrations) || !migrations.length) {
+        panel.classList.remove('active');
+        return;
+      }
+      panel.classList.add('active');
+      var statusLabels = {
+        pending: '대기', exporting: '내보내기', transferring: '전송 중',
+        importing: '가져오기', verifying: '검증 중',
+        completed: '완료', complete: '완료', failed: '실패', rolled_back: '롤백'
+      };
+      var html = '';
+      migrations.forEach(function(m) {
+        var status = (m.status || 'pending').toLowerCase();
+        // Use actual progress from API (0-100), not step-based calculation
+        var pct = m.progress != null ? m.progress : 0;
+        var isComplete = status === 'completed' || status === 'complete';
+        var isError = status === 'failed' || status === 'rolled_back';
+        if (isComplete) pct = 100;
+        if (isError && pct === 0) pct = 100;
+        var fillCls = isError ? 'error' : isComplete ? 'complete' : '';
+        var label = statusLabels[status] || status;
+        var color = isError ? 'var(--danger)' : isComplete ? 'var(--success)' : 'var(--accent)';
+        html += '<div class="migration-item">';
+        html += '<div class="migration-info"><span class="mig-name">' + escapeHtml(m.container_name || m.container_id || '—') + '</span>';
+        html += '<div class="mig-route">' + escapeHtml(m.source_node || '—') + ' → ' + escapeHtml(m.destination_node || '—') + '</div></div>';
+        html += '<div class="migration-progress"><div class="migration-progress-bar"><div class="migration-progress-fill ' + fillCls + '" style="width:' + pct + '%"></div></div>';
+        html += '<div class="migration-step">' + escapeHtml(label) + '</div></div>';
+        html += '<div class="migration-status-text" style="color:' + color + '">' + pct + '%</div>';
+        html += '</div>';
+      });
+      body.innerHTML = html;
+    }
+    async function loadMigrations() {
+      try {
+        var resp = await fetch(API + '/v1/cluster/migrations');
+        if (!resp.ok) { renderMigrations([]); return; }
+        var data = await resp.json();
+        renderMigrations(data.migrations || data || []);
+      } catch (e) { renderMigrations([]); }
+    }
+
+    /* ===== Placements ===== */
+    async function loadPlacements() {
+      try {
+        var resp = await fetch(API + '/v1/cluster/placements');
+        if (!resp.ok) { allPlacements = []; return; }
+        var data = await resp.json();
+        allPlacements = data.placements || data || [];
+      } catch (e) { allPlacements = []; }
+    }
+
+    /* ===== Cluster Status ===== */
+    async function loadClusterStatus() {
+      try {
+        var resp = await fetch(API + '/v1/cluster/status');
+        if (!resp.ok) { clusterStatus = null; return; }
+        clusterStatus = await resp.json();
+      } catch (e) { clusterStatus = null; }
+    }
+
+    /* ===== Existing render functions ===== */
+    function renderSystem(data) {
+      if (!data) return;
+      const docker = data.docker || {};
+      const err = docker.error;
+      let html = '<table><tbody>';
+      html += '<tr><th>호스트</th><td>' + escapeHtml(data.hostname || '—') + '</td></tr>';
+      html += '<tr><th>Docker</th><td>' + (err ? '<span class="error-msg">' + escapeHtml(err) + '</span>' : (docker.server_version || '—')) + '</td></tr>'
+      html += '<tr><th>컨테이너</th><td>' + (docker.containers_running ?? '—') + ' / ' + (docker.containers ?? 0) + '</td></tr>';
+      html += '<tr><th>내부 DNS</th><td>orch-internal 네트워크 (서비스명으로 조회 시 레플리카 LB)</td></tr>';
+      html += '<tr><th>Ingress</th><td>Traefik :80 · <code>&lt;서비스&gt;.local</code> 또는 <code>/&lt;서비스&gt;/</code> (LB)</td></tr>';
+      html += '<tr><th>*.local DNS</th><td>dns 서비스 :15353 → 127.0.0.1 (로컬 Ingress 접근 시 /etc/hosts 또는 DNS 127.0.0.1:15353)</td></tr>';
+      html += '</tbody></table>';
+      document.getElementById('systemPanel').innerHTML = html;
+    }
+
+    function renderServices(data) {
+      var panel = document.getElementById('servicesPanel');
+      if (!Array.isArray(data) || data.length === 0) {
+        panel.innerHTML = '<p class="text-muted">배포된 서비스 없음 — 위 "클러스터 배포" 패널에서 이미지를 입력하여 배포하세요.</p>';
+        return;
+      }
+      data.sort(function(a, b) {
+        var ra = a.running != null ? a.running : (a.status === 'running' ? 1 : 0);
+        var rb = b.running != null ? b.running : (b.status === 'running' ? 1 : 0);
+        if (rb !== ra) return rb - ra;
+        return (a.name || '').localeCompare(b.name || '');
+      });
+      var html = '<table><thead><tr><th>서비스</th><th>이미지</th><th>상태</th><th>노드 배치</th><th>Endpoint</th><th>스케일</th><th>동작</th></tr></thead><tbody>';
+      data.forEach(function(s) {
+        var running = s.running != null ? s.running : (s.status === 'running' ? s.replicas : 0);
+        var total = s.replicas != null ? s.replicas : 0;
+        var nodesStr = (s.nodes && s.nodes.length) ? s.nodes.join(', ') : '—';
+        var urlHtml = '—';
+        var ep = s.endpoint || '';
+        if (ep) {
+          urlHtml = '<a href="' + escapeHtml(ep) + '" target="_blank" style="color:var(--accent);font-family:\'JetBrains Mono\',monospace;font-size:0.78rem;">' + escapeHtml(ep) + '</a>';
+        }
+        html += '<tr>';
+        html += '<td><strong>' + escapeHtml(s.name) + '</strong></td>';
+        html += '<td style="font-family:\'JetBrains Mono\',monospace;font-size:0.8rem;">' + escapeHtml(s.image || '—') + '</td>';
+        html += '<td><span class="badge badge-' + (running > 0 ? 'running' : 'stopped') + '">' + running + '/' + total + '</span></td>';
+        html += '<td style="font-size:0.8rem;">' + escapeHtml(nodesStr) + '</td>';
+        html += '<td>' + urlHtml + '</td>';
+        var displayValue = total;
+        var pend = pendingScales[s.name];
+        if (pend && Date.now() < pend.until) { displayValue = pend.value; if (total === pend.value) delete pendingScales[s.name]; }
+        html += '<td><span class="replica-control">';
+        html += '<input type="number" min="0" value="' + displayValue + '" data-csvc-input="' + escapeHtml(s.name) + '" style="width:3.5rem;">';
+        html += '<button type="button" class="btn btn-sm" data-csvc-scale="' + escapeHtml(s.name) + '">적용</button>';
+        html += '</span></td>';
+        html += '<td><button type="button" class="btn btn-sm btn-danger" data-csvc-stop="' + escapeHtml(s.name) + '">중지</button></td>';
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+      panel.innerHTML = html;
+
+      panel.querySelectorAll('[data-csvc-scale]').forEach(function(el) {
+        el.addEventListener('click', async function() {
+          var svc = this.getAttribute('data-csvc-scale');
+          var input = panel.querySelector('input[data-csvc-input="' + svc + '"]');
+          var n = parseInt(input.value, 10);
+          if (isNaN(n) || n < 0) { alert('0 이상의 숫자를 입력하세요.'); return; }
+          // Lock this value so SSE won't overwrite it while scaling
+          pendingScales[svc] = { value: n, until: Date.now() + 30000 };
+          try {
+            var r = await fetch(API + '/v1/cluster/scale', {
+              method: 'POST', headers: {'Content-Type':'application/json'},
+              body: JSON.stringify({service_name: svc, replicas: n})
+            });
+            var d = await r.json();
+            appendLog('클러스터 스케일: ' + svc + ' -> ' + n, d);
+            loadAll();
+          } catch(e) { appendLog('스케일 실패', {success:false, message:e.message}); }
+        });
+      });
+      panel.querySelectorAll('[data-csvc-stop]').forEach(function(el) {
+        el.addEventListener('click', async function() {
+          var svc = this.getAttribute('data-csvc-stop');
+          if (!confirm(svc + ' 서비스의 모든 컨테이너를 중지할까요?')) return;
+          try {
+            var r = await fetch(API + '/v1/cluster/stop', {
+              method: 'POST', headers: {'Content-Type':'application/json'},
+              body: JSON.stringify({service_name: svc})
+            });
+            var d = await r.json();
+            appendLog('클러스터 중지: ' + svc, d);
+            loadAll();
+          } catch(e) { appendLog('중지 실패', {success:false, message:e.message}); }
+        });
+      });
+    }
+
+    function updateServicesInPlace(data) {
+      var panel = document.getElementById('servicesPanel');
+      if (!Array.isArray(data) || data.length === 0) return;
+      var table = panel.querySelector('table');
+      if (!table) { renderServices(data); return; }
+      data.sort(function(a, b) {
+        var ra = a.running != null ? a.running : (a.status === 'running' ? 1 : 0);
+        var rb = b.running != null ? b.running : (b.status === 'running' ? 1 : 0);
+        if (rb !== ra) return rb - ra;
+        return (a.name || '').localeCompare(b.name || '');
+      });
+      var rows = table.querySelectorAll('tbody tr');
+      var existingNames = {};
+      rows.forEach(function(row) {
+        var nameEl = row.querySelector('td:first-child strong');
+        if (nameEl) existingNames[nameEl.textContent] = row;
+      });
+      // If service list changed (added/removed), do full render
+      var dataNames = data.map(function(s){ return s.name; });
+      var rowNames = Object.keys(existingNames);
+      if (dataNames.length !== rowNames.length || !dataNames.every(function(n){ return existingNames[n]; })) {
+        renderServices(data);
+        return;
+      }
+      // Update cells in-place without touching scale input
+      data.forEach(function(s) {
+        var row = existingNames[s.name];
+        if (!row) return;
+        var cells = row.querySelectorAll('td');
+        if (cells.length < 7) return;
+        // [0]=name [1]=image [2]=status badge [3]=nodes [4]=endpoint [5]=scale [6]=action
+        var running = s.running != null ? s.running : (s.status === 'running' ? s.replicas : 0);
+        var total = s.replicas != null ? s.replicas : 0;
+        cells[1].innerHTML = '<span style="font-family:\'JetBrains Mono\',monospace;font-size:0.8rem;">' + escapeHtml(s.image || '—') + '</span>';
+        cells[2].innerHTML = '<span class="badge badge-' + (running > 0 ? 'running' : 'stopped') + '">' + running + '/' + total + '</span>';
+        var nodesStr = (s.nodes && s.nodes.length) ? s.nodes.join(', ') : '—';
+        cells[3].innerHTML = '<span style="font-size:0.8rem;">' + escapeHtml(nodesStr) + '</span>';
+        var ep = s.endpoint || '';
+        cells[4].innerHTML = ep ? '<a href="' + escapeHtml(ep) + '" target="_blank" style="color:var(--accent);font-family:\'JetBrains Mono\',monospace;font-size:0.78rem;">' + escapeHtml(ep) + '</a>' : '—';
+        // cells[5] = scale input - sync unless user is editing or a pending scale is active
+        var scaleInput = cells[5].querySelector('input[data-csvc-input]');
+        if (scaleInput && document.activeElement !== scaleInput) {
+          var pending = pendingScales[s.name];
+          if (pending && Date.now() < pending.until) {
+            // Pending scale request: show requested value, clear once server catches up
+            scaleInput.value = pending.value;
+            if (total === pending.value) {
+              delete pendingScales[s.name]; // server caught up
+            }
+          } else {
+            delete pendingScales[s.name];
+            scaleInput.value = total;
+          }
+        }
+      });
+    }
+
+    /* Task 4: Image helpers */
+    var _lastImageData = [];
+    function formatImageSize(sizeMb) {
+      if (sizeMb == null) return '<span class="text-muted">—</span>';
+      var val, unit, cls;
+      if (sizeMb >= 1024) { val = (sizeMb / 1024).toFixed(2); unit = 'GB'; } else { val = sizeMb.toFixed(1); unit = 'MB'; }
+      if (sizeMb < 500) cls = 'img-size-green'; else if (sizeMb < 2048) cls = 'img-size-yellow'; else cls = 'img-size-red';
+      return '<span class="' + cls + '">' + val + ' ' + unit + '</span>';
+    }
+
+    function renderImages(data) {
+      _lastImageData = data || [];
+      const panel = document.getElementById('imagesPanel');
+      if (!Array.isArray(data) || data.length === 0) {
+        panel.innerHTML = '<p class="text-muted">이미지 없음</p>';
+        return;
+      }
+      // Filter by search input (Task 4.2)
+      var searchEl = document.getElementById('imageSearchInput');
+      var filter = searchEl ? searchEl.value.trim().toLowerCase() : '';
+      var filtered = filter ? data.filter(function(img) {
+        var tag = (img.tags && img.tags[0]) ? img.tags[0] : (img.id || '');
+        var repo = img.repository || '';
+        return tag.toLowerCase().indexOf(filter) >= 0 || repo.toLowerCase().indexOf(filter) >= 0;
+      }) : data;
+
+      if (filtered.length === 0) {
+        panel.innerHTML = '<p class="text-muted">검색 결과 없음 (' + data.length + '개 이미지 중)</p>';
+        return;
+      }
+
+      // Compact image table (Task 4.3: color-coded sizes)
+      var html = '<table><thead><tr><th>이미지</th><th>태그</th><th>크기</th><th style="width:130px;"></th></tr></thead><tbody>';
+      filtered.forEach(function(img, idx) {
+        var tag = (img.tags && img.tags[0]) ? img.tags[0] : (img.id || '');
+        var repo = img.repository || tag.split(':')[0] || '';
+        var tags = img.tags && img.tags.length ? img.tags.join(', ') : (img.tag || tag);
+        var sizeHtml = formatImageSize(img.size_mb);
+        var id = img.id || tag;
+        html += '<tr>';
+        html += '<td style="font-family:JetBrains Mono,monospace;font-size:0.82rem;">' + escapeHtml(repo) + '</td>';
+        html += '<td style="font-size:0.82rem;color:var(--text-muted);">' + escapeHtml(tags) + '</td>';
+        html += '<td style="font-size:0.82rem;">' + sizeHtml + '</td>';
+        html += '<td style="white-space:nowrap;">';
+        html += '<button type="button" class="btn btn-sm btn-success" data-img-select="' + escapeHtml(tag) + '" data-img-name="' + escapeHtml(repo) + '" title="배포 입력란에 채우기">선택</button> ';
+        html += '<button type="button" class="btn btn-sm btn-danger" data-img-remove="' + escapeHtml(id) + '" title="이미지 삭제">삭제</button>';
+        html += '</td>';
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+      panel.innerHTML = html;
+
+      // "선택" buttons fill the deploy image input (Task 3: unified deploy)
+      panel.querySelectorAll('[data-img-select]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var deployImageEl = document.getElementById('deployImage');
+          var deployNameEl = document.getElementById('deployName');
+          deployImageEl.value = this.getAttribute('data-img-select');
+          // Auto-fill service name from repo if deploy name is empty
+          if (!deployNameEl.value.trim()) {
+            var imgName = this.getAttribute('data-img-name') || '';
+            var parts = imgName.split('/');
+            deployNameEl.value = parts[parts.length - 1].split(':')[0];
+          }
+          deployImageEl.focus();
+          // Flash highlight to indicate selection
+          deployImageEl.style.borderColor = 'var(--success)';
+          setTimeout(function() { deployImageEl.style.borderColor = ''; }, 1200);
+        });
+      });
+
+      // "삭제" buttons
+      panel.querySelectorAll('[data-img-remove]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var id = this.getAttribute('data-img-remove');
+          if (id) removeImage(id);
+        });
+      });
+    }
+
+    let expandedNodes = new Set(['__all__']); // 기본 펼침
+
+    function renderContainers(data, errorMsg, servicesOpt) {
+      var panel = document.getElementById('containersPanel');
+
+      // Use cluster placements if available (shows ALL nodes)
+      var placements = allPlacements || [];
+      var nodes = (clusterStatus && clusterStatus.nodes) ? clusterStatus.nodes : [];
+
+      if (!placements.length && (!Array.isArray(data) || !data.length)) {
+        panel.innerHTML = '<p class="text-muted">컨테이너 없음</p>';
+        return;
+      }
+
+      // Group placements by node
+      var byNode = {};
+      nodes.forEach(function(n) { byNode[n.name] = { node: n, containers: [] }; });
+      placements.forEach(function(p) {
+        var nodeName = p.node_name || 'unknown';
+        if (!byNode[nodeName]) byNode[nodeName] = { node: null, containers: [] };
+        byNode[nodeName].containers.push(p);
+      });
+
+      // If no placements, fall back to local data grouped under "local"
+      if (!placements.length && Array.isArray(data) && data.length) {
+        byNode['local'] = { node: null, containers: data.map(function(c) {
+          return {
+            container_id: c.id, container_name: c.name, service_name: c.service || '',
+            image: c.image, node_name: 'local', status: c.state || c.status
+          };
+        })};
+      }
+
+      var nodeNames = Object.keys(byNode).sort();
+      var totalContainers = 0;
+      nodeNames.forEach(function(n) { totalContainers += byNode[n].containers.length; });
+
+      var html = '<div style="margin-bottom:0.5rem;font-size:0.85rem;color:var(--text-muted);">';
+      html += '전체 ' + nodeNames.length + '개 노드, ' + totalContainers + '개 컨테이너';
+      html += '</div>';
+
+      nodeNames.forEach(function(nodeName) {
+        var info = byNode[nodeName];
+        var containers = info.containers;
+        var nodeObj = info.node;
+        var isExpanded = expandedNodes.has('__all__') || expandedNodes.has(nodeName);
+        var running = containers.filter(function(c) { return c.status === 'running'; }).length;
+        var res = nodeObj && nodeObj.resources ? nodeObj.resources : {};
+        var cpuPct = res.cpu_used_percent != null ? res.cpu_used_percent.toFixed(1) : '—';
+        var memUsed = res.memory_used_mb || 0;
+        var memTotal = res.memory_total_mb || 0;
+        var st = nodeObj ? nodeObj.status : 'unknown';
+        var badgeCls = st === 'healthy' ? 'running' : st === 'offline' ? 'stopped' : 'managed';
+
+        // Node header row
+        html += '<div style="background:rgba(88,166,255,0.06);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:0.5rem;">';
+        html += '<div style="padding:0.6rem 0.75rem;cursor:pointer;display:flex;justify-content:space-between;align-items:center;" data-node-toggle="' + escapeHtml(nodeName) + '">';
+        html += '<div>';
+        html += '<span style="font-weight:600;font-size:0.95rem;" data-node-arrow="' + escapeHtml(nodeName) + '">' + (isExpanded ? '▼' : '▶') + '</span> ';
+        html += '<strong>' + escapeHtml(nodeName) + '</strong>';
+        if (nodeObj) html += ' <span class="text-muted" style="font-size:0.8rem;">(' + escapeHtml(nodeObj.address || '') + ')</span>';
+        html += ' <span class="badge badge-' + badgeCls + '" style="margin-left:0.5rem;">' + escapeHtml(st) + '</span>';
+        html += '</div>';
+        html += '<div style="font-size:0.8rem;color:var(--text-muted);">';
+        html += '<span style="margin-right:1rem;">컨테이너: <strong>' + running + '</strong>/' + containers.length + '</span>';
+        if (memTotal) html += '<span style="margin-right:1rem;">MEM: ' + memUsed + '/' + memTotal + 'MB</span>';
+        if (cpuPct !== '—') html += '<span>CPU: ' + cpuPct + '%</span>';
+        html += '</div></div>';
+
+        // Container table (expanded)
+        html += '<div style="display:' + (isExpanded ? 'block' : 'none') + ';" data-node-body="' + escapeHtml(nodeName) + '">';
+        if (containers.length === 0) {
+          html += '<div style="padding:0.5rem 1rem;color:var(--text-muted);font-size:0.85rem;">컨테이너 없음</div>';
+        } else {
+          html += '<table style="font-size:0.85rem;"><thead><tr>';
+          html += '<th>컨테이너</th><th>서비스</th><th>이미지</th><th>상태</th>';
+          html += '</tr></thead><tbody>';
+          containers.forEach(function(c) {
+            var cName = c.container_name || c.name || c.container_id || '';
+            var svc = c.service_name || c.service || '';
+            var img = c.image || '';
+            var cStatus = c.status || 'unknown';
+            var statusCls = cStatus === 'running' ? 'running' : 'stopped';
+            var colorCls = getServiceColor(svc);
+            html += '<tr>';
+            html += '<td><span class="container-chip ' + colorCls + '" style="cursor:default;display:inline-block;">' + escapeHtml(cName) + '</span></td>';
+            html += '<td>' + escapeHtml(svc || '—') + '</td>';
+            html += '<td style="font-size:0.8rem;">' + escapeHtml(img) + '</td>';
+            html += '<td><span class="badge badge-' + statusCls + '">' + escapeHtml(cStatus) + '</span></td>';
+            html += '</tr>';
+          });
+          html += '</tbody></table>';
+        }
+        html += '</div></div>';
+      });
+
+      panel.innerHTML = html;
+
+      // Toggle node expand/collapse
+      panel.querySelectorAll('[data-node-toggle]').forEach(function(el) {
+        el.addEventListener('click', function() {
+          var nodeName = this.getAttribute('data-node-toggle');
+          var body = panel.querySelector('[data-node-body="' + nodeName + '"]');
+          var arrow = panel.querySelector('[data-node-arrow="' + nodeName + '"]');
+          if (!body) return;
+          var visible = body.style.display !== 'none';
+          body.style.display = visible ? 'none' : 'block';
+          if (arrow) arrow.textContent = visible ? '▶' : '▼';
+          if (visible) expandedNodes.delete(nodeName); else expandedNodes.add(nodeName);
+        });
+      });
+    }
+
+    function showInspectModal(id, text) {
+      var overlay = document.createElement('div');
+      overlay.className = 'inspect-overlay';
+      overlay.innerHTML =
+        '<div class="inspect-modal">' +
+        '<div class="inspect-modal-header">' +
+        '<div class="inspect-modal-title">컨테이너 inspect: ' + escapeHtml(id) + '</div>' +
+        '<button type="button" class="inspect-modal-close" aria-label="닫기">&times;</button>' +
+        '</div>' +
+        '<div class="inspect-modal-body"><pre></pre></div>' +
+        '</div>';
+      var pre;
+      document.body.appendChild(overlay);
+      pre = overlay.querySelector('.inspect-modal-body pre');
+      if (pre) pre.textContent = text;
+      function close() {
+        if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      }
+      overlay.addEventListener('click', function(e) {
+        if (e.target === overlay) close();
+      });
+      var btn = overlay.querySelector('.inspect-modal-close');
+      if (btn) btn.addEventListener('click', close);
+    }
+
+    function scaleServiceWith(serviceName, replicas) {
+      apiFetch('/v1/services/scale', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ service_name: serviceName, replicas: replicas })
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        appendLog('서비스 스케일: ' + serviceName + ' -> ' + replicas, data);
+        loadAll();
+      }).catch(function(e) {
+        appendLog('서비스 스케일 실패: ' + serviceName, { success: false, message: e.message });
+      });
+    }
+
+    function appendLog(cmd, res) {
+      const log = document.getElementById('commandLog');
+      const entry = document.createElement('div');
+      entry.className = 'log-entry';
+      const ok = res && res.success;
+      entry.innerHTML =
+        '<span class="ts">[' + now() + ']</span>' +
+        '<span class="cmd">' + escapeHtml(cmd) + '</span><br>' +
+        '<span class="' + (ok ? 'ok' : 'err') + '">' + (ok ? 'OK' : '실패') + '</span> ' +
+        '<span class="msg">' + escapeHtml(res && res.message ? res.message : (res && res.error ? res.error : '')) + '</span>';
+      log.appendChild(entry);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    /* === Task 5: Enhanced runCommand with preview === */
+    var pendingPreviewCmd = '';
+
+    function buildCliFromIntent(data) {
+      var action = (data.action || data.intent || '').toLowerCase();
+      var svc = data.service || data.service_name || data.target || '';
+      var img = data.image || '';
+      var rep = data.replicas || '';
+      var host = window.location.origin;
+      if (action === 'deploy' || action === 'run') {
+        return 'curl -X POST ' + host + '/v1/containers/run -H "Content-Type: application/json" -d '{"image":"' + (img || svc) + '","replicas":' + (rep || 1) + '}'';
+      } else if (action === 'scale') {
+        return 'curl -X POST ' + host + '/v1/services/scale -H "Content-Type: application/json" -d '{"service_name":"' + svc + '","replicas":' + (rep || 1) + '}'';
+      } else if (action === 'stop') {
+        return 'curl -X POST ' + host + '/v1/containers/' + svc + '/stop';
+      } else if (action === 'status' || action === 'list') {
+        return 'curl ' + host + '/v1/services';
+      } else if (action === 'migrate') {
+        return 'curl -X POST ' + host + '/v1/migrate -H "Content-Type: application/json" -d '{"container_id":"' + svc + '","target_node":"' + (data.target_node || '') + '"}'';
+      }
+      return 'curl -X POST ' + host + '/v1/command -H "Content-Type: application/json" -d '{"command":"' + svc + '"}'';
+    }
+
+    function formatIntent(data) {
+      var parts = [];
+      if (data.action || data.intent) parts.push('동작: ' + (data.action || data.intent));
+      if (data.service || data.service_name || data.target) parts.push('대상: ' + (data.service || data.service_name || data.target));
+      if (data.image) parts.push('이미지: ' + data.image);
+      if (data.replicas) parts.push('레플리카: ' + data.replicas);
+      if (data.target_node) parts.push('노드: ' + data.target_node);
+      if (data.message) parts.push('메시지: ' + data.message);
+      return parts.join(' | ');
+    }
+
+    async function previewCommand() {
+      var input = document.getElementById('commandInput');
+      var cmd = (input.value || '').trim();
+      if (!cmd) return;
+      var preview = document.getElementById('commandPreview');
+      var intentEl = document.getElementById('previewIntent');
+      var cliEl = document.getElementById('previewCli');
+      try {
+        var res = await apiFetch('/v1/command', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command: cmd, dry_run: true })
+        });
+        var data = await res.json();
+        pendingPreviewCmd = cmd;
+        intentEl.textContent = formatIntent(data);
+        cliEl.textContent = buildCliFromIntent(data);
+        preview.classList.add('active');
+      } catch (e) {
+        intentEl.textContent = '파싱 실패: ' + e.message;
+        cliEl.textContent = '';
+        preview.classList.add('active');
+      }
+    }
+
+    async function runCommand() {
+      var input = document.getElementById('commandInput');
+      var cmd = (input.value || '').trim();
+      if (!cmd) return;
+      var dryRun = document.getElementById('dryRun').checked;
+      // Show preview first if not dry run
+      if (!dryRun) {
+        var preview = document.getElementById('commandPreview');
+        var intentEl = document.getElementById('previewIntent');
+        var cliEl = document.getElementById('previewCli');
+        try {
+          var preRes = await apiFetch('/v1/command', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: cmd, dry_run: true })
+          });
+          var preData = await preRes.json();
+          pendingPreviewCmd = cmd;
+          intentEl.textContent = formatIntent(preData);
+          cliEl.textContent = buildCliFromIntent(preData);
+          preview.classList.add('active');
+          // Append dry-run log
+          appendLog('[미리보기] ' + cmd, preData);
+        } catch (e) {
+          // On preview failure, execute directly
+          executeCommand(cmd, false);
+        }
+        return;
+      }
+      // Dry run mode: just show result
+      executeCommand(cmd, true);
+    }
+
+    async function executeCommand(cmd, dryRun) {
+      var input = document.getElementById('commandInput');
+      input.value = '';
+      document.getElementById('commandPreview').classList.remove('active');
+      pendingPreviewCmd = '';
+      try {
+        var res = await apiFetch('/v1/command', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command: cmd, dry_run: !!dryRun })
+        });
+        var data = await res.json();
+        appendLog(cmd, data);
+        if (!dryRun) loadAll();
+      } catch (e) {
+        appendLog(cmd, { success: false, message: e.message });
+      }
+    }
+
+    async function runImage(tag, replicas, opts) {
+      opts = opts || {};
+      var body = { image: tag, replicas: replicas, use_internal_network: true };
+      if (opts.environment && opts.environment.length) body.environment = opts.environment;
+      if (opts.volumes && opts.volumes.length) body.volumes = opts.volumes;
+      if (opts.ports && opts.ports.length) body.ports = opts.ports;
+      if (opts.user) body.user = opts.user;
+      if (opts.volume_mode) body.volume_mode = opts.volume_mode;
+      try {
+        const r = await apiFetch('/v1/containers/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const data = await r.json();
+        appendLog('이미지 기동: ' + tag + ' (x' + replicas + ')', data);
+        if (data.success) loadAll();
+      } catch (e) {
+        appendLog('이미지 기동', { success: false, message: e.message });
+      }
+    }
+
+    async function removeImage(id) {
+      if (!confirm('이미지 "' + id + '" 를 삭제할까요?')) return;
+      try {
+        const r = await apiFetch('/v1/images/' + encodeURIComponent(id), { method: 'DELETE' });
+        const data = await r.json();
+        appendLog('이미지 삭제: ' + id, data);
+        loadAll();
+      } catch (e) {
+        appendLog('이미지 삭제', { success: false, message: e.message });
+      }
+    }
+
+    async function stopContainer(id) {
+      try {
+        const r = await apiFetch('/v1/containers/' + encodeURIComponent(id) + '/stop', { method: 'POST' });
+        const data = await r.json();
+        appendLog('컨테이너 중지: ' + id, data);
+        loadAll();
+      } catch (e) {
+        appendLog('컨테이너 중지', { success: false, message: e.message });
+      }
+    }
+
+    async function scaleService(serviceName) {
+      const v = prompt(serviceName + ' 레플리카 수를 입력하세요', '1');
+      if (v === null) return;
+      const n = parseInt(v, 10);
+      if (isNaN(n) || n < 0) {
+        alert('0 이상의 숫자를 입력하세요.');
+        return;
+      }
+      try {
+        const r = await apiFetch('/v1/services/scale', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ service_name: serviceName, replicas: n })
+        });
+        const data = await r.json();
+        appendLog('서비스 스케일: ' + serviceName + ' -> ' + n, data);
+        loadAll();
+      } catch (e) {
+        appendLog('서비스 스케일 실패: ' + serviceName, { success: false, message: e.message });
+      }
+    }
+
+    async function removeContainer(id) {
+      if (!confirm('컨테이너 "' + id + '" 를 삭제할까요?')) return;
+      try {
+        const r = await apiFetch('/v1/containers/' + encodeURIComponent(id), { method: 'DELETE' });
+        const data = await r.json();
+        appendLog('컨테이너 삭제: ' + id, data);
+        loadAll();
+      } catch (e) {
+        appendLog('컨테이너 삭제', { success: false, message: e.message });
+      }
+    }
+
+    function updateOperatorStatus(health) {
+      const el = document.getElementById('operatorStatus');
+      if (!el) return;
+      if (health && health.status === 'ok') {
+        el.textContent = '운영 상태: 정상 (v' + (health.version || '—') + ')';
+        el.classList.remove('error');
+      } else {
+        el.textContent = '운영 상태: 확인 불가';
+        el.classList.add('error');
+      }
+    }
+
+    async function loadAll() {
+      try {
+        await loadNodes();
+      } catch(e) { console.warn('loadNodes error:', e); }
+
+      // Load cluster data (non-blocking)
+      try {
+        await Promise.all([loadClusterStatus(), loadAlerts(), loadMigrations(), loadPlacements()]);
+      } catch(e) { console.warn('cluster data error:', e); }
+
+      // Load main data
+      var health = null, system = null, services = null, images = null;
+      try {
+        [health, system, services, images] = await Promise.all([
+          fetch(API + '/health').then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }),
+          fetch(API + '/v1/system').then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }),
+          fetch(API + '/v1/services').then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }),
+          fetch(API + '/v1/images').then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; })
+        ]);
+      } catch(e) { console.warn('main data error:', e); }
+
+      try { updateOperatorStatus(health); } catch(e) { console.warn('renderHealth error:', e); }
+      try { renderSystem(system); } catch(e) { console.warn('renderSystem error:', e); }
+      try { renderServices(services); } catch(e) { console.warn('renderServices error:', e); }
+
+      try { renderImages(images); } catch(e) { console.warn('renderImages error:', e); }
+
+      // Cluster UI
+      try { renderClusterHealthBadge(clusterStatus); } catch(e) { console.warn('renderHealthBadge error:', e); }
+      try { renderClusterBar(clusterStatus); } catch(e) { console.warn('renderClusterBar error:', e); }
+      try { renderNodeTabs(clusterStatus); } catch(e) { console.warn('renderNodeTabs error:', e); }
+      try { renderPlacementGrid(allPlacements, clusterStatus); } catch(e) { console.warn('renderPlacementGrid error:', e); }
+
+      setLastUpdated();
+    }
+
+    // 자동 새로고침용
+    async function loadContainersOnly() {
+      try { await loadNodes(); } catch(e) {}
+      try { await Promise.all([loadClusterStatus(), loadAlerts(), loadMigrations(), loadPlacements()]); } catch(e) {}
+
+      var services = null;
+      try {
+        services = await fetch(API + '/v1/services').then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; });
+      } catch(e) {}
+
+      try { renderServices(services); } catch(e) {}
+      try { renderClusterHealthBadge(clusterStatus); } catch(e) {}
+      try { renderClusterBar(clusterStatus); } catch(e) {}
+      try { renderNodeTabs(clusterStatus); } catch(e) {}
+      try { renderPlacementGrid(allPlacements, clusterStatus); } catch(e) {}
+
+      setLastUpdated();
+    }
+
+    async function loadNodes() {
+      try {
+        const resp = await fetchJsonLocal('/v1/cluster/nodes');
+        clusterNodes = (resp && resp.nodes) ? resp.nodes : [];
+        const sel = document.getElementById('targetNode');
+        if (!sel) return;
+        const current = localStorage.getItem('targetNode') || sel.value || 'local';
+        sel.innerHTML = '<option value="local">local</option>' + clusterNodes.map(n => (
+          '<option value=\"' + escapeHtml(n.name) + '\">' + escapeHtml(n.name) + '</option>'
+        )).join('');
+        sel.value = current;
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    /* ===== Event Bindings ===== */
+    document.getElementById('btnRun').addEventListener('click', runCommand);
+    document.getElementById('commandInput').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') runCommand();
+    });
+    // Task 5: Preview buttons
+    document.getElementById('btnPreview').addEventListener('click', previewCommand);
+    document.getElementById('btnPreviewConfirm').addEventListener('click', function() {
+      if (pendingPreviewCmd) executeCommand(pendingPreviewCmd, false);
+    });
+    document.getElementById('btnPreviewCancel').addEventListener('click', function() {
+      document.getElementById('commandPreview').classList.remove('active');
+      pendingPreviewCmd = '';
+    });
+
+    // Task 6: Drag & Drop Command Blocks
+    (function initCmdBlocks() {
+      var palette = document.querySelectorAll('.cmd-block');
+      var zone = document.getElementById('cmdComposeZone');
+      var composeItems = [];
+
+      var blockForms = {
+        deploy: { label: '배포', fields: [
+          { name: 'image', placeholder: '이미지 (예: nginx:latest)', type: 'text' },
+          { name: 'replicas', placeholder: '수량', type: 'number', value: '1' }
+        ]},
+        scale: { label: '스케일', fields: [
+          { name: 'service', placeholder: '서비스명', type: 'text' },
+          { name: 'replicas', placeholder: '레플리카 수', type: 'number', value: '1' }
+        ]},
+        stop: { label: '중지', fields: [
+          { name: 'service', placeholder: '서비스/컨테이너명', type: 'text' }
+        ]},
+        migrate: { label: '마이그레이션', fields: [
+          { name: 'container', placeholder: '컨테이너 ID', type: 'text' },
+          { name: 'target_node', placeholder: '대상 노드', type: 'text' }
+        ]},
+        status: { label: '상태확인', fields: [] }
+      };
+
+      palette.forEach(function(block) {
+        block.addEventListener('dragstart', function(e) {
+          e.dataTransfer.setData('text/plain', block.dataset.action);
+          e.dataTransfer.effectAllowed = 'copy';
+        });
+      });
+
+      zone.addEventListener('dragover', function(e) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+        zone.classList.add('drag-over');
+      });
+      zone.addEventListener('dragleave', function() { zone.classList.remove('drag-over'); });
+      zone.addEventListener('drop', function(e) {
+        e.preventDefault();
+        zone.classList.remove('drag-over');
+        var action = e.dataTransfer.getData('text/plain');
+        if (!blockForms[action]) return;
+        addComposeItem(action);
+      });
+
+      function addComposeItem(action) {
+        var ph = zone.querySelector('.placeholder');
+        if (ph) ph.remove();
+        var form = blockForms[action];
+        var item = document.createElement('div');
+        item.className = 'compose-item';
+        item.dataset.action = action;
+        var html = '<span class="compose-label">' + form.label + '</span>';
+        form.fields.forEach(function(f) {
+          html += '<input type="' + f.type + '" data-field="' + f.name + '" placeholder="' + f.placeholder + '"' + (f.value ? ' value="' + f.value + '"' : '') + '>';
+        });
+        html += '<button type="button" class="compose-remove" title="제거">&times;</button>';
+        item.innerHTML = html;
+        item.querySelector('.compose-remove').addEventListener('click', function() {
+          item.remove();
+          composeItems = composeItems.filter(function(ci) { return ci !== item; });
+          if (!composeItems.length) zone.innerHTML = '<div class="placeholder">블록을 여기에 드롭하여 명령을 조합하세요</div>';
+        });
+        zone.appendChild(item);
+        composeItems.push(item);
+      }
+
+      document.getElementById('btnComposeClear').addEventListener('click', function() {
+        composeItems = [];
+        zone.innerHTML = '<div class="placeholder">블록을 여기에 드롭하여 명령을 조합하세요</div>';
+      });
+
+      document.getElementById('btnComposeRun').addEventListener('click', async function() {
+        if (!composeItems.length) { alert('명령 블록을 조합하세요.'); return; }
+        var btn = this;
+        btn.disabled = true;
+        for (var i = 0; i < composeItems.length; i++) {
+          var ci = composeItems[i];
+          var action = ci.dataset.action;
+          var fields = {};
+          ci.querySelectorAll('input').forEach(function(inp) { fields[inp.dataset.field] = inp.value; });
+          var cmd = '';
+          if (action === 'deploy') cmd = (fields.image || 'nginx') + ' ' + (fields.replicas || 1) + '개 배포해줘';
+          else if (action === 'scale') cmd = (fields.service || '') + ' ' + (fields.replicas || 1) + '개로 스케일해줘';
+          else if (action === 'stop') cmd = (fields.service || '') + ' 중지해줘';
+          else if (action === 'migrate') cmd = (fields.container || '') + ' ' + (fields.target_node || '') + '로 마이그레이션해줘';
+          else if (action === 'status') cmd = '서비스 목록';
+          ci.style.borderColor = 'var(--accent)';
+          try {
+            var res = await apiFetch('/v1/command', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ command: cmd, dry_run: false })
+            });
+            var data = await res.json();
+            appendLog('[조합] ' + cmd, data);
+            ci.style.borderColor = data.success ? 'var(--success)' : 'var(--danger)';
+          } catch (e) {
+            appendLog('[조합] ' + cmd, { success: false, message: e.message });
+            ci.style.borderColor = 'var(--danger)';
+          }
+        }
+        btn.disabled = false;
+        loadAll();
+      });
+    })();
+
+    // Task 7: Workflow Builder
+    (function initWorkflowBuilder() {
+      var palette = document.getElementById('wfPalette');
+      var dropZone = document.getElementById('wfDropZone');
+      var wfSteps = [];
+      var stepCounter = 0;
+
+      palette.querySelectorAll('.wf-drag-item').forEach(function(item) {
+        item.addEventListener('dragstart', function(e) {
+          e.dataTransfer.setData('application/json', JSON.stringify({
+            image: item.dataset.image,
+            name: item.dataset.name
+          }));
+          e.dataTransfer.effectAllowed = 'copy';
+        });
+      });
+
+      dropZone.addEventListener('dragover', function(e) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+        dropZone.classList.add('drag-over');
+      });
+      dropZone.addEventListener('dragleave', function() { dropZone.classList.remove('drag-over'); });
+      dropZone.addEventListener('drop', function(e) {
+        e.preventDefault();
+        dropZone.classList.remove('drag-over');
+        var raw = e.dataTransfer.getData('application/json');
+        if (!raw) return;
+        try { var info = JSON.parse(raw); } catch(ex) { return; }
+        addWfStep(info.name, info.image);
+      });
+
+      function renumberSteps() {
+        wfSteps.forEach(function(s, i) {
+          s.el.querySelector('.wf-step-num').textContent = (i + 1);
+        });
+      }
+
+      function addWfStep(name, image) {
+        var ph = dropZone.querySelector('.placeholder');
+        if (ph) ph.remove();
+        stepCounter++;
+        var el = document.createElement('div');
+        el.className = 'wf-step';
+        el.draggable = true;
+        var isCustom = (name === 'custom');
+        el.innerHTML =
+          '<span class="wf-step-num">' + (wfSteps.length + 1) + '</span>' +
+          '<span class="wf-step-name">' + escapeHtml(name) + '</span>' +
+          '<input type="text" class="wf-image" value="' + escapeHtml(image) + '" placeholder="이미지 경로">' +
+          '<input type="number" class="wf-replicas" value="1" min="1" max="20" title="레플리카">' +
+          '<span class="wf-step-status waiting">대기</span>' +
+          '<button type="button" class="wf-remove" title="제거">&times;</button>';
+
+        el.querySelector('.wf-remove').addEventListener('click', function() {
+          el.remove();
+          wfSteps = wfSteps.filter(function(s) { return s.el !== el; });
+          renumberSteps();
+          if (!wfSteps.length) dropZone.innerHTML = '<div class="placeholder">이미지를 여기에 드롭하여 순서를 정하세요</div>';
+        });
+
+        // Drag reorder within drop zone
+        el.addEventListener('dragstart', function(e) {
+          e.dataTransfer.setData('text/wf-reorder', wfSteps.findIndex(function(s) { return s.el === el; }).toString());
+          e.dataTransfer.effectAllowed = 'move';
+        });
+        el.addEventListener('dragover', function(e) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+        });
+        el.addEventListener('drop', function(e) {
+          e.preventDefault();
+          var fromIdx = parseInt(e.dataTransfer.getData('text/wf-reorder'), 10);
+          if (isNaN(fromIdx)) return;
+          var toIdx = wfSteps.findIndex(function(s) { return s.el === el; });
+          if (fromIdx === toIdx) return;
+          var moved = wfSteps.splice(fromIdx, 1)[0];
+          wfSteps.splice(toIdx, 0, moved);
+          // Re-render order
+          wfSteps.forEach(function(s) { dropZone.appendChild(s.el); });
+          renumberSteps();
+        });
+
+        dropZone.appendChild(el);
+        wfSteps.push({ el: el, name: name });
+      }
+
+      document.getElementById('btnWfClear').addEventListener('click', function() {
+        wfSteps = [];
+        stepCounter = 0;
+        dropZone.innerHTML = '<div class="placeholder">이미지를 여기에 드롭하여 순서를 정하세요</div>';
+      });
+
+      document.getElementById('btnWfRun').addEventListener('click', async function() {
+        if (!wfSteps.length) { alert('기동할 컨테이너를 추가하세요.'); return; }
+        var btn = this;
+        btn.disabled = true;
+        // Reset statuses
+        wfSteps.forEach(function(s) {
+          var st = s.el.querySelector('.wf-step-status');
+          st.textContent = '대기';
+          st.className = 'wf-step-status waiting';
+        });
+        for (var i = 0; i < wfSteps.length; i++) {
+          var step = wfSteps[i];
+          var statusEl = step.el.querySelector('.wf-step-status');
+          var imageInput = step.el.querySelector('.wf-image');
+          var replicasInput = step.el.querySelector('.wf-replicas');
+          var image = (imageInput.value || '').trim();
+          var replicas = parseInt(replicasInput.value, 10) || 1;
+          if (!image) {
+            statusEl.textContent = '실패';
+            statusEl.className = 'wf-step-status failed';
+            appendLog('[워크플로 #' + (i+1) + '] ' + step.name, { success: false, message: '이미지 미지정' });
+            continue;
+          }
+          statusEl.textContent = '실행중...';
+          statusEl.className = 'wf-step-status running';
+          try {
+            var body = { image: image, replicas: replicas, use_internal_network: true };
+            var res = await apiFetch('/v1/containers/run', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(body)
+            });
+            var data = await res.json();
+            appendLog('[워크플로 #' + (i+1) + '] ' + step.name + ' (' + image + ' x' + replicas + ')', data);
+            if (data.success) {
+              statusEl.textContent = '완료';
+              statusEl.className = 'wf-step-status done';
+            } else {
+              statusEl.textContent = '실패';
+              statusEl.className = 'wf-step-status failed';
+            }
+          } catch (e) {
+            statusEl.textContent = '실패';
+            statusEl.className = 'wf-step-status failed';
+            appendLog('[워크플로 #' + (i+1) + '] ' + step.name, { success: false, message: e.message });
+          }
+        }
+        btn.disabled = false;
+        loadAll();
+      });
+    })();
+    document.getElementById('btnRefresh').addEventListener('click', loadAll);
+    document.getElementById('targetNode').addEventListener('change', function() {
+      localStorage.setItem('targetNode', this.value || 'local');
+      loadAll();
+    });
+    document.getElementById('btnAddNode').addEventListener('click', function() {
+      showAddNodeModal();
+    });
+    // Cluster Deploy
+    document.getElementById('btnDeploy').addEventListener('click', async function() {
+      var imageEl = document.getElementById('deployImage');
+      var image = (imageEl.value || '').trim();
+      if (!image) { alert('이미지 경로를 입력하세요.'); imageEl.focus(); return; }
+      var name = (document.getElementById('deployName').value || '').trim();
+      var replicas = parseInt(document.getElementById('deployReplicas').value || '1', 10);
+      if (isNaN(replicas) || replicas < 1) replicas = 1;
+      var strategy = document.getElementById('deployStrategy').value || 'spread';
+      var logEl = document.getElementById('deployLog');
+      function lines(id) { var v = (document.getElementById(id).value || '').trim(); return v ? v.split(/\n/).map(function(s){ return s.trim(); }).filter(Boolean) : []; }
+      var body = { image: image, replicas: replicas, strategy: strategy };
+      if (name) body.name = name;
+      var env = lines('deployEnv'); if (env.length) body.environment = env;
+      var ports = lines('deployPorts'); if (ports.length) body.ports = ports;
+      var vols = lines('deployVolumes'); if (vols.length) body.volumes = vols;
+      var mem = (document.getElementById('deployMemory').value || '').trim(); if (mem) body.memory = mem;
+      var cpu = (document.getElementById('deployCpu').value || '').trim(); if (cpu) body.cpu = cpu;
+
+      // Distributed deploy: include selected nodes (Task 3)
+      var distCheck = document.getElementById('deployDistributed');
+      if (distCheck && distCheck.checked) {
+        var selectedNodes = [];
+        document.querySelectorAll('#deployNodeList input[type=checkbox]:checked').forEach(function(cb) {
+          selectedNodes.push(cb.value);
+        });
+        if (selectedNodes.length > 0) {
+          body.nodes = selectedNodes;
+        }
+      }
+
+      logEl.innerHTML = '<span class="deploy-spinner"></span><span style="color:var(--accent);">배포 중... (이미지 Pull + 컨테이너 기동)</span>';
+      this.disabled = true;
+      try {
+        var r = await fetch(API + '/v1/cluster/deploy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        var data = await r.json();
+        if (data.success) {
+          logEl.innerHTML = '<span style="color:var(--success);">배포 완료: ' + escapeHtml(data.message) + '</span>';
+          appendLog('클러스터 배포: ' + image, data);
+        } else {
+          logEl.innerHTML = '<span style="color:var(--danger);">배포 실패: ' + escapeHtml(data.message || data.error || '') + '</span>';
+          appendLog('클러스터 배포 실패: ' + image, data);
+        }
+        // Show per-node results (Task 4.6: enhanced)
+        if (data.details && data.details.results) {
+          var extra = '<div class="per-node-result">';
+          data.details.results.forEach(function(r) {
+            var icon = r.success ? '<span style="color:var(--success);">&#10003;</span>' : '<span style="color:var(--danger);">&#10007;</span>';
+            extra += '<div>' + icon + ' <strong>' + escapeHtml(r.node) + '</strong>: ' + escapeHtml(r.message || r.error || '') + (r.created ? ' (' + r.created + '개 생성)' : '') + '</div>';
+          });
+          extra += '</div>';
+          logEl.innerHTML += extra;
+        }
+        // Save deploy history (Task 4.1)
+        saveDeployHistory(image, name, replicas, strategy, data.success);
+        renderDeployHistory();
+        loadAll();
+      } catch (e) {
+        logEl.innerHTML = '<span style="color:var(--danger);">오류: ' + escapeHtml(e.message) + '</span>';
+      }
+      this.disabled = false;
+    });
+    document.getElementById('deployImage').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') document.getElementById('btnDeploy').click();
+    });
+
+    /* ===== Task 4: Deploy Improvements JS ===== */
+
+    // Task 4.8: Auto-generate service name from image name
+    document.getElementById('deployImage').addEventListener('input', function() {
+      var img = this.value.trim();
+      var nameEl = document.getElementById('deployName');
+      if (!img) return;
+      // Extract base name: remove registry prefix and tag
+      var parts = img.split('/');
+      var base = parts[parts.length - 1].split(':')[0];
+      // Only auto-fill if the name field is empty or was auto-generated
+      if (!nameEl.value.trim() || nameEl.dataset.autoGenerated === 'true') {
+        nameEl.value = base.replace(/[^a-zA-Z0-9_-]/g, '-');
+        nameEl.dataset.autoGenerated = 'true';
+      }
+    });
+    document.getElementById('deployName').addEventListener('input', function() {
+      // User manually edited, stop auto-generating
+      this.dataset.autoGenerated = 'false';
+    });
+
+    // Task 4.9: Replica +/- buttons
+    document.getElementById('btnReplicaPlus').addEventListener('click', function() {
+      var el = document.getElementById('deployReplicas');
+      var v = parseInt(el.value || '1', 10);
+      if (isNaN(v)) v = 0;
+      el.value = Math.min(v + 1, 100);
+    });
+    document.getElementById('btnReplicaMinus').addEventListener('click', function() {
+      var el = document.getElementById('deployReplicas');
+      var v = parseInt(el.value || '1', 10);
+      if (isNaN(v)) v = 2;
+      el.value = Math.max(v - 1, 1);
+    });
+
+    // Task 4.4: Preset buttons
+    document.querySelectorAll('.preset-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var img = this.getAttribute('data-image');
+        var name = this.getAttribute('data-name');
+        document.getElementById('deployImage').value = img;
+        document.getElementById('deployName').value = name;
+        document.getElementById('deployName').dataset.autoGenerated = 'true';
+        // Flash the deploy button
+        var deployBtn = document.getElementById('btnDeploy');
+        deployBtn.style.filter = 'brightness(1.3)';
+        setTimeout(function() { deployBtn.style.filter = ''; }, 400);
+      });
+    });
+
+    // Task 4.2: Image search/filter
+    (function() {
+      var searchEl = document.getElementById('imageSearchInput');
+      if (searchEl) {
+        var debounceTimer;
+        searchEl.addEventListener('input', function() {
+          clearTimeout(debounceTimer);
+          debounceTimer = setTimeout(function() {
+            if (_lastImageData && _lastImageData.length) {
+              renderImages(_lastImageData);
+            }
+          }, 200);
+        });
+      }
+    })();
+
+    // Task 4.7: Image Pull button
+    document.getElementById('btnPullImage').addEventListener('click', async function() {
+      var nameEl = document.getElementById('pullImageName');
+      var img = (nameEl.value || '').trim();
+      if (!img) { alert('Pull할 이미지 이름을 입력하세요.'); nameEl.focus(); return; }
+      this.disabled = true;
+      this.textContent = 'Pulling...';
+      try {
+        var r = await fetch(API + '/v1/images/pull', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: img })
+        });
+        var data = await r.json();
+        if (data.success) {
+          appendLog('이미지 Pull: ' + img, data);
+          nameEl.value = '';
+          loadAll();
+        } else {
+          appendLog('이미지 Pull 실패: ' + img, data);
+          alert('Pull 실패: ' + (data.message || data.error || ''));
+        }
+      } catch (e) {
+        appendLog('이미지 Pull 오류', { success: false, message: e.message });
+        alert('Pull 오류: ' + e.message);
+      }
+      this.disabled = false;
+      this.textContent = 'Pull';
+    });
+
+    // Task 4.1: Deploy history (localStorage)
+    function getDeployHistory() {
+      try { return JSON.parse(localStorage.getItem('deployHistory') || '[]'); } catch (e) { return []; }
+    }
+    function saveDeployHistory(image, name, replicas, strategy, success) {
+      var history = getDeployHistory();
+      history.unshift({
+        time: new Date().toLocaleString('ko-KR'),
+        image: image,
+        name: name || '-',
+        replicas: replicas,
+        strategy: strategy,
+        success: !!success
+      });
+      if (history.length > 5) history = history.slice(0, 5);
+      localStorage.setItem('deployHistory', JSON.stringify(history));
+    }
+    function renderDeployHistory() {
+      var el = document.getElementById('deployHistory');
+      if (!el) return;
+      var history = getDeployHistory();
+      if (!history.length) { el.innerHTML = ''; return; }
+      var html = '<div class="deploy-history-title">최근 배포 이력</div>';
+      history.forEach(function(h) {
+        var statusCls = h.success ? 'dh-ok' : 'dh-fail';
+        var statusText = h.success ? '성공' : '실패';
+        html += '<div class="deploy-history-item">';
+        html += '<span><span class="' + statusCls + '">[' + statusText + ']</span> ' + escapeHtml(h.image) + ' (x' + h.replicas + ', ' + escapeHtml(h.strategy) + ')</span>';
+        html += '<span class="dh-time">' + escapeHtml(h.time) + '</span>';
+        html += '</div>';
+      });
+      el.innerHTML = html;
+    }
+    renderDeployHistory();
+
+    // Task 4.10: Deploy option templates (localStorage)
+    function getDeployTemplates() {
+      try { return JSON.parse(localStorage.getItem('deployTemplates') || '{}'); } catch (e) { return {}; }
+    }
+    function saveDeployTemplates(templates) {
+      localStorage.setItem('deployTemplates', JSON.stringify(templates));
+    }
+    function refreshTemplateSelect() {
+      var sel = document.getElementById('templateSelect');
+      if (!sel) return;
+      var templates = getDeployTemplates();
+      sel.innerHTML = '<option value="">-- 선택 --</option>';
+      Object.keys(templates).forEach(function(name) {
+        var opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        sel.appendChild(opt);
+      });
+    }
+    refreshTemplateSelect();
+
+    document.getElementById('btnTemplateSave').addEventListener('click', function() {
+      var tplName = prompt('템플릿 이름을 입력하세요:');
+      if (!tplName || !tplName.trim()) return;
+      tplName = tplName.trim();
+      var tpl = {
+        image: document.getElementById('deployImage').value,
+        name: document.getElementById('deployName').value,
+        replicas: document.getElementById('deployReplicas').value,
+        strategy: document.getElementById('deployStrategy').value,
+        env: document.getElementById('deployEnv').value,
+        ports: document.getElementById('deployPorts').value,
+        volumes: document.getElementById('deployVolumes').value,
+        memory: document.getElementById('deployMemory').value,
+        cpu: document.getElementById('deployCpu').value
+      };
+      var templates = getDeployTemplates();
+      templates[tplName] = tpl;
+      saveDeployTemplates(templates);
+      refreshTemplateSelect();
+      document.getElementById('templateSelect').value = tplName;
+      appendLog('템플릿 저장: ' + tplName, { success: true, message: '저장 완료' });
+    });
+
+    document.getElementById('btnTemplateLoad').addEventListener('click', function() {
+      var sel = document.getElementById('templateSelect');
+      var tplName = sel.value;
+      if (!tplName) { alert('템플릿을 선택하세요.'); return; }
+      var templates = getDeployTemplates();
+      var tpl = templates[tplName];
+      if (!tpl) return;
+      document.getElementById('deployImage').value = tpl.image || '';
+      document.getElementById('deployName').value = tpl.name || '';
+      document.getElementById('deployName').dataset.autoGenerated = 'false';
+      document.getElementById('deployReplicas').value = tpl.replicas || '1';
+      document.getElementById('deployStrategy').value = tpl.strategy || 'spread';
+      document.getElementById('deployEnv').value = tpl.env || '';
+      document.getElementById('deployPorts').value = tpl.ports || '';
+      document.getElementById('deployVolumes').value = tpl.volumes || '';
+      document.getElementById('deployMemory').value = tpl.memory || '';
+      document.getElementById('deployCpu').value = tpl.cpu || '';
+      appendLog('템플릿 불러오기: ' + tplName, { success: true, message: '불러오기 완료' });
+    });
+
+    document.getElementById('btnTemplateDelete').addEventListener('click', function() {
+      var sel = document.getElementById('templateSelect');
+      var tplName = sel.value;
+      if (!tplName) { alert('삭제할 템플릿을 선택하세요.'); return; }
+      if (!confirm('템플릿 "' + tplName + '"을(를) 삭제하시겠습니까?')) return;
+      var templates = getDeployTemplates();
+      delete templates[tplName];
+      saveDeployTemplates(templates);
+      refreshTemplateSelect();
+      appendLog('템플릿 삭제: ' + tplName, { success: true, message: '삭제 완료' });
+    });
+    // === Distributed deploy: toggle node selector + populate node checkboxes (Task 3) ===
+    document.getElementById('deployDistributed').addEventListener('change', function() {
+      var sel = document.getElementById('deployNodeSelector');
+      sel.style.display = this.checked ? 'block' : 'none';
+      if (this.checked) updateDeployNodeList();
+    });
+    function updateDeployNodeList() {
+      var container = document.getElementById('deployNodeList');
+      if (!container) return;
+      var nodes = clusterNodes && clusterNodes.length ? clusterNodes : [];
+      // Always include 'local'
+      var names = ['local'];
+      nodes.forEach(function(n) { if (n.name && names.indexOf(n.name) < 0) names.push(n.name); });
+      container.innerHTML = names.map(function(name) {
+        return '<label style="display:flex;align-items:center;gap:0.2rem;font-size:0.82rem;cursor:pointer;padding:0.2rem 0.5rem;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg);">' +
+          '<input type="checkbox" value="' + escapeHtml(name) + '" checked> ' + escapeHtml(name) +
+          '</label>';
+      }).join('');
+    }
+
+    // === Image search filter handler (Task 3) ===
+    (function() {
+      var searchEl = document.getElementById('imageSearchInput');
+      if (searchEl) {
+        var debounceTimer;
+        searchEl.addEventListener('input', function() {
+          clearTimeout(debounceTimer);
+          debounceTimer = setTimeout(function() { loadAll(); }, 300);
+        });
+      }
+    })();
+
+    /* ===== SSE Real-time Stream ===== */
+    let evtSource = null;
+    let liveMode = true;
+
+    /* ===== Auto-Heal Toggle ===== */
+    var autoHealEnabled = true;
+    async function toggleAutoHeal() {
+      try {
+        var r = await fetch(API + '/v1/cluster/autoheal/toggle', { method: 'POST' });
+        var d = await r.json();
+        autoHealEnabled = d.enabled;
+        updateAutoHealBtn();
+        appendLog('자동복구 ' + (autoHealEnabled ? '활성화' : '비활성화'), { success: true, message: autoHealEnabled ? 'ON' : 'OFF' });
+      } catch (e) {
+        appendLog('자동복구 토글 실패', { success: false, message: e.message });
+      }
+    }
+    function updateAutoHealBtn() {
+      var btn = document.getElementById('btnAutoHeal');
+      if (!btn) return;
+      if (autoHealEnabled) {
+        btn.textContent = '자동복구 ON';
+        btn.className = 'btn btn-sm btn-success';
+      } else {
+        btn.textContent = '자동복구 OFF';
+        btn.className = 'btn btn-sm btn-outline';
+      }
+    }
+    // Load initial auto-heal state
+    (async function() {
+      try {
+        var r = await fetch(API + '/v1/cluster/autoheal');
+        var d = await r.json();
+        autoHealEnabled = d.enabled !== false;
+        updateAutoHealBtn();
+      } catch(e) {}
+    })();
+
+    function toggleLive() {
+      liveMode = !liveMode;
+      const ind = document.getElementById('liveIndicator');
+      const lbl = document.getElementById('liveLabel');
+      if (liveMode) {
+        ind.classList.remove('live-off');
+        lbl.textContent = '실시간';
+        connectSSE();
+      } else {
+        ind.classList.add('live-off');
+        lbl.textContent = '일시정지';
+        if (evtSource) { evtSource.close(); evtSource = null; }
+      }
+    }
+
+    function connectSSE() {
+      if (evtSource) { evtSource.close(); }
+      evtSource = new EventSource(API + '/v1/stream');
+      evtSource.onmessage = function(event) {
+        try {
+          const d = JSON.parse(event.data);
+          applySSEData(d);
+        } catch(e) { console.warn('SSE parse error:', e); }
+      };
+      evtSource.onerror = function() {
+        console.warn('SSE connection lost, reconnecting in 5s...');
+        if (evtSource) { evtSource.close(); evtSource = null; }
+        setTimeout(function() { if (liveMode) connectSSE(); }, 5000);
+      };
+    }
+
+    function applySSEData(d) {
+      try {
+        // Cluster nodes
+        if (d.nodes) {
+          clusterNodes = d.nodes;
+          const sel = document.getElementById('targetNode');
+          if (sel) {
+            const current = localStorage.getItem('targetNode') || sel.value || 'local';
+            sel.innerHTML = '<option value="local">local</option>' + clusterNodes.map(function(n) {
+              return '<option value="' + escapeHtml(n.name) + '">' + escapeHtml(n.name) + '</option>';
+            }).join('');
+            sel.value = current;
+          }
+        }
+        // Cluster status
+        if (d.cluster_status) { clusterStatus = d.cluster_status; }
+        // Alerts
+        if (d.alerts) { activeAlerts = d.alerts; }
+        // Migrations
+        if (d.migrations !== undefined) { renderMigrations({migrations: d.migrations}); }
+        // Placements
+        if (d.placements) { allPlacements = d.placements; }
+        // Health
+        if (d.health) { updateOperatorStatus(d.health); }
+        // System
+        if (d.system) { renderSystem(d.system); }
+        // Services - update in-place to preserve scale inputs
+        if (d.services) { updateServicesInPlace(d.services); }
+        // Images - skip on SSE to avoid disrupting user interaction
+        // Cluster UI
+        if (clusterStatus) {
+          try { renderClusterHealthBadge(clusterStatus); } catch(e) {}
+          try { renderClusterBar(clusterStatus); } catch(e) {}
+          try { renderNodeTabs(clusterStatus); } catch(e) {}
+        }
+        if (allPlacements) {
+          try { renderPlacementGrid(allPlacements, clusterStatus); } catch(e) {}
+        }
+        if (activeAlerts) {
+          try { renderAlerts({alerts: activeAlerts}); } catch(e) {}
+        }
+        setLastUpdated();
+      } catch(e) { console.warn('applySSEData error:', e); }
+    }
+
+    /* ===== QuickStart: Blockchain ===== */
+    /* ===== QuickStart Modal & Workflow ===== */
+    var qsSteps = [
+      {id:'cleanup', label:'이전 배포 정리', icon:'&#x1f9f9;'},
+      {id:'keygen', label:'키스토어 생성', icon:'&#x1f511;'},
+      {id:'genesis', label:'제네시스 블록 생성', icon:'&#x1f4e6;'},
+      {id:'gszip',  label:'Genesis Storage 배포', icon:'&#x1f4e4;'},
+      {id:'license',label:'라이선스 발급', icon:'&#x1f4dc;'},
+      {id:'containers',label:'컨테이너 기동', icon:'&#x1f680;'},
+      {id:'join',   label:'체인 참여 및 시작', icon:'&#x1f517;'},
+      {id:'verify', label:'합의 검증', icon:'&#x2705;'},
+    ];
+    var qsCurrentStep = -1;
+
+    function openQsModal(title) {
+      document.getElementById('qsModalTitle').textContent = title;
+      qsCurrentStep = -1;
+      var html = '';
+      qsSteps.forEach(function(s,i) {
+        html += '<div id="qsStep-'+s.id+'" style="display:flex;align-items:center;gap:0.6rem;padding:0.5rem 0;border-bottom:1px solid var(--border);">';
+        html += '<span id="qsStepIcon-'+s.id+'" style="font-size:1.1rem;width:1.5rem;text-align:center;opacity:0.3;">'+s.icon+'</span>';
+        html += '<span id="qsStepLabel-'+s.id+'" style="color:var(--text-muted);">'+s.label+'</span>';
+        html += '<span id="qsStepStatus-'+s.id+'" style="margin-left:auto;font-size:0.75rem;color:var(--text-muted);">대기</span>';
+        html += '</div>';
+      });
+      document.getElementById('qsModalSteps').innerHTML = html;
+      document.getElementById('qsModalNodes').innerHTML = '';
+      var modal = document.getElementById('qsWorkflowModal');
+      modal.style.display = 'flex';
+    }
+    function closeQsModal() { document.getElementById('qsWorkflowModal').style.display = 'none'; }
+    function setQsStep(stepId, status) {
+      // status: 'active','done','error'
+      var iconEl = document.getElementById('qsStepIcon-'+stepId);
+      var labelEl = document.getElementById('qsStepLabel-'+stepId);
+      var statusEl = document.getElementById('qsStepStatus-'+stepId);
+      if (!iconEl) return;
+      if (status === 'active') {
+        iconEl.style.opacity = '1';
+        labelEl.style.color = 'var(--accent)';
+        labelEl.style.fontWeight = '600';
+        statusEl.innerHTML = '<span style="color:var(--accent);">진행중...</span>';
+      } else if (status === 'done') {
+        iconEl.style.opacity = '1';
+        labelEl.style.color = 'var(--success)';
+        labelEl.style.fontWeight = '400';
+        statusEl.innerHTML = '<span style="color:var(--success);">완료</span>';
+      } else if (status === 'error') {
+        iconEl.style.opacity = '1';
+        labelEl.style.color = 'var(--danger)';
+        statusEl.innerHTML = '<span style="color:var(--danger);">실패</span>';
+      }
+    }
+    function advanceQsStep() {
+      if (qsCurrentStep >= 0) setQsStep(qsSteps[qsCurrentStep].id, 'done');
+      qsCurrentStep++;
+      if (qsCurrentStep < qsSteps.length) setQsStep(qsSteps[qsCurrentStep].id, 'active');
+    }
+
+    document.getElementById('btnQsBlockchain').addEventListener('click', async function() {
+      var btn = this;
+      var serviceName = (document.getElementById('qsBlockchainServiceName').value || '').trim() || 'blockchain';
+      var validators = parseInt(document.getElementById('qsBlockchainValidators').value, 10) || 4;
+      var citizens = parseInt(document.getElementById('qsBlockchainCitizens').value, 10) || 0;
+      var channel = (document.getElementById('qsBlockchainChannel').value || '').trim() || 'seoul';
+      var image = (document.getElementById('qsBlockchainImage').value || '').trim();
+      var p2pPort = parseInt(document.getElementById('qsBlockchainP2P').value, 10) || 7100;
+      var rpcPort = parseInt(document.getElementById('qsBlockchainRPC').value, 10) || 9100;
+      var logLevel = document.getElementById('qsBlockchainLogLevel').value || 'warn';
+      var network = (document.getElementById('qsBlockchainNetwork').value || '').trim() || 'orch-internal';
+      var envText = (document.getElementById('qsBlockchainEnvVars').value || '').trim();
+      var envVars = {};
+      if (envText) {
+        envText.split('\n').forEach(function(line) {
+          var l = line.trim();
+          if (!l || l.startsWith('#')) return;
+          var eq = l.indexOf('=');
+          if (eq > 0) envVars[l.substring(0,eq).trim()] = l.substring(eq+1).trim();
+        });
+      }
+
+      openQsModal('Blockchain: ' + validators + ' validator + ' + citizens + ' citizen (' + channel + ')');
+      btn.disabled = true;
+      var statusEl = document.getElementById('qsBlockchainStatus');
+      statusEl.innerHTML = '<span style="color:var(--accent);">모달에서 진행 상황을 확인하세요</span>';
+
+      // Step 0: cleanup
+      advanceQsStep();
+      try {
+        var reqBody = {validators: validators, citizens: citizens, channel: channel, p2p_port: p2pPort, rpc_port: rpcPort, log_level: logLevel, network: network, service_name: serviceName};
+        if (image) reqBody.image = image;
+        if (Object.keys(envVars).length > 0) reqBody.env_vars = envVars;
+        var r = await fetch(API + '/v1/quickstart/blockchain', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify(reqBody)
+        });
+        var d = await r.json();
+        if (!d.success) {
+          setQsStep('cleanup', 'error');
+          statusEl.innerHTML = '<span style="color:var(--danger);">' + escapeHtml(d.message||'Failed') + '</span>';
+          btn.disabled = false;
+          return;
+        }
+      } catch(e) {
+        setQsStep('cleanup', 'error');
+        statusEl.innerHTML = '<span style="color:var(--danger);">' + escapeHtml(e.message) + '</span>';
+        btn.disabled = false;
+        return;
+      }
+
+      // Simulate step progression by polling
+      var expectedTotal = validators + citizens;
+      var stepTimers = [
+        {delay:2000,  step:'keygen'},
+        {delay:5000,  step:'genesis'},
+        {delay:7000,  step:'gszip'},
+        {delay:9000,  step:'license'},
+        {delay:12000, step:'containers'},
+      ];
+      stepTimers.forEach(function(st) {
+        setTimeout(function() { advanceQsStep(); }, st.delay);
+      });
+
+      // Poll for containers appearing
+      var pollCount = 0;
+      var joinDone = false;
+      var bcPoll = setInterval(async function() {
+        pollCount++;
+        if (pollCount > 40) { clearInterval(bcPoll); return; }
+        try {
+          var sr = await fetch(API + '/v1/quickstart/blockchain/status');
+          var sd = await sr.json();
+          // Update modal node table
+          renderBlockchainNodesInModal(sd);
+          renderBlockchainNodes(sd);
+
+          if (sd.nodes && sd.nodes.length >= expectedTotal && !joinDone) {
+            // All containers up, advance to join step
+            joinDone = true;
+            // Force step to 'join'
+            while (qsCurrentStep < 6) advanceQsStep();
+          }
+          if (sd.nodes && sd.nodes.length > 0) {
+            var allReady = sd.nodes.every(function(n) { return n.status === 'running' && n.chain; });
+            if (allReady) {
+              clearInterval(bcPoll);
+              while (qsCurrentStep < qsSteps.length - 1) advanceQsStep();
+              advanceQsStep(); // mark verify done
+              statusEl.innerHTML = '<span style="color:var(--success);">&#x2705; 블록체인 네트워크 정상 가동 (' + sd.total + '노드)</span>';
+            }
+          }
+        } catch(e) {}
+      }, 3000);
+
+      btn.disabled = false;
+    });
+
+    // Distributed blockchain deploy
+    document.getElementById('btnQsBlockchainDist').addEventListener('click', async function() {
+      var btn = this;
+      var serviceName = (document.getElementById('qsBlockchainServiceName').value || '').trim() || 'blockchain';
+      var validators = parseInt(document.getElementById('qsBlockchainValidators').value, 10) || 4;
+      var citizens = parseInt(document.getElementById('qsBlockchainCitizens').value, 10) || 0;
+      var channel = (document.getElementById('qsBlockchainChannel').value || '').trim() || 'seoul';
+      var image = (document.getElementById('qsBlockchainImage').value || '').trim();
+      var p2pPort = parseInt(document.getElementById('qsBlockchainP2P').value, 10) || 7100;
+      var rpcPort = parseInt(document.getElementById('qsBlockchainRPC').value, 10) || 9100;
+      var logLevel = document.getElementById('qsBlockchainLogLevel').value || 'warn';
+      var network = (document.getElementById('qsBlockchainNetwork').value || '').trim() || 'orch-internal';
+      var envText = (document.getElementById('qsBlockchainEnvVars').value || '').trim();
+      var envVars = {};
+      if (envText) {
+        envText.split('\n').forEach(function(line) {
+          var l = line.trim(); if (!l || l.startsWith('#')) return;
+          var eq = l.indexOf('=');
+          if (eq > 0) envVars[l.substring(0,eq).trim()] = l.substring(eq+1).trim();
+        });
+      }
+      // Get node names from cluster
+      var nodeNames = [];
+      if (clusterStatus && clusterStatus.nodes) {
+        clusterStatus.nodes.forEach(function(n) {
+          if (n.status === 'healthy' || n.status === 'online') nodeNames.push(n.name);
+        });
+      }
+      if (nodeNames.length < 2) {
+        alert('분산 배포를 위해 2개 이상의 정상 노드가 필요합니다. (현재: ' + nodeNames.length + ')');
+        return;
+      }
+
+      openQsModal('분산 배포: ' + validators + ' validator + ' + citizens + ' citizen → ' + nodeNames.length + '개 노드');
+      btn.disabled = true;
+      var statusEl = document.getElementById('qsBlockchainStatus');
+      statusEl.innerHTML = '<span style="color:#a371f7;">분산 배포 진행 중... (' + nodeNames.join(', ') + ')</span>';
+
+      advanceQsStep();
+      try {
+        var reqBody = {validators: validators, citizens: citizens, channel: channel, p2p_port: p2pPort, rpc_port: rpcPort, log_level: logLevel, network: network, service_name: serviceName, nodes: nodeNames};
+        if (image) reqBody.image = image;
+        if (Object.keys(envVars).length > 0) reqBody.env_vars = envVars;
+        var r = await fetch(API + '/v1/quickstart/blockchain/distributed', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify(reqBody)
+        });
+        var d = await r.json();
+        if (!d.success) {
+          setQsStep('cleanup', 'error');
+          statusEl.innerHTML = '<span style="color:var(--danger);">' + escapeHtml(d.message||'Failed') + '</span>';
+          btn.disabled = false; return;
+        }
+        appendLog('분산 블록체인 배포', d);
+      } catch(e) {
+        setQsStep('cleanup', 'error');
+        statusEl.innerHTML = '<span style="color:var(--danger);">' + escapeHtml(e.message) + '</span>';
+        btn.disabled = false; return;
+      }
+
+      // Poll for status (same as regular quickstart)
+      var expectedTotal = validators + citizens;
+      var stepTimers = [
+        {delay:3000,  step:'keygen'}, {delay:8000,  step:'genesis'}, {delay:12000, step:'gszip'},
+        {delay:16000, step:'license'}, {delay:20000, step:'containers'},
+      ];
+      stepTimers.forEach(function(st) { setTimeout(function() { advanceQsStep(); }, st.delay); });
+
+      var pollCount = 0;
+      var joinDone = false;
+      var bcPoll = setInterval(async function() {
+        pollCount++;
+        if (pollCount > 60) { clearInterval(bcPoll); btn.disabled = false; return; }
+        try {
+          var sr = await fetch(API + '/v1/quickstart/blockchain/status');
+          var sd = await sr.json();
+          renderBlockchainNodesInModal(sd);
+          renderBlockchainNodes(sd);
+          if (sd.nodes && sd.nodes.length >= expectedTotal && !joinDone) {
+            joinDone = true;
+            while (qsCurrentStep < 6) advanceQsStep();
+          }
+          if (sd.nodes && sd.nodes.length > 0) {
+            var allReady = sd.nodes.every(function(n) { return n.status === 'running' && n.chain; });
+            if (allReady) {
+              clearInterval(bcPoll);
+              while (qsCurrentStep < qsSteps.length - 1) advanceQsStep();
+              advanceQsStep();
+              statusEl.innerHTML = '<span style="color:var(--success);">&#x2705; 분산 블록체인 네트워크 정상 가동 (' + sd.total + '노드, ' + nodeNames.length + '서버)</span>';
+              btn.disabled = false;
+            }
+          }
+        } catch(e) {}
+      }, 3000);
+      setTimeout(function() { btn.disabled = false; }, 30000);
+    });
+
+    document.getElementById('btnQsBlockchainStop').addEventListener('click', async function() {
+      if (!confirm('블록체인 노드를 모두 중지할까요?')) return;
+      var statusEl = document.getElementById('qsBlockchainStatus');
+      statusEl.innerHTML = '<span style="color:var(--accent);">중지 중...</span>';
+      try {
+        var r = await fetch(API + '/v1/quickstart/blockchain/status');
+        var d = await r.json();
+        if (d.nodes) {
+          for (var n of d.nodes) {
+            try {
+              await fetch(API + '/v1/containers/' + n.id + '/stop', {method:'POST'});
+              await fetch(API + '/v1/containers/' + n.id, {method:'DELETE'});
+            } catch(e) {}
+          }
+        }
+        statusEl.innerHTML = '<span style="color:var(--text-muted);">중지 완료</span>';
+        document.getElementById('qsBlockchainNodes').innerHTML = '';
+      } catch(e) {
+        statusEl.innerHTML = '<span style="color:var(--danger);">' + escapeHtml(e.message) + '</span>';
+      }
+    });
+
+    function renderBlockchainNodesInModal(data) {
+      var el = document.getElementById('qsModalNodes');
+      if (!el || !data || !data.nodes || data.nodes.length === 0) return;
+      var html = '<table style="width:100%;font-size:0.8rem;"><thead><tr><th>노드</th><th>역할</th><th>상태</th><th>체인</th><th>RPC</th><th>Endpoint</th></tr></thead><tbody>';
+      data.nodes.sort(function(a,b) { return (parseInt(a.index)||0) - (parseInt(b.index)||0); });
+      data.nodes.forEach(function(n) {
+        var stColor = n.status === 'running' ? 'var(--success)' : 'var(--danger)';
+        var roleLabel = n.role === 'validator' ? '합의' : '시티즌';
+        var roleColor = n.role === 'validator' ? 'var(--accent)' : 'var(--text-muted)';
+        var rpcInfo = n.rpc_port ? ':' + n.rpc_port : '-';
+        var endpointInfo = n.endpoint ? '<a href="'+escapeHtml(n.endpoint)+'" target="_blank" style="color:var(--accent);word-break:break-all;">'+escapeHtml(n.endpoint)+'</a>' : '-';
+        html += '<tr>';
+        html += '<td style="font-family:monospace;">' + escapeHtml(n.name || n.id) + '</td>';
+        html += '<td><span style="color:' + roleColor + ';">' + roleLabel + '</span></td>';
+        html += '<td><span style="color:' + stColor + ';">' + escapeHtml(n.status) + '</span></td>';
+        html += '<td>' + escapeHtml(n.chain || '-') + '</td>';
+        html += '<td>' + escapeHtml(rpcInfo) + '</td>';
+        html += '<td style="font-size:0.7rem;">' + endpointInfo + '</td>';
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+      el.innerHTML = html;
+    }
+
+    function renderBlockchainNodes(data) {
+      var el = document.getElementById('qsBlockchainNodes');
+      if (!data || !data.nodes || data.nodes.length === 0) { el.innerHTML = ''; return; }
+      var html = '<table style="width:100%;font-size:0.8rem;"><thead><tr><th>노드</th><th>역할</th><th>상태</th><th>체인</th><th>Endpoint</th></tr></thead><tbody>';
+      data.nodes.sort(function(a,b) { return (parseInt(a.index)||0) - (parseInt(b.index)||0); });
+      data.nodes.forEach(function(n) {
+        var stColor = n.status === 'running' ? 'var(--success)' : 'var(--danger)';
+        var roleLabel = n.role === 'validator' ? '합의' : '시티즌';
+        var roleColor = n.role === 'validator' ? 'var(--accent)' : 'var(--text-muted)';
+        var endpointInfo = n.endpoint ? '<a href="'+escapeHtml(n.endpoint)+'" target="_blank" style="color:var(--accent);word-break:break-all;font-size:0.7rem;">'+escapeHtml(n.endpoint)+'</a>' : '-';
+        html += '<tr><td>' + escapeHtml(n.name||n.id) + '</td><td><span style="color:'+roleColor+';">'+roleLabel+'</span></td><td><span style="color:'+stColor+';">'+escapeHtml(n.status)+'</span></td><td>'+escapeHtml(n.chain||'-')+'</td><td>'+endpointInfo+'</td></tr>';
+      });
+      el.innerHTML = html + '</tbody></table>';
+    }
+
+    // Initial blockchain status check
+    (async function() {
+      try {
+        var r = await fetch(API + '/v1/quickstart/blockchain/status');
+        var d = await r.json();
+        if (d.nodes && d.nodes.length > 0) {
+          renderBlockchainNodes(d);
+          var running = d.nodes.filter(function(n){ return n.status === 'running'; }).length;
+          document.getElementById('qsBlockchainStatus').innerHTML = '<span style="color:var(--success);">' + running + '/' + d.total + ' 노드 가동 중</span>';
+        }
+      } catch(e) {}
+    })();
+
+    loadAll(); // Initial full load
+    connectSSE(); // Start real-time stream
+
+    // ===== AI Chat Widget =====
+    (function() {
+      var chatFab = document.getElementById('chatFab');
+      var chatPanel = document.getElementById('chatPanel');
+      var chatClose = document.getElementById('chatClose');
+      var chatMessages = document.getElementById('chatMessages');
+      var chatInput = document.getElementById('chatInput');
+      var chatSend = document.getElementById('chatSend');
+      var chatTyping = document.getElementById('chatTyping');
+      var chatBadge = document.getElementById('chatBadge');
+      var chatChips = document.getElementById('chatChips');
+
+      var chatOpen = false;
+      var firstOpen = true;
+      var unreadCount = 0;
+
+      function formatTime() {
+        var d = new Date();
+        return d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0');
+      }
+
+      function addMessage(text, type) {
+        var bubble = document.createElement('div');
+        bubble.className = 'chat-bubble ' + type;
+        var ts = document.createElement('span');
+        ts.className = 'chat-ts';
+        ts.textContent = formatTime();
+        bubble.textContent = text;
+        bubble.appendChild(ts);
+        chatMessages.appendChild(bubble);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+
+        if (type === 'system' && !chatOpen) {
+          unreadCount++;
+          chatBadge.textContent = unreadCount > 9 ? '9+' : unreadCount;
+          chatBadge.classList.add('visible');
+        }
+      }
+
+      function togglePanel() {
+        chatOpen = !chatOpen;
+        if (chatOpen) {
+          chatPanel.classList.add('open');
+          if (firstOpen) {
+            firstOpen = false;
+            addMessage('\uC548\uB155\uD558\uC138\uC694! \uC790\uC5F0\uC5B4\uB85C \uCEE8\uD14C\uC774\uB108\uB97C \uAD00\uB9AC\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4. \uC608: \'nginx 3\uAC1C\uB85C \uC2A4\uCF00\uC77C\uD574\uC918\'', 'system');
+          }
+          unreadCount = 0;
+          chatBadge.classList.remove('visible');
+          chatInput.focus();
+        } else {
+          chatPanel.classList.remove('open');
+        }
+      }
+
+      async function sendChat(cmd) {
+        if (!cmd) return;
+        addMessage(cmd, 'user');
+        chatInput.value = '';
+        chatTyping.classList.add('visible');
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+
+        try {
+          var res = await apiFetch('/v1/command', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: cmd, dry_run: false })
+          });
+          var data = await res.json();
+          chatTyping.classList.remove('visible');
+
+          var msg = data.message || (data.success ? '\uC131\uACF5' : '\uC2E4\uD328');
+          addMessage(msg, 'system');
+
+          if (data.success) {
+            loadAll();
+          }
+        } catch (e) {
+          chatTyping.classList.remove('visible');
+          addMessage('\uC624\uB958: ' + (e.message || '\uC11C\uBC84 \uC5F0\uACB0 \uC2E4\uD328'), 'system');
+        }
+      }
+
+      chatFab.addEventListener('click', togglePanel);
+      chatClose.addEventListener('click', function() {
+        chatOpen = true; // togglePanel will flip it to false
+        togglePanel();
+      });
+
+      chatSend.addEventListener('click', function() {
+        sendChat(chatInput.value.trim());
+      });
+
+      chatInput.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          sendChat(chatInput.value.trim());
+        }
+      });
+
+      chatChips.addEventListener('click', function(e) {
+        var chip = e.target.closest('.chat-chip');
+        if (chip && chip.dataset.cmd) {
+          sendChat(chip.dataset.cmd);
+        }
+      });
+    })();
+  </script>
+
+  <!-- AI Chat Widget -->
+  <button class="chat-fab" id="chatFab" title="AI 어시스턴트">
+    <span>&#x1F4AC;</span>
+    <span class="chat-badge" id="chatBadge">0</span>
+  </button>
+  <div class="chat-panel" id="chatPanel">
+    <div class="chat-header">
+      <span class="chat-header-title">AI &#xC5B4;&#xC2DC;&#xC2A4;&#xD134;&#xD2B8;</span>
+      <button class="chat-header-close" id="chatClose">&times;</button>
+    </div>
+    <div class="chat-messages" id="chatMessages"></div>
+    <div class="chat-typing" id="chatTyping"><span>&#x2022;&#x2022;&#x2022; &#xC751;&#xB2F5; &#xC911;</span></div>
+    <div class="chat-chips" id="chatChips">
+      <button class="chat-chip" data-cmd="서비스 목록">&#xC11C;&#xBE44;&#xC2A4; &#xBAA9;&#xB85D;</button>
+      <button class="chat-chip" data-cmd="클러스터 상태">&#xD074;&#xB7EC;&#xC2A4;&#xD130; &#xC0C1;&#xD0DC;</button>
+      <button class="chat-chip" data-cmd="노드 목록">&#xB178;&#xB4DC; &#xBAA9;&#xB85D;</button>
+    </div>
+    <div class="chat-input-row">
+      <input type="text" id="chatInput" placeholder="&#xBA85;&#xB839;&#xC744; &#xC785;&#xB825;&#xD558;&#xC138;&#xC694;..." autocomplete="off">
+      <button id="chatSend">&#xC804;&#xC1A1;</button>
+    </div>
+  </div>
+</body>
+</html>

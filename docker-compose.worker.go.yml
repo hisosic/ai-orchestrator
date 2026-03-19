@@ -1,0 +1,58 @@
+# Go 버전 Worker Node
+# 사용법:
+#   .env 설정: ORCHESTRATOR_ROLE=worker, ORCHESTRATOR_MASTER_URL, ORCHESTRATOR_NODE_NAME
+#   docker network create orch-internal
+#   docker compose -f docker-compose.worker.go.yml up -d --build
+
+services:
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile.go
+    container_name: ai-orchestrator-worker
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - worker-data:/data
+      - /tmp/host-net-dev:/host/net/dev:ro
+    environment:
+      - ORCHESTRATOR_ROLE=worker
+      - ORCHESTRATOR_MASTER_URL=${ORCHESTRATOR_MASTER_URL}
+      - ORCHESTRATOR_NODE_NAME=${ORCHESTRATOR_NODE_NAME}
+      - ORCHESTRATOR_HEARTBEAT_INTERVAL=10
+      - ORCHESTRATOR_STATE_DIR=/data
+      - ORCHESTRATOR_API_TOKEN=${ORCHESTRATOR_API_TOKEN:-}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - orch-internal
+
+  traefik:
+    image: traefik:v2.10
+    container_name: orch-traefik
+    restart: unless-stopped
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedByDefault=false"
+      - "--providers.docker.network=orch-internal"
+      - "--entrypoints.web.address=:80"
+    ports:
+      - "80:80"
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - orch-internal
+
+volumes:
+  worker-data:
+
+networks:
+  orch-internal:
+    external: true

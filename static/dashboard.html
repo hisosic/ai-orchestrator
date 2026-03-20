@@ -597,10 +597,10 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
 
     <div class="grid">
       <!-- 2. Service Management -->
-      <div class="panel" style="grid-column: 1 / -1;">
-        <div class="panel-title">서비스 관리 (스케일 / Endpoint / 중지)</div>
+      <details class="panel" style="grid-column: 1 / -1;">
+        <summary class="panel-title" style="cursor:pointer;user-select:none;">서비스 관리 (스케일 / Endpoint / 중지) <span style="float:right;font-size:0.8rem;color:var(--text-muted);">&#x25BC;</span></summary>
         <div class="panel-body" id="servicesPanel"><span class="loading">불러오는 중…</span></div>
-      </div>
+      </details>
 
       <!-- 3. Images + Deploy (merged) -->
       <div class="panel" style="grid-column: 1 / -1;">
@@ -724,10 +724,10 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
       </div>
 
       <!-- 5. System Info -->
-      <div class="panel" style="grid-column: 1 / -1;">
-        <div class="panel-title">시스템 / 환경</div>
+      <details class="panel" style="grid-column: 1 / -1;">
+        <summary class="panel-title" style="cursor:pointer;user-select:none;">시스템 / 환경 <span style="float:right;font-size:0.8rem;color:var(--text-muted);">&#x25BC;</span></summary>
         <div class="panel-body" id="systemPanel"><span class="loading">불러오는 중…</span></div>
-      </div>
+      </details>
     </div>
   </div>
 

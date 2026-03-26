@@ -195,6 +195,11 @@ func NewRouter() http.Handler {
 	r.Post("/v1/cluster/nodes/provision", handleProvisionNode)
 	r.Get("/v1/cluster/nodes/provision/log", handleProvisionLog)
 
+	// AI Chat API
+	r.Get("/v1/ai/status", handleAIStatus)
+	r.Post("/v1/ai/chat", handleAIChat)
+	r.Get("/v1/ai/advisor", handleAIAdvisor)
+
 	return r
 }
 
@@ -1108,21 +1113,73 @@ func handleCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 1) Try fast regex-based NL engine first
 	intent := nlengine.Parse(req.Command)
-	if intent.Action == models.IntentUnknown {
+	if intent.Action != models.IntentUnknown {
+		success, message, details := runtime.ExecuteIntent(intent, req.DryRun)
 		writeJSON(w, http.StatusOK, models.CommandResponse{
-			Success: false,
+			Success: success,
 			Intent:  &intent,
-			Message: "명령을 이해하지 못했습니다. 예: 'nginx를 3개로 스케일해줘', 'redis 메모리 512m', 'nginx를 node-b로 마이그레이션해줘'",
+			Message: message,
+			Details: details,
 		})
 		return
 	}
 
-	success, message, details := runtime.ExecuteIntent(intent, req.DryRun)
+	// 2) Fallback: use Claude API to understand and execute the command
+	if getAnthropicKey() == "" {
+		writeJSON(w, http.StatusOK, models.CommandResponse{
+			Success: false,
+			Intent:  &intent,
+			Message: "명령을 이해하지 못했습니다. AI 엔진이 비활성화 상태입니다.",
+		})
+		return
+	}
+
+	systemPrompt := buildCommandSystemPrompt(req.DryRun)
+
+	if req.DryRun {
+		// Dry run: use Claude without tools to describe what it would do
+		response, err := callClaude(systemPrompt, req.Command)
+		if err != nil {
+			log.Printf("[AI command fallback] error: %v", err)
+			writeJSON(w, http.StatusOK, models.CommandResponse{
+				Success: false,
+				Intent:  &intent,
+				Message: "AI 명령 해석 실패: " + err.Error(),
+			})
+			return
+		}
+		aiIntent := models.ParsedIntent{Action: "ai_interpreted", Raw: req.Command}
+		writeJSON(w, http.StatusOK, models.CommandResponse{
+			Success: true,
+			Intent:  &aiIntent,
+			Message: "[AI 미리보기] " + response,
+		})
+		return
+	}
+
+	// Execute via Claude with tools
+	response, toolLog, err := callClaudeWithTools(systemPrompt, req.Command)
+	if err != nil {
+		log.Printf("[AI command fallback] error: %v", err)
+		writeJSON(w, http.StatusOK, models.CommandResponse{
+			Success: false,
+			Intent:  &intent,
+			Message: "AI 명령 실행 실패: " + err.Error(),
+		})
+		return
+	}
+
+	aiIntent := models.ParsedIntent{Action: "ai_executed", Raw: req.Command}
+	details := map[string]any{}
+	if len(toolLog) > 0 {
+		details["actions"] = toolLog
+	}
 	writeJSON(w, http.StatusOK, models.CommandResponse{
-		Success: success,
-		Intent:  &intent,
-		Message: message,
+		Success: true,
+		Intent:  &aiIntent,
+		Message: response,
 		Details: details,
 	})
 }
@@ -4152,4 +4209,508 @@ func handleAgentExec(w http.ResponseWriter, r *http.Request) {
 		"success": true,
 		"output":  strings.TrimSpace(string(output)),
 	})
+}
+
+// ---------------------------------------------------------------------------
+// AI Chat API (Claude via Anthropic API)
+// ---------------------------------------------------------------------------
+
+func getAnthropicKey() string {
+	return os.Getenv("ANTHROPIC_API_KEY")
+}
+
+func handleAIStatus(w http.ResponseWriter, r *http.Request) {
+	key := getAnthropicKey()
+	enabled := key != ""
+	resp := map[string]any{"ai_enabled": enabled}
+	if enabled {
+		resp["engine"] = "Claude"
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// ---------------------------------------------------------------------------
+// Claude tool_use types and definitions
+// ---------------------------------------------------------------------------
+
+type claudeTool struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	InputSchema map[string]any `json:"input_schema"`
+}
+
+type claudeContentBlock struct {
+	Type  string          `json:"type"`
+	Text  string          `json:"text,omitempty"`
+	ID    string          `json:"id,omitempty"`
+	Name  string          `json:"name,omitempty"`
+	Input json.RawMessage `json:"input,omitempty"`
+}
+
+type claudeResponse struct {
+	Content    []claudeContentBlock `json:"content"`
+	StopReason string               `json:"stop_reason"`
+	Error      *struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+type claudeToolResult struct {
+	Type      string `json:"type"`
+	ToolUseID string `json:"tool_use_id"`
+	Content   string `json:"content"`
+	IsError   bool   `json:"is_error,omitempty"`
+}
+
+var containerTools = []claudeTool{
+	{
+		Name:        "cluster_deploy",
+		Description: "Deploy a service across the cluster. Pulls the image and runs containers on scheduled nodes.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"image":    map[string]any{"type": "string", "description": "Docker image (e.g. nginx:alpine, redis:latest)"},
+				"name":     map[string]any{"type": "string", "description": "Service name"},
+				"replicas": map[string]any{"type": "integer", "description": "Number of replicas", "default": 1},
+			},
+			"required": []string{"image"},
+		},
+	},
+	{
+		Name:        "cluster_scale",
+		Description: "Scale a running service up or down to the specified number of replicas.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"service_name": map[string]any{"type": "string", "description": "Service name to scale"},
+				"replicas":     map[string]any{"type": "integer", "description": "Target replica count"},
+			},
+			"required": []string{"service_name", "replicas"},
+		},
+	},
+	{
+		Name:        "cluster_stop",
+		Description: "Stop and remove all containers for a service across all nodes.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"service_name": map[string]any{"type": "string", "description": "Service name to stop"},
+			},
+			"required": []string{"service_name"},
+		},
+	},
+	{
+		Name:        "cluster_status",
+		Description: "Get full cluster status: nodes, services, resource usage, alerts.",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+	},
+	{
+		Name:        "list_services",
+		Description: "List all managed services with their status, replicas, and endpoints.",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+	},
+	{
+		Name:        "cluster_migrate",
+		Description: "Migrate a container from one node to another.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"container_id":    map[string]any{"type": "string", "description": "Container ID to migrate"},
+				"source_node":     map[string]any{"type": "string", "description": "Source node name"},
+				"destination_node": map[string]any{"type": "string", "description": "Destination node name"},
+				"service_name":    map[string]any{"type": "string", "description": "Service name (optional)"},
+			},
+			"required": []string{"container_id", "source_node", "destination_node"},
+		},
+	},
+	{
+		Name:        "set_resource_limits",
+		Description: "Set memory or CPU limits for a service.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"service_name": map[string]any{"type": "string", "description": "Service name"},
+				"memory":       map[string]any{"type": "string", "description": "Memory limit (e.g. 512m, 1g)"},
+				"cpu":          map[string]any{"type": "string", "description": "CPU limit (e.g. 0.5, 2)"},
+			},
+			"required": []string{"service_name"},
+		},
+	},
+}
+
+func getServerPort() string {
+	if p := os.Getenv("PORT"); p != "" {
+		return p
+	}
+	return "8000"
+}
+
+func executeContainerTool(toolName string, input json.RawMessage) (string, bool) {
+	var params map[string]any
+	if err := json.Unmarshal(input, &params); err != nil {
+		return `{"error":"invalid tool input"}`, true
+	}
+
+	baseURL := "http://localhost:" + getServerPort()
+	client := &http.Client{Timeout: 120 * time.Second}
+
+	var resp *http.Response
+	var err error
+
+	switch toolName {
+	case "cluster_deploy":
+		body, _ := json.Marshal(params)
+		resp, err = client.Post(baseURL+"/v1/cluster/deploy", "application/json", bytes.NewReader(body))
+	case "cluster_scale":
+		body, _ := json.Marshal(params)
+		resp, err = client.Post(baseURL+"/v1/cluster/scale", "application/json", bytes.NewReader(body))
+	case "cluster_stop":
+		body, _ := json.Marshal(params)
+		resp, err = client.Post(baseURL+"/v1/cluster/stop", "application/json", bytes.NewReader(body))
+	case "cluster_status":
+		resp, err = client.Get(baseURL + "/v1/cluster/status")
+	case "list_services":
+		resp, err = client.Get(baseURL + "/v1/services")
+	case "cluster_migrate":
+		body, _ := json.Marshal(params)
+		resp, err = client.Post(baseURL+"/v1/cluster/migrate", "application/json", bytes.NewReader(body))
+	case "set_resource_limits":
+		actionReq := map[string]any{
+			"action":       "resource",
+			"service_name": params["service_name"],
+			"memory":       params["memory"],
+			"cpu":          params["cpu"],
+		}
+		body, _ := json.Marshal(actionReq)
+		resp, err = client.Post(baseURL+"/v1/action", "application/json", bytes.NewReader(body))
+	default:
+		return fmt.Sprintf(`{"error":"unknown tool: %s"}`, toolName), true
+	}
+
+	if err != nil {
+		return fmt.Sprintf(`{"error":"%s"}`, err.Error()), true
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Sprintf(`{"error":"failed to read response: %s"}`, err.Error()), true
+	}
+
+	result := string(respBody)
+	if len(result) > 4000 {
+		result = result[:4000] + "... (truncated)"
+	}
+	return result, false
+}
+
+func buildCommandSystemPrompt(dryRun bool) string {
+	base := buildClusterSystemPrompt()
+	var b strings.Builder
+	b.WriteString(base)
+	b.WriteString("\n\n")
+	if dryRun {
+		b.WriteString(`The user is asking you to preview a command (dry run).
+DO NOT execute any tools. Instead, explain what actions you would take and what the expected result would be.
+Keep your response concise — 1-3 sentences describing the planned action.`)
+	} else {
+		b.WriteString(`The user typed a command in the command console. Parse their intent and execute it using the available tools.
+After execution, respond with a concise summary of what was done and the result.
+Keep your response short — ideally 1-3 sentences. Do not ask follow-up questions; just execute.`)
+	}
+	return b.String()
+}
+
+func buildClusterSystemPrompt() string {
+	var b strings.Builder
+	b.WriteString(`You are a container orchestration assistant powered by Claude.
+You help users manage Docker containers and services in real-time.
+Respond in the same language as the user (Korean or English).
+
+You have tools to directly control containers:
+- Deploy, scale, stop services
+- Check cluster status and list services
+- Migrate containers between nodes
+- Set resource limits (memory, CPU)
+
+When the user asks to perform an action, USE THE TOOLS to execute it directly.
+After executing tools, summarize what you did and the result.
+When appropriate, proactively suggest optimizations.`)
+
+	if clusterState != nil {
+		nodes := clusterState.ListNodes()
+		b.WriteString(fmt.Sprintf("\n\nCluster nodes (%d):\n", len(nodes)))
+		for _, n := range nodes {
+			b.WriteString(fmt.Sprintf("  - %s: role=%s status=%s containers=%d", n.Name, n.Role, n.Status, n.ContainerCount))
+			if n.Resources != nil {
+				b.WriteString(fmt.Sprintf(" cpu=%.1f%% mem=%d/%dMB",
+					n.Resources.CPUUsedPercent, n.Resources.MemoryUsedMB, n.Resources.MemoryTotalMB))
+			}
+			b.WriteString("\n")
+		}
+	}
+
+	cli := runtime.DockerClient()
+	if cli != nil {
+		containers, _ := cli.ContainerList(context.Background(), container.ListOptions{All: true})
+		running := 0
+		var names []string
+		for _, c := range containers {
+			if c.State == "running" {
+				running++
+			}
+			if len(c.Names) > 0 {
+				name := strings.TrimPrefix(c.Names[0], "/")
+				if !systemServices[name] {
+					names = append(names, fmt.Sprintf("%s(%s)", name, c.State))
+				}
+			}
+		}
+		b.WriteString(fmt.Sprintf("\nLocal containers: %d running / %d total\n", running, len(containers)))
+		if len(names) > 0 && len(names) <= 30 {
+			b.WriteString("  " + strings.Join(names, ", ") + "\n")
+		}
+	}
+
+	return b.String()
+}
+
+func callClaudeWithTools(systemPrompt, userMessage string) (string, []map[string]any, error) {
+	key := getAnthropicKey()
+	if key == "" {
+		return "", nil, fmt.Errorf("ANTHROPIC_API_KEY not configured")
+	}
+
+	messages := []map[string]any{
+		{"role": "user", "content": userMessage},
+	}
+
+	var finalText string
+	var toolLog []map[string]any
+	httpClient := &http.Client{Timeout: 90 * time.Second}
+
+	const maxTurns = 5
+	for turn := 0; turn < maxTurns; turn++ {
+		reqBody := map[string]any{
+			"model":      "claude-sonnet-4-20250514",
+			"max_tokens": 2048,
+			"system":     systemPrompt,
+			"messages":   messages,
+			"tools":      containerTools,
+		}
+		bodyBytes, _ := json.Marshal(reqBody)
+
+		req, err := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(bodyBytes))
+		if err != nil {
+			return "", nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-api-key", key)
+		req.Header.Set("anthropic-version", "2023-06-01")
+
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return "", nil, fmt.Errorf("API request failed: %v", err)
+		}
+
+		var apiResp claudeResponse
+		if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+			resp.Body.Close()
+			return "", nil, fmt.Errorf("failed to parse API response: %v", err)
+		}
+		resp.Body.Close()
+
+		if apiResp.Error != nil {
+			return "", nil, fmt.Errorf("API error: %s", apiResp.Error.Message)
+		}
+
+		// Separate text and tool_use blocks
+		var textParts []string
+		var toolUses []claudeContentBlock
+		for _, block := range apiResp.Content {
+			if block.Type == "text" {
+				textParts = append(textParts, block.Text)
+			} else if block.Type == "tool_use" {
+				toolUses = append(toolUses, block)
+			}
+		}
+
+		if len(textParts) > 0 {
+			finalText = strings.Join(textParts, "\n")
+		}
+
+		if len(toolUses) == 0 {
+			break
+		}
+
+		// Append assistant response to messages
+		assistantContent := make([]map[string]any, 0, len(apiResp.Content))
+		for _, block := range apiResp.Content {
+			b := map[string]any{"type": block.Type}
+			if block.Type == "text" {
+				b["text"] = block.Text
+			} else if block.Type == "tool_use" {
+				b["id"] = block.ID
+				b["name"] = block.Name
+				b["input"] = json.RawMessage(block.Input)
+			}
+			assistantContent = append(assistantContent, b)
+		}
+		messages = append(messages, map[string]any{"role": "assistant", "content": assistantContent})
+
+		// Execute tools and collect results
+		var toolResults []map[string]any
+		for _, tu := range toolUses {
+			inputPreview := string(tu.Input)
+			if len(inputPreview) > 200 {
+				inputPreview = inputPreview[:200]
+			}
+			log.Printf("[AI tool_use] %s(%s)", tu.Name, inputPreview)
+
+			result, isErr := executeContainerTool(tu.Name, tu.Input)
+
+			tr := map[string]any{
+				"type":        "tool_result",
+				"tool_use_id": tu.ID,
+				"content":     result,
+			}
+			if isErr {
+				tr["is_error"] = true
+			}
+			toolResults = append(toolResults, tr)
+
+			resultPreview := result
+			if len(resultPreview) > 200 {
+				resultPreview = resultPreview[:200]
+			}
+			toolLog = append(toolLog, map[string]any{
+				"tool":           tu.Name,
+				"input":          json.RawMessage(tu.Input),
+				"result_preview": resultPreview,
+			})
+		}
+
+		messages = append(messages, map[string]any{"role": "user", "content": toolResults})
+	}
+
+	return finalText, toolLog, nil
+}
+
+func callClaude(systemPrompt, userMessage string) (string, error) {
+	key := getAnthropicKey()
+	if key == "" {
+		return "", fmt.Errorf("ANTHROPIC_API_KEY not configured")
+	}
+
+	reqBody := map[string]any{
+		"model":      "claude-sonnet-4-20250514",
+		"max_tokens": 1024,
+		"system":     systemPrompt,
+		"messages": []map[string]string{
+			{"role": "user", "content": userMessage},
+		},
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+
+	req, err := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(bodyBytes))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", key)
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("failed to parse API response: %v", err)
+	}
+	if result.Error != nil {
+		return "", fmt.Errorf("API error: %s", result.Error.Message)
+	}
+	if len(result.Content) > 0 {
+		return result.Content[0].Text, nil
+	}
+	return "", fmt.Errorf("empty response from Claude")
+}
+
+func handleAIChat(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Message        string `json:"message"`
+		IncludeContext bool   `json:"include_context"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request"})
+		return
+	}
+
+	systemPrompt := buildClusterSystemPrompt()
+
+	reply, toolLog, err := callClaudeWithTools(systemPrompt, body.Message)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"response": "AI 오류: " + err.Error()})
+		return
+	}
+
+	result := map[string]any{"response": reply}
+	if len(toolLog) > 0 {
+		result["actions"] = toolLog
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func handleAIAdvisor(w http.ResponseWriter, r *http.Request) {
+	var ctx strings.Builder
+	ctx.WriteString("Analyze the following cluster state and provide optimization recommendations.\n\n")
+
+	if clusterState != nil {
+		nodes := clusterState.ListNodes()
+		ctx.WriteString(fmt.Sprintf("Nodes (%d):\n", len(nodes)))
+		for _, n := range nodes {
+			ctx.WriteString(fmt.Sprintf("  - %s: role=%s status=%s containers=%d", n.Name, n.Role, n.Status, n.ContainerCount))
+			if n.Resources != nil {
+				ctx.WriteString(fmt.Sprintf(" cpu=%.1f%% mem=%d/%dMB disk=%.1f/%.1fGB",
+					n.Resources.CPUUsedPercent, n.Resources.MemoryUsedMB, n.Resources.MemoryTotalMB,
+					n.Resources.DiskUsedGB, n.Resources.DiskTotalGB))
+			}
+			ctx.WriteString("\n")
+		}
+	}
+
+	cli := runtime.DockerClient()
+	if cli != nil {
+		containers, _ := cli.ContainerList(r.Context(), container.ListOptions{All: true})
+		ctx.WriteString(fmt.Sprintf("\nLocal containers (%d):\n", len(containers)))
+		for _, c := range containers {
+			name := ""
+			if len(c.Names) > 0 {
+				name = strings.TrimPrefix(c.Names[0], "/")
+			}
+			ctx.WriteString(fmt.Sprintf("  - %s: image=%s state=%s\n", name, c.Image, c.State))
+		}
+	}
+
+	systemPrompt := "You are a container cluster operations advisor. Analyze the cluster state and provide: " +
+		"1) Health summary, 2) Resource utilization assessment, 3) Optimization recommendations. " +
+		"Answer in Korean. Be concise."
+
+	reply, err := callClaude(systemPrompt, ctx.String())
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"analysis": "AI 분석 오류: " + err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"analysis": reply})
 }

@@ -27,10 +27,13 @@ var patterns = []patternEntry{
 	// Drain
 	{regexp.MustCompile(`(?i)(\w[\w-]*)\s*(?:를|을)?\s*(?:드레인|비워|배출)`), models.IntentDrain, []string{"target_node"}},
 	{regexp.MustCompile(`(?i)(?:drain|evacuate)\s+(\w[\w-]*)`), models.IntentDrain, []string{"target_node"}},
-	// Deploy
-	{regexp.MustCompile(`(?i)(\w+)\s*배포.*?이미지\s+(\S+)`), models.IntentDeploy, []string{"name", "image"}},
-	{regexp.MustCompile(`(?i)(\w+)\s*(?:서비스\s*)?(?:를\s*)?배포(?:\s*해줘)?`), models.IntentDeploy, []string{"name"}},
-	{regexp.MustCompile(`(?i)deploy\s+(\w+)(?:\s+(\S+))?`), models.IntentDeploy, []string{"name", "image"}},
+	// Deploy — with replicas + optional spread/node
+	{regexp.MustCompile(`(?i)(\w+)(?:를|을)?\s*(?:분산\s*(?:해서\s*)?)?(\d+)\s*개\s*배포(?:\s*해줘)?`), models.IntentDeploy, []string{"name", "replicas"}},
+	{regexp.MustCompile(`(?i)(\w+)(?:를|을)?\s*(\w[\w-]*)\s*(?:에|노드에)\s*(?:분산\s*)?(\d+)\s*개\s*배포(?:\s*해줘)?`), models.IntentDeploy, []string{"name", "target_node", "replicas"}},
+	{regexp.MustCompile(`(?i)(\w+)(?:를|을)?\s*(\w[\w-]*)\s*(?:에|노드에)\s*배포(?:\s*해줘)?`), models.IntentDeploy, []string{"name", "target_node"}},
+	{regexp.MustCompile(`(?i)(\w+)\s*(?:분산\s*)?배포.*?이미지\s+(\S+)`), models.IntentDeploy, []string{"name", "image"}},
+	{regexp.MustCompile(`(?i)(\w+)\s*(?:서비스\s*)?(?:를\s*)?(?:분산\s*)?배포(?:\s*해줘)?`), models.IntentDeploy, []string{"name"}},
+	{regexp.MustCompile(`(?i)deploy\s+(\w+)(?:\s+(\d+))?(?:\s+(\S+))?`), models.IntentDeploy, []string{"name", "replicas", "image"}},
 	// Resource
 	{regexp.MustCompile(`(?i)([a-zA-Z0-9_-]+).*?메모리\s*(\d+)\s*(m|mb|g|gb)?`), models.IntentResource, []string{"service", "memory"}},
 	{regexp.MustCompile(`(?i)([a-zA-Z0-9_-]+)\s*에\s*메모리\s*(\d+)\s*(m|mb|g|gb)?`), models.IntentResource, []string{"service", "memory"}},

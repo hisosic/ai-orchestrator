@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AI Container Orchestrator — Dashboard</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚙</text></svg>">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@400;600;700&display=swap" rel="stylesheet">
@@ -107,6 +108,12 @@
     .inspect-modal-body { padding: 0.75rem 1rem 1rem; overflow: auto; }
     .inspect-modal-body pre { margin: 0; font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; white-space: pre; }
 
+
+    /* ===== AI Chat Panel ===== */
+    /* AI chat panel removed — unified into command console */
+    .ai-status-badge { font-size: 0.75rem; padding: 0.2rem 0.5rem; border-radius: 4px; margin-left: 0.5rem; }
+    .ai-status-badge.online { background: rgba(63,185,80,0.2); color: var(--success); }
+    .ai-status-badge.offline { background: rgba(248,81,73,0.2); color: var(--danger); }
 
     /* ===== Task 5: Command Preview ===== */
     .command-preview { margin:0;padding:0.75rem 1rem;background:rgba(88,166,255,0.08);border-bottom:1px solid var(--border);font-family:'JetBrains Mono',monospace;font-size:0.82rem;display:none; }
@@ -495,86 +502,30 @@
       <button type="button" class="tab active" data-tab-node="__cluster__">클러스터</button>
     </div>
 
-    <!-- 0. QuickStart (collapsible) -->
-    <details class="panel" style="margin-bottom: 1.5rem;" id="qsPanel">
-      <summary class="panel-title" style="cursor:pointer;user-select:none;">QuickStart <span style="float:right;font-size:0.8rem;color:var(--text-muted);">&#x25BC;</span></summary>
-      <div class="panel-body" style="display:flex;flex-wrap:wrap;gap:1rem;align-items:flex-start;">
-        <!-- Blockchain Card -->
-        <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:1rem;min-width:340px;flex:1;">
-          <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.8rem;">
-            <span style="font-size:1.3rem;">&#x26d3;</span>
-            <strong style="font-size:1rem;">Blockchain Network</strong>
-            <span style="font-size:0.75rem;color:var(--text-muted);margin-left:auto;">ICON Goloop</span>
-          </div>
-          <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-bottom:0.5rem;">
-            <label style="font-size:0.8rem;color:var(--text-muted);min-width:55px;">서비스명</label>
-            <input type="text" id="qsBlockchainServiceName" value="blockchain" style="width:100px;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.35rem;border-radius:var(--radius);font-family:inherit;font-size:0.8rem;">
-            <label style="font-size:0.8rem;color:var(--text-muted);min-width:55px;">합의노드</label>
-            <input type="number" id="qsBlockchainValidators" value="4" min="1" max="20" style="width:55px;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.35rem;border-radius:var(--radius);font-family:inherit;">
-            <label style="font-size:0.8rem;color:var(--text-muted);min-width:40px;">시티즌</label>
-            <input type="number" id="qsBlockchainCitizens" value="0" min="0" max="10" style="width:55px;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.35rem;border-radius:var(--radius);font-family:inherit;">
-            <button type="button" class="btn btn-success" id="btnQsBlockchain" style="padding:0.35rem 1rem;">기동</button>
-            <button type="button" class="btn" id="btnQsBlockchainDist" style="padding:0.35rem 1rem;background:#a371f7;">분산배포</button>
-            <button type="button" class="btn btn-sm btn-danger" id="btnQsBlockchainStop" style="padding:0.35rem 0.6rem;">중지</button>
-          </div>
-          <details style="margin-bottom:0.5rem;">
-            <summary style="cursor:pointer;font-size:0.8rem;color:var(--text-muted);">옵션</summary>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.4rem 0.8rem;margin-top:0.5rem;font-size:0.8rem;">
-              <div><label style="color:var(--text-muted);">채널명</label><input type="text" id="qsBlockchainChannel" value="seoul" style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.3rem;border-radius:var(--radius);font-family:inherit;"></div>
-              <div><label style="color:var(--text-muted);">이미지</label><input type="text" id="qsBlockchainImage" value="" placeholder="(기본 goloop)" style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.3rem;border-radius:var(--radius);font-family:inherit;font-size:0.75rem;"></div>
-              <div><label style="color:var(--text-muted);">P2P 시작포트</label><input type="number" id="qsBlockchainP2P" value="7100" min="1024" max="65000" style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.3rem;border-radius:var(--radius);font-family:inherit;"></div>
-              <div><label style="color:var(--text-muted);">RPC 시작포트</label><input type="number" id="qsBlockchainRPC" value="9100" min="1024" max="65000" style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.3rem;border-radius:var(--radius);font-family:inherit;"></div>
-              <div><label style="color:var(--text-muted);">로그 레벨</label><select id="qsBlockchainLogLevel" style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.3rem;border-radius:var(--radius);font-family:inherit;"><option value="trace">trace</option><option value="debug">debug</option><option value="info">info</option><option value="warn" selected>warn</option><option value="error">error</option></select></div>
-              <div><label style="color:var(--text-muted);">네트워크</label><input type="text" id="qsBlockchainNetwork" value="orch-internal" style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.3rem;border-radius:var(--radius);font-family:inherit;"></div>
-            </div>
-          </details>
-          <details style="margin-bottom:0.5rem;">
-            <summary style="cursor:pointer;font-size:0.8rem;color:var(--text-muted);">Goloop 환경변수</summary>
-            <div style="margin-top:0.5rem;font-size:0.8rem;">
-              <textarea id="qsBlockchainEnvVars" rows="6" placeholder="GOLOOP_ENGINES=python&#10;GOLOOP_RPC_DUMP=false&#10;GOLOOP_CONSOLE_LEVEL=warn&#10;GOLOOP_LOG_WRITER_COMPRESS=true&#10;GOLOOP_LOG_WRITER_MAXSIZE=100&#10;GOLOOP_EE_SOCKET=&#10;GOLOOP_BACKUP_DIR=" style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.4rem;border-radius:var(--radius);font-family:'JetBrains Mono',monospace;font-size:0.75rem;resize:vertical;">GOLOOP_ENGINES=python
-GOLOOP_RPC_DUMP=false
-GOLOOP_CONSOLE_LEVEL=warn
-GOLOOP_LOG_WRITER_COMPRESS=true
-GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
-              <div style="color:var(--text-muted);font-size:0.7rem;margin-top:0.2rem;">KEY=VALUE 형식, 줄바꿈 구분. 자동 설정 항목(P2P, RPC, KEY_STORE 등)은 제외됨.</div>
-            </div>
-          </details>
-          <div id="qsBlockchainStatus" style="font-size:0.8rem;color:var(--text-muted);"></div>
-          <div id="qsBlockchainNodes" style="margin-top:0.5rem;font-size:0.8rem;"></div>
-        </div>
-        <!-- Task 7: Workflow Builder -->
-        <div class="workflow-builder" style="flex-basis:100%;padding:0 1rem 1rem;">
-          <div class="wf-title">워크플로 빌더 (순차 기동)</div>
-          <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.5rem;">컨테이너 이미지를 드래그하여 기동 순서를 만드세요</div>
-          <div class="wf-palette" id="wfPalette">
-            <div class="wf-drag-item" draggable="true" data-image="iconloop/goloop-icon" data-name="goloop">&#x26d3; goloop</div>
-            <div class="wf-drag-item" draggable="true" data-image="nginx:latest" data-name="nginx">&#x1F310; nginx</div>
-            <div class="wf-drag-item" draggable="true" data-image="redis:latest" data-name="redis">&#x1F534; redis</div>
-            <div class="wf-drag-item" draggable="true" data-image="" data-name="custom">&#x2699; custom image</div>
-          </div>
-          <div class="wf-drop-zone" id="wfDropZone">
-            <div class="placeholder">이미지를 여기에 드롭하여 순서를 정하세요</div>
-          </div>
-          <div class="wf-actions">
-            <button type="button" class="btn btn-sm btn-success" id="btnWfRun">순차 기동</button>
-            <button type="button" class="btn btn-sm btn-outline" id="btnWfClear">초기화</button>
-          </div>
-        </div>
+    <!-- Command Console (primary action — placed first for quick access) -->
+    <div class="panel console-wrap" style="margin-bottom: 1.5rem;">
+      <div class="panel-title" style="display:flex;align-items:center;gap:0.75rem;">
+        <span>🧠 명령 콘솔 (자연어 AI)</span>
+        <span id="aiStatusBadge" class="ai-status-badge offline" style="font-size:0.75rem;">checking...</span>
+        <button class="btn btn-sm" style="margin-left:auto;" onclick="runClusterAnalysis()">📊 클러스터 분석</button>
       </div>
-    </details>
-
-    <!-- QuickStart Workflow Modal -->
-    <div id="qsWorkflowModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:1000;align-items:center;justify-content:center;">
-      <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:1.5rem;width:520px;max-width:90vw;max-height:80vh;overflow-y:auto;">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
-          <h3 style="margin:0;font-size:1.1rem;" id="qsModalTitle">Blockchain QuickStart</h3>
-          <button type="button" onclick="closeQsModal()" style="background:none;border:none;color:var(--text-muted);font-size:1.2rem;cursor:pointer;">&times;</button>
+      <div class="panel-body">
+        <div class="command-row">
+          <input type="text" id="commandInput" placeholder="자연어로 입력하세요 (예: nginx 3개 분산 배포해줘 / 현재 클러스터 상태 분석해줘 / 부하 분산 방안 알려줘)" autocomplete="off">
+          <label><input type="checkbox" id="dryRun"> Dry run</label>
+          <button type="button" class="btn" id="btnPreview" style="background:var(--warn);color:#000;">미리보기</button>
+          <button type="button" class="btn" id="btnRun">실행</button>
         </div>
-        <div id="qsModalSteps" style="font-size:0.85rem;"></div>
-        <div id="qsModalNodes" style="margin-top:1rem;font-size:0.8rem;"></div>
-        <div style="text-align:right;margin-top:1rem;">
-          <button type="button" class="btn btn-sm" onclick="closeQsModal()">닫기</button>
+        <div class="command-preview" id="commandPreview">
+          <div class="preview-label">명령 미리보기</div>
+          <div class="preview-intent" id="previewIntent"></div>
+          <div class="preview-cli" id="previewCli"></div>
+          <div class="preview-actions">
+            <button type="button" class="btn btn-sm btn-success" id="btnPreviewConfirm">확인 후 실행</button>
+            <button type="button" class="btn btn-sm btn-outline" id="btnPreviewCancel">취소</button>
+          </div>
         </div>
+        <div class="log" id="commandLog"></div>
       </div>
     </div>
 
@@ -596,13 +547,8 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
     </div>
 
     <div class="grid">
-      <!-- 2. Service Management -->
-      <details class="panel" style="grid-column: 1 / -1;">
-        <summary class="panel-title" style="cursor:pointer;user-select:none;">서비스 관리 (스케일 / Endpoint / 중지) <span style="float:right;font-size:0.8rem;color:var(--text-muted);">&#x25BC;</span></summary>
-        <div class="panel-body" id="servicesPanel"><span class="loading">불러오는 중…</span></div>
-      </details>
-
-      <!-- 3. Images + Deploy (merged) -->
+      <!-- Images + Deploy -->
+      <!-- (placed before service management — deploy first, manage after) -->
       <div class="panel" style="grid-column: 1 / -1;">
         <div class="panel-title">이미지 / 배포</div>
         <div class="panel-body">
@@ -681,47 +627,104 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
         </div>
       </div>
 
-      <!-- 4. Command Console (Task 5 + Task 6) -->
-      <div class="panel console-wrap" style="grid-column: 1 / -1;">
-        <div class="panel-title">명령 콘솔 (자연어 또는 명령어)</div>
-        <div class="panel-body">
-          <div class="command-row">
-            <input type="text" id="commandInput" placeholder="예: nginx 배포해줘 / nginx를 3개로 스케일해줘 / nginx 컨테이너 종료해줘 / 서비스 목록" autocomplete="off">
-            <label><input type="checkbox" id="dryRun"> Dry run</label>
-            <button type="button" class="btn" id="btnPreview" style="background:var(--warn);color:#000;">미리보기</button>
-            <button type="button" class="btn" id="btnRun">실행</button>
+      <!-- Service Management -->
+      <details class="panel" style="grid-column: 1 / -1;">
+        <summary class="panel-title" style="cursor:pointer;user-select:none;">서비스 관리 (스케일 / Endpoint / 중지) <span style="float:right;font-size:0.8rem;color:var(--text-muted);">&#x25BC;</span></summary>
+        <div class="panel-body" id="servicesPanel"><span class="loading">불러오는 중…</span></div>
+      </details>
+
+      <!-- QuickStart (collapsible) -->
+      <details class="panel" style="grid-column: 1 / -1;" id="qsPanel">
+        <summary class="panel-title" style="cursor:pointer;user-select:none;">QuickStart <span style="float:right;font-size:0.8rem;color:var(--text-muted);">&#x25BC;</span></summary>
+        <div class="panel-body" style="display:flex;flex-wrap:wrap;gap:1rem;align-items:flex-start;">
+          <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:1rem;min-width:340px;flex:1;">
+            <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.8rem;">
+              <span style="font-size:1.3rem;">&#x26d3;</span>
+              <strong style="font-size:1rem;">Blockchain Network</strong>
+              <span style="font-size:0.75rem;color:var(--text-muted);margin-left:auto;">ICON Goloop</span>
+            </div>
+            <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-bottom:0.5rem;">
+              <label style="font-size:0.8rem;color:var(--text-muted);min-width:55px;">서비스명</label>
+              <input type="text" id="qsBlockchainServiceName" value="blockchain" style="width:100px;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.35rem;border-radius:var(--radius);font-family:inherit;font-size:0.8rem;">
+              <label style="font-size:0.8rem;color:var(--text-muted);min-width:55px;">합의노드</label>
+              <input type="number" id="qsBlockchainValidators" value="4" min="1" max="20" style="width:55px;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.35rem;border-radius:var(--radius);font-family:inherit;">
+              <label style="font-size:0.8rem;color:var(--text-muted);min-width:40px;">시티즌</label>
+              <input type="number" id="qsBlockchainCitizens" value="0" min="0" max="10" style="width:55px;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.35rem;border-radius:var(--radius);font-family:inherit;">
+              <button type="button" class="btn btn-success" id="btnQsBlockchain" style="padding:0.35rem 1rem;">기동</button>
+              <button type="button" class="btn" id="btnQsBlockchainDist" style="padding:0.35rem 1rem;background:#a371f7;">분산배포</button>
+              <button type="button" class="btn btn-sm btn-danger" id="btnQsBlockchainStop" style="padding:0.35rem 0.6rem;">중지</button>
+            </div>
+            <details style="margin-bottom:0.5rem;"><summary style="cursor:pointer;font-size:0.8rem;color:var(--text-muted);">옵션</summary>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.4rem 0.8rem;margin-top:0.5rem;font-size:0.8rem;">
+                <div><label style="color:var(--text-muted);">채널명</label><input type="text" id="qsBlockchainChannel" value="seoul" style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.3rem;border-radius:var(--radius);font-family:inherit;"></div>
+                <div><label style="color:var(--text-muted);">이미지</label><input type="text" id="qsBlockchainImage" value="" placeholder="(기본 goloop)" style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.3rem;border-radius:var(--radius);font-family:inherit;font-size:0.75rem;"></div>
+                <div><label style="color:var(--text-muted);">P2P 시작포트</label><input type="number" id="qsBlockchainP2P" value="7100" min="1024" max="65000" style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.3rem;border-radius:var(--radius);font-family:inherit;"></div>
+                <div><label style="color:var(--text-muted);">RPC 시작포트</label><input type="number" id="qsBlockchainRPC" value="9100" min="1024" max="65000" style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.3rem;border-radius:var(--radius);font-family:inherit;"></div>
+                <div><label style="color:var(--text-muted);">로그 레벨</label><select id="qsBlockchainLogLevel" style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.3rem;border-radius:var(--radius);font-family:inherit;"><option value="trace">trace</option><option value="debug">debug</option><option value="info">info</option><option value="warn" selected>warn</option><option value="error">error</option></select></div>
+                <div><label style="color:var(--text-muted);">네트워크</label><input type="text" id="qsBlockchainNetwork" value="orch-internal" style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.3rem;border-radius:var(--radius);font-family:inherit;"></div>
+              </div>
+            </details>
+            <details style="margin-bottom:0.5rem;"><summary style="cursor:pointer;font-size:0.8rem;color:var(--text-muted);">Goloop 환경변수</summary>
+              <div style="margin-top:0.5rem;font-size:0.8rem;">
+                <textarea id="qsBlockchainEnvVars" rows="6" style="width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.4rem;border-radius:var(--radius);font-family:'JetBrains Mono',monospace;font-size:0.75rem;resize:vertical;">GOLOOP_ENGINES=python
+GOLOOP_RPC_DUMP=false
+GOLOOP_CONSOLE_LEVEL=warn
+GOLOOP_LOG_WRITER_COMPRESS=true
+GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
+              </div>
+            </details>
+            <div id="qsBlockchainStatus" style="font-size:0.8rem;color:var(--text-muted);"></div>
+            <div id="qsBlockchainNodes" style="margin-top:0.5rem;font-size:0.8rem;"></div>
           </div>
-          <!-- Task 5: Preview area -->
-          <div class="command-preview" id="commandPreview">
-            <div class="preview-label">명령 미리보기</div>
-            <div class="preview-intent" id="previewIntent"></div>
-            <div class="preview-cli" id="previewCli"></div>
-            <div class="preview-actions">
-              <button type="button" class="btn btn-sm btn-success" id="btnPreviewConfirm">확인 후 실행</button>
-              <button type="button" class="btn btn-sm btn-outline" id="btnPreviewCancel">취소</button>
+          <div class="workflow-builder" style="flex-basis:100%;padding:0 1rem 1rem;">
+            <div class="wf-title">워크플로 빌더 (순차 기동)</div>
+            <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.5rem;">컨테이너 이미지를 드래그하여 기동 순서를 만드세요</div>
+            <div class="wf-palette" id="wfPalette">
+              <div class="wf-drag-item" draggable="true" data-image="iconloop/goloop-icon" data-name="goloop">&#x26d3; goloop</div>
+              <div class="wf-drag-item" draggable="true" data-image="nginx:latest" data-name="nginx">&#x1F310; nginx</div>
+              <div class="wf-drag-item" draggable="true" data-image="redis:latest" data-name="redis">&#x1F534; redis</div>
+              <div class="wf-drag-item" draggable="true" data-image="" data-name="custom">&#x2699; custom image</div>
+            </div>
+            <div class="wf-drop-zone" id="wfDropZone"><div class="placeholder">이미지를 여기에 드롭하여 순서를 정하세요</div></div>
+            <div class="wf-actions">
+              <button type="button" class="btn btn-sm btn-success" id="btnWfRun">순차 기동</button>
+              <button type="button" class="btn btn-sm btn-outline" id="btnWfClear">초기화</button>
             </div>
           </div>
-          <!-- Task 6: Drag and Drop command blocks -->
-          <details class="cmd-block-area">
-            <summary class="block-title" style="cursor:pointer;user-select:none;">명령 블록 (드래그하여 조합) <span style="float:right;font-size:0.8rem;color:var(--text-muted);">&#x25BC;</span></summary>
-            <div class="cmd-blocks-palette" style="margin-top:0.5rem;">
-              <div class="cmd-block" data-action="deploy" draggable="true">&#x1F4E6; 배포</div>
-              <div class="cmd-block" data-action="scale" draggable="true">&#x2696; 스케일</div>
-              <div class="cmd-block" data-action="stop" draggable="true">&#x23F9; 중지</div>
-              <div class="cmd-block" data-action="migrate" draggable="true">&#x1F500; 마이그레이션</div>
-              <div class="cmd-block" data-action="status" draggable="true">&#x1F4CB; 상태확인</div>
-            </div>
-            <div class="cmd-compose-zone" id="cmdComposeZone">
-              <div class="placeholder">블록을 여기에 드롭하여 명령을 조합하세요</div>
-            </div>
-            <div class="cmd-compose-actions">
-              <button type="button" class="btn btn-sm btn-success" id="btnComposeRun">조합 실행</button>
-              <button type="button" class="btn btn-sm btn-outline" id="btnComposeClear">초기화</button>
-            </div>
-          </details>
-          <div class="log" id="commandLog"></div>
+        </div>
+      </details>
+
+      <!-- QuickStart Workflow Modal -->
+      <div id="qsWorkflowModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:1000;align-items:center;justify-content:center;">
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:1.5rem;width:520px;max-width:90vw;max-height:80vh;overflow-y:auto;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+            <h3 style="margin:0;font-size:1.1rem;" id="qsModalTitle">Blockchain QuickStart</h3>
+            <button type="button" onclick="closeQsModal()" style="background:none;border:none;color:var(--text-muted);font-size:1.2rem;cursor:pointer;">&times;</button>
+          </div>
+          <div id="qsModalSteps" style="font-size:0.85rem;"></div>
+          <div id="qsModalNodes" style="margin-top:1rem;font-size:0.8rem;"></div>
+          <div style="text-align:right;margin-top:1rem;"><button type="button" class="btn btn-sm" onclick="closeQsModal()">닫기</button></div>
         </div>
       </div>
+
+      <!-- Command Blocks (drag-and-drop composition) -->
+      <details class="panel" style="grid-column: 1 / -1;">
+        <summary class="panel-title" style="cursor:pointer;user-select:none;">명령 블록 (드래그하여 조합) <span style="float:right;font-size:0.8rem;color:var(--text-muted);">&#x25BC;</span></summary>
+        <div class="panel-body">
+          <div class="cmd-blocks-palette">
+            <div class="cmd-block" data-action="deploy" draggable="true">&#x1F4E6; 배포</div>
+            <div class="cmd-block" data-action="scale" draggable="true">&#x2696; 스케일</div>
+            <div class="cmd-block" data-action="stop" draggable="true">&#x23F9; 중지</div>
+            <div class="cmd-block" data-action="migrate" draggable="true">&#x1F500; 마이그레이션</div>
+            <div class="cmd-block" data-action="status" draggable="true">&#x1F4CB; 상태확인</div>
+          </div>
+          <div class="cmd-compose-zone" id="cmdComposeZone"><div class="placeholder">블록을 여기에 드롭하여 명령을 조합하세요</div></div>
+          <div class="cmd-compose-actions">
+            <button type="button" class="btn btn-sm btn-success" id="btnComposeRun">조합 실행</button>
+            <button type="button" class="btn btn-sm btn-outline" id="btnComposeClear">초기화</button>
+          </div>
+        </div>
+      </details>
 
       <!-- 5. System Info -->
       <details class="panel" style="grid-column: 1 / -1;">
@@ -1339,7 +1342,8 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
         html += '<div class="placement-column-body" data-drop-node="' + escapeHtml(n.name) + '">';
         var nodeContainers = byNode[n.name] || [];
         if (nodeContainers.length === 0) {
-          html += '<div class="text-muted" style="font-size:0.75rem;text-align:center;padding:1rem 0;">컨테이너 없음</div>';
+          var sysOnly = cntTotal > 0 ? '시스템 컨테이너 ' + cntTotal + '개 (숨김)' : '컨테이너 없음';
+          html += '<div class="text-muted" style="font-size:0.75rem;text-align:center;padding:1rem 0;">' + sysOnly + '</div>';
         }
         nodeContainers.forEach(function(p) {
           var svc = p.service_name || p.service || p.container_name || '';
@@ -1882,11 +1886,24 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
       const entry = document.createElement('div');
       entry.className = 'log-entry';
       const ok = res && res.success;
-      entry.innerHTML =
+      const isAI = res && res.intent && (res.intent.action === 'ai_executed' || res.intent.action === 'ai_interpreted');
+      var badge = ok ? 'OK' : '실패';
+      if (isAI && ok) badge = '🧠 AI';
+      var msgText = res && res.message ? res.message : (res && res.error ? res.error : '');
+      var html =
         '<span class="ts">[' + now() + ']</span>' +
         '<span class="cmd">' + escapeHtml(cmd) + '</span><br>' +
-        '<span class="' + (ok ? 'ok' : 'err') + '">' + (ok ? 'OK' : '실패') + '</span> ' +
-        '<span class="msg">' + escapeHtml(res && res.message ? res.message : (res && res.error ? res.error : '')) + '</span>';
+        '<span class="' + (ok ? 'ok' : 'err') + '">' + badge + '</span> ' +
+        '<span class="msg">' + escapeHtml(msgText) + '</span>';
+      if (isAI && res.details && res.details.actions) {
+        var acts = res.details.actions;
+        html += '<br><span class="text-muted" style="font-size:0.75rem;">';
+        acts.forEach(function(a) {
+          html += '  🔧 ' + escapeHtml(a.tool || '') + '<br>';
+        });
+        html += '</span>';
+      }
+      entry.innerHTML = html;
       log.appendChild(entry);
       log.scrollTop = log.scrollHeight;
     }
@@ -2168,7 +2185,7 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
     /* ===== Event Bindings ===== */
     document.getElementById('btnRun').addEventListener('click', runCommand);
     document.getElementById('commandInput').addEventListener('keydown', function(e) {
-      if (e.key === 'Enter') runCommand();
+      if (e.key === 'Enter' && !e.isComposing) runCommand();
     });
     // Task 5: Preview buttons
     document.getElementById('btnPreview').addEventListener('click', previewCommand);
@@ -2507,7 +2524,7 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
       this.disabled = false;
     });
     document.getElementById('deployImage').addEventListener('keydown', function(e) {
-      if (e.key === 'Enter') document.getElementById('btnDeploy').click();
+      if (e.key === 'Enter' && !e.isComposing) document.getElementById('btnDeploy').click();
     });
 
     /* ===== Task 4: Deploy Improvements JS ===== */
@@ -3194,7 +3211,9 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
     connectSSE(); // Start real-time stream
 
     // ===== AI Chat Widget =====
-    (function() {
+    // Deferred init: DOM elements are declared after this <script> block,
+    // so we wait for DOMContentLoaded to bind event listeners.
+    document.addEventListener('DOMContentLoaded', function initChatWidget() {
       var chatFab = document.getElementById('chatFab');
       var chatPanel = document.getElementById('chatPanel');
       var chatClose = document.getElementById('chatClose');
@@ -3204,6 +3223,8 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
       var chatTyping = document.getElementById('chatTyping');
       var chatBadge = document.getElementById('chatBadge');
       var chatChips = document.getElementById('chatChips');
+
+      if (!chatFab || !chatPanel) return; // guard against missing DOM
 
       var chatOpen = false;
       var firstOpen = true;
@@ -3287,7 +3308,7 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
       });
 
       chatInput.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter') {
+        if (e.key === 'Enter' && !e.isComposing) {
           e.preventDefault();
           sendChat(chatInput.value.trim());
         }
@@ -3299,7 +3320,43 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
           sendChat(chip.dataset.cmd);
         }
       });
+    });
+
+    // ==========================================
+    // AI Status Check + Cluster Analysis (unified into command console)
+    // ==========================================
+    (function() {
+      checkAIStatus();
     })();
+
+    function checkAIStatus() {
+      var controller = new AbortController();
+      var timeoutId = setTimeout(function() { controller.abort(); }, 5000);
+
+      fetch(API + '/v1/ai/status', { signal: controller.signal })
+        .then(function(r) { clearTimeout(timeoutId); return r.json(); })
+        .then(function(data) {
+          var badge = document.getElementById('aiStatusBadge');
+          if (data.ai_enabled) {
+            badge.textContent = data.engine || 'Claude';
+            badge.className = 'ai-status-badge online';
+          } else {
+            badge.textContent = 'offline';
+            badge.className = 'ai-status-badge offline';
+          }
+        })
+        .catch(function() {
+          clearTimeout(timeoutId);
+          var badge = document.getElementById('aiStatusBadge');
+          badge.textContent = 'offline';
+          badge.className = 'ai-status-badge offline';
+        });
+    }
+
+    function runClusterAnalysis() {
+      appendLog('📊 클러스터 분석 요청', { success: true, message: '분석 중...' });
+      executeCommand('현재 클러스터 상태를 분석하고 최적화 방안을 제시해줘', false);
+    }
   </script>
 
   <!-- AI Chat Widget -->

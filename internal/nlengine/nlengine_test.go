@@ -160,6 +160,62 @@ func TestParseListEnglish(t *testing.T) {
 	}
 }
 
+func TestParseDeployWithReplicas(t *testing.T) {
+	intent := Parse("nginx 3개 배포해줘")
+	if intent.Action != models.IntentDeploy {
+		t.Fatalf("expected action=deploy, got %s", intent.Action)
+	}
+	if intent.ServiceName != "nginx" {
+		t.Fatalf("expected service=nginx, got %s", intent.ServiceName)
+	}
+	if intent.Replicas == nil || *intent.Replicas != 3 {
+		t.Fatalf("expected replicas=3, got %v", intent.Replicas)
+	}
+}
+
+func TestParseDeploySpreadWithReplicas(t *testing.T) {
+	intent := Parse("nginx 분산해서 3개 배포해줘")
+	if intent.Action != models.IntentDeploy {
+		t.Fatalf("expected action=deploy, got %s", intent.Action)
+	}
+	if intent.ServiceName != "nginx" {
+		t.Fatalf("expected service=nginx, got %s", intent.ServiceName)
+	}
+	if intent.Replicas == nil || *intent.Replicas != 3 {
+		t.Fatalf("expected replicas=3, got %v", intent.Replicas)
+	}
+}
+
+func TestParseDeployWithJosa(t *testing.T) {
+	intent := Parse("nginx를 3개 배포해줘")
+	if intent.Action != models.IntentDeploy {
+		t.Fatalf("expected action=deploy, got %s", intent.Action)
+	}
+	if intent.Replicas == nil || *intent.Replicas != 3 {
+		t.Fatalf("expected replicas=3, got %v", intent.Replicas)
+	}
+}
+
+func TestParseDeployToNode(t *testing.T) {
+	intent := Parse("httpd를 node-b에 배포해줘")
+	if intent.Action != models.IntentDeploy {
+		t.Fatalf("expected action=deploy, got %s", intent.Action)
+	}
+	if intent.TargetNode != "node-b" {
+		t.Fatalf("expected target_node=node-b, got %s", intent.TargetNode)
+	}
+}
+
+func TestParseDeploySpread(t *testing.T) {
+	intent := Parse("nginx 분산 배포해줘")
+	if intent.Action != models.IntentDeploy {
+		t.Fatalf("expected action=deploy, got %s", intent.Action)
+	}
+	if intent.ServiceName != "nginx" {
+		t.Fatalf("expected service=nginx, got %s", intent.ServiceName)
+	}
+}
+
 func TestParseUnknown(t *testing.T) {
 	intent := Parse("hello world random")
 	if intent.Action != models.IntentUnknown {

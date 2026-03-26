@@ -16,7 +16,6 @@ import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
-from pydantic import BaseModel
 from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 
@@ -25,8 +24,6 @@ from .models import (
     ActionExecuteRequest,
     CommandRequest,
     CommandResponse,
-    IntentAction,
-    ParsedIntent,
     RunContainerRequest,
     ScaleServiceRequest,
     ServiceInfo,
@@ -47,13 +44,6 @@ from .runtime import (
 )
 from . import monitoring
 
-# Import AI engine (optional)
-try:
-    from .ai_engine import AIEngine
-    HAS_AI_ENGINE = True
-except ImportError:
-    HAS_AI_ENGINE = False
-
 # Role: "master" or "worker"
 ORCHESTRATOR_ROLE = os.environ.get("ORCHESTRATOR_ROLE", "master").lower()
 
@@ -71,14 +61,10 @@ _alert_engine = None
 _service_registry = None
 _worker_agent = None
 
-# AI Engine for natural language processing
-_ai_engine = None
-_use_ai_engine = os.environ.get("ORCHESTRATOR_USE_AI", "").lower() in ("true", "1", "yes")
-
 
 def _init_cluster():
     """Initialize cluster components based on role."""
-    global _cluster_state, _scheduler, _migration_controller, _alert_engine, _service_registry, _worker_agent, _ai_engine
+    global _cluster_state, _scheduler, _migration_controller, _alert_engine, _service_registry, _worker_agent
 
     if ORCHESTRATOR_ROLE == "master":
         from .cluster_state import ClusterStateManager
@@ -100,13 +86,6 @@ def _init_cluster():
         from .agent import WorkerAgent
         _worker_agent = WorkerAgent()
         _worker_agent.start()
-    
-    # Initialize AI engine if enabled and dependencies available
-    if _use_ai_engine and HAS_AI_ENGINE:
-        try:
-            _ai_engine = AIEngine()
-        except Exception as e:
-            print(f"Warning: Could not initialize AI engine: {e}")
 
 
 def _node_by_name(name: str) -> Optional[dict]:
@@ -473,161 +452,23 @@ def get_system():
 # Command / NL Engine
 # ==========================================
 
-@app.post("/v1/command")
+@app.post("/v1/command", response_model=CommandResponse)
 def run_command(req: CommandRequest):
-    """Execute a natural language command.
-
-    Flow:
-    1. Try regex parsing first (fast, no API call)
-    2. If regex fails and AI engine is available, use Claude tool_use
-       which can handle complex commands (e.g. "nginx 2개 node-b랑 node-c에 배포해줘")
-    3. If no AI engine, return error
-    """
-    # Try regex parsing first (fast path)
+    """Execute a natural language command."""
     intent = parse(req.command)
-
-    # Validate regex result — reject if service name is a Korean particle or too short
-    _INVALID_SERVICE_NAMES = {"에", "을", "를", "로", "으로", "에서", "의", "가", "이", "는", "은", "도", "와", "랑", "해줘", "해", "줘"}
-    regex_valid = (
-        intent.action.value != "unknown"
-        and (intent.service_name or "") not in _INVALID_SERVICE_NAMES
-        and len(intent.service_name or "") > 1
-    )
-
-    if regex_valid:
-        # Regex parsed successfully — execute directly
-        if req.dry_run:
-            return CommandResponse(success=True, intent=intent, message=f"[미리보기] {intent.action.value}: {intent.service_name or ''}", details={})
-        success, message, details = execute_intent(intent, dry_run=False)
-        return CommandResponse(success=success, intent=intent, message=message, details=details)
-
-    # Regex failed — try AI engine with tool_use (handles complex/ambiguous commands)
-    if _ai_engine:
-        try:
-            context = _build_ai_context()
-            ai_response = _ai_engine.chat(req.command, context)
-            return CommandResponse(
-                success=True,
-                intent=ParsedIntent(action=IntentAction.UNKNOWN, raw=req.command),
-                message=ai_response,
-                details={"ai_executed": True},
-            )
-        except Exception as e:
-            return CommandResponse(
-                success=False,
-                intent=ParsedIntent(action=IntentAction.UNKNOWN, raw=req.command),
-                message=f"AI 실행 오류: {e}",
-            )
-
+    if intent.action.value == "unknown":
+        return CommandResponse(
+            success=False,
+            intent=intent,
+            message="명령을 이해하지 못했습니다. 예: 'nginx를 3개로 스케일해줘', 'redis 메모리 512m', 'nginx를 node-b로 마이그레이션해줘'",
+        )
+    success, message, details = execute_intent(intent, dry_run=req.dry_run)
     return CommandResponse(
-        success=False,
-        intent=ParsedIntent(action=IntentAction.UNKNOWN, raw=req.command),
-        message="명령을 이해하지 못했습니다. 예: 'nginx를 3개로 스케일해줘', 'redis 메모리 512m', 'nginx를 node-b로 마이그레이션해줘'",
+        success=success,
+        intent=intent,
+        message=message,
+        details=details,
     )
-
-
-# ==========================================
-# AI Chat & Advisor API
-# ==========================================
-
-class AIChatRequest(BaseModel):
-    message: str
-    include_context: bool = True
-
-class AIChatResponse(BaseModel):
-    response: str
-    ai_enabled: bool
-
-class AIAdvisorResponse(BaseModel):
-    analysis: str
-    ai_enabled: bool
-
-class AIAutoDecisionResponse(BaseModel):
-    decision: Optional[dict] = None
-    executed: bool = False
-    ai_enabled: bool = True
-
-
-@app.post("/v1/ai/chat", response_model=AIChatResponse)
-def ai_chat(req: AIChatRequest):
-    """Chat with Claude AI about container operations."""
-    if not _ai_engine:
-        return AIChatResponse(response="AI engine is not enabled. Set ORCHESTRATOR_USE_AI=true and ANTHROPIC_API_KEY.", ai_enabled=False)
-
-    context = None
-    if req.include_context:
-        context = _build_ai_context()
-
-    response = _ai_engine.chat(req.message, context)
-    return AIChatResponse(response=response, ai_enabled=True)
-
-
-@app.get("/v1/ai/advisor", response_model=AIAdvisorResponse)
-def ai_advisor():
-    """Get Claude AI analysis and recommendations for current cluster state."""
-    if not _ai_engine:
-        return AIAdvisorResponse(analysis="AI engine is not enabled.", ai_enabled=False)
-
-    context = _build_ai_context()
-    analysis = _ai_engine.analyze_and_advise(context)
-    return AIAdvisorResponse(analysis=analysis, ai_enabled=True)
-
-
-@app.post("/v1/ai/decide")
-def ai_auto_decide(event: str = ""):
-    """Let Claude AI decide on an action for a given event."""
-    if not _ai_engine:
-        return {"decision": None, "executed": False, "ai_enabled": False}
-
-    context = _build_ai_context()
-    if not event:
-        event = "일반 클러스터 상태 점검"
-
-    decision = _ai_engine.auto_decide(event, context)
-    return {"decision": decision, "executed": False, "ai_enabled": True}
-
-
-@app.get("/v1/ai/status")
-def ai_status():
-    """Check AI engine status."""
-    return {
-        "ai_enabled": _ai_engine is not None,
-        "engine": "Claude (Anthropic)" if _ai_engine else "disabled",
-        "model": AIEngine.MODEL if _ai_engine else None,
-    }
-
-
-def _build_ai_context() -> dict:
-    """Build cluster context dict for AI engine."""
-    context = {}
-    try:
-        services = state.list_services()
-        context["services"] = [s.model_dump() for s in services]
-    except Exception:
-        context["services"] = []
-
-    try:
-        context["resources"] = monitoring.get_system_resources()
-    except Exception:
-        pass
-
-    try:
-        containers = monitoring.list_containers(include_stopped=True)
-        context["containers"] = containers[:30]
-        running = sum(1 for c in containers if c.get("status") == "running")
-        stopped = len(containers) - running
-        context["health_summary"] = {"total": len(containers), "running": running, "stopped": stopped}
-    except Exception:
-        pass
-
-    if _cluster_state:
-        try:
-            nodes = _cluster_state.list_nodes()
-            context["nodes"] = [{"name": n.name, "status": n.status, "address": n.address} for n in nodes]
-        except Exception:
-            pass
-
-    return context
 
 
 # ==========================================
@@ -682,16 +523,12 @@ def api_stop_container(container_id: str):
 
 
 @app.delete("/v1/containers/{container_id}")
-def api_remove_container(container_id: str, request: Request):
+def api_remove_container(container_id: str):
     try:
         client = _docker_client()
         ok, msg, details = remove_container_by_id(client, container_id)
         service_name = details.get("service_name") if isinstance(details, dict) else None
-        # Only auto-rescale for local (non-cluster) operations.
-        # Cluster operations set replicas separately via /v1/services/scale
-        # to avoid race conditions where deleted containers get recreated.
-        is_cluster_op = request.headers.get("x-cluster-op", "").lower() == "true"
-        if ok and service_name and not is_cluster_op:
+        if ok and service_name:
             info = state.get_service(service_name)
             if info and (info.get("replicas") or 0) > 0:
                 execute_scale(client, service_name, info["replicas"])
@@ -931,43 +768,10 @@ async def cluster_heartbeat(req: Request):
     resources_data = body.get("resources", {})
     containers_data = body.get("containers", [])
 
-    from .cluster_models import NodeResources, ContainerPlacement, NodeInfo, NodeStatus
+    from .cluster_models import NodeResources, ContainerPlacement
 
     resources = NodeResources(**resources_data)
     containers = [ContainerPlacement(**c) for c in containers_data]
-
-    # Auto-register node if not in DB, or update address from source IP
-    client_host = req.client.host if req.client else ""
-    if client_host and node_name:
-        existing = _cluster_state.get_node(node_name)
-        if not existing:
-            # Node sending heartbeats but not registered — auto-register
-            address = f"{client_host}:8000"
-            token = body.get("token", "")
-            _cluster_state.register_node(NodeInfo(
-                name=node_name,
-                address=address,
-                token=token,
-                status=NodeStatus.HEALTHY,
-                role="worker",
-            ))
-            state.upsert_node(node_name, f"http://{address}", token)
-            import logging
-            logging.getLogger("orchestrator").info(
-                f"Auto-registered node '{node_name}' from heartbeat (address={address})"
-            )
-        else:
-            # Update address if empty, changed, or using Docker-internal IP
-            cur = (existing.address or "").replace("http://", "").replace("https://", "").strip()
-            expected_addr = f"{client_host}:8000"
-            # Skip update if source is Docker-internal network (172.x)
-            if not client_host.startswith("172."):
-                if not cur or cur != expected_addr:
-                    _cluster_state.update_node_address(node_name, expected_addr)
-                    import logging
-                    logging.getLogger("orchestrator").info(
-                        f"Updated node '{node_name}' address: '{cur}' -> '{expected_addr}'"
-                    )
 
     _cluster_state.process_heartbeat(node_name, resources, containers)
 
@@ -1541,37 +1345,21 @@ async def cluster_scale_service(req: Request):
             by_node.setdefault(p.node_name, []).append(p)
         sorted_nodes = sorted(by_node.items(), key=lambda x: -len(x[1]))
 
-        # Step 1: Set replicas on each node FIRST to prevent auto-rescale
-        # (must happen before deleting containers, otherwise the DELETE
-        # handler sees replicas>0 and immediately recreates them)
+        removed = []
         remaining = to_remove
-        node_remove_plan = []
         for node_name, node_placements in sorted_nodes:
             if remaining <= 0:
                 break
-            remove_from_here = min(remaining, len(node_placements))
-            remaining_on_node = len(node_placements) - remove_from_here
-            node_remove_plan.append((node_name, node_placements[:remove_from_here], remaining_on_node))
-            remaining -= remove_from_here
-
-        for node_name, _, remaining_on_node in node_remove_plan:
-            node = _cluster_state.get_node(node_name)
-            if not node:
-                continue
-            await _set_node_service_replicas(node, service_name, remaining_on_node)
-
-        # Step 2: Now delete the containers (worker won't auto-rescale
-        # because local replicas already match the target count)
-        removed = []
-        for node_name, containers_to_remove, _ in node_remove_plan:
             node = _cluster_state.get_node(node_name)
             if not node:
                 continue
             base_url = node.address if node.address.startswith("http") else f"http://{node.address}"
-            headers = {"Content-Type": "application/json", "X-Cluster-Op": "true"}
+            headers = {"Content-Type": "application/json"}
             if node.token:
                 headers["Authorization"] = f"Bearer {node.token}"
-            for p in containers_to_remove:
+            # Remove up to 'remaining' from this node
+            remove_from_here = min(remaining, len(node_placements))
+            for p in node_placements[:remove_from_here]:
                 try:
                     async with httpx.AsyncClient(timeout=30) as client:
                         try:
@@ -1582,8 +1370,22 @@ async def cluster_scale_service(req: Request):
                         if resp.status_code != 200:
                             await client.delete(f"{base_url}/v1/containers/{p.container_name}", headers=headers)
                     removed.append({"node": node_name, "container": p.container_name})
+                    remaining -= 1
                 except Exception as e:
                     removed.append({"node": node_name, "container": p.container_name, "error": str(e)})
+
+        # Update local state on each node to match remaining replicas
+        # Recalculate per-node counts after removal
+        for node_name, node_placements in sorted_nodes:
+            node = _cluster_state.get_node(node_name)
+            if not node:
+                continue
+            removed_on_node = sum(1 for r in removed if r.get("node") == node_name and "error" not in r)
+            remaining_on_node = len(node_placements) - removed_on_node
+            if remaining_on_node <= 0:
+                await _set_node_service_replicas(node, service_name, 0)
+            else:
+                await _set_node_service_replicas(node, service_name, remaining_on_node)
 
         if svc_info:
             _cluster_state.save_service(name=service_name, image=image, desired_replicas=replicas)
@@ -1591,22 +1393,18 @@ async def cluster_scale_service(req: Request):
 
 
 async def _set_node_service_replicas(node, service_name: str, replicas: int):
-    """Set a service's replicas on a remote node's local state, preventing reconcile from restarting."""
-    import logging
-    _logger = logging.getLogger("orchestrator")
+    """Set a service's replicas to 0 on a remote node's local state, preventing reconcile from restarting."""
     base_url = node.address if node.address.startswith("http") else f"http://{node.address}"
     headers = {"Content-Type": "application/json"}
     if node.token:
         headers["Authorization"] = f"Bearer {node.token}"
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(f"{base_url}/v1/services/scale", json={
+            await client.post(f"{base_url}/v1/services/scale", json={
                 "service_name": service_name, "replicas": replicas,
             }, headers=headers)
-            if resp.status_code != 200:
-                _logger.warning(f"Failed to set replicas on {node.name}: HTTP {resp.status_code} - {resp.text}")
-    except Exception as e:
-        _logger.warning(f"Failed to set replicas on {node.name} ({base_url}): {e}")
+    except Exception:
+        pass
 
 
 async def cluster_stop_service_internal(service_name: str):
@@ -1631,7 +1429,7 @@ async def cluster_stop_service_internal(service_name: str):
         if not node:
             continue
         base_url = node.address if node.address.startswith("http") else f"http://{node.address}"
-        headers = {"Content-Type": "application/json", "X-Cluster-Op": "true"}
+        headers = {"Content-Type": "application/json"}
         if node.token:
             headers["Authorization"] = f"Bearer {node.token}"
         ok = False
@@ -1883,230 +1681,6 @@ async def cluster_proxy(node_name: str, request: Request, path: str):
         return JSONResponse(resp.json(), status_code=resp.status_code)
     except Exception as e:
         return JSONResponse({"success": False, "message": str(e)}, status_code=502)
-
-
-# ==========================================
-# Auto-deploy: image push → auto deploy/update
-# ==========================================
-
-@app.post("/v1/autodeploy")
-async def autodeploy_register(req: Request):
-    """Register an auto-deploy rule: when an image matching the pattern is pushed,
-    automatically deploy or update the service."""
-    if not _cluster_state:
-        return {"success": False, "message": "클러스터 모드가 아닙니다."}
-    body = await req.json()
-    image_pattern = (body.get("image_pattern") or body.get("image") or "").strip()
-    service_name = (body.get("service_name") or body.get("name") or "").strip()
-    if not image_pattern:
-        return {"success": False, "message": "image_pattern은 필수입니다."}
-    if not service_name:
-        service_name = image_pattern.split(":")[0].split("/")[-1]
-    _cluster_state.save_autodeploy(
-        image_pattern=image_pattern,
-        service_name=service_name,
-        replicas=int(body.get("replicas", 1)),
-        strategy=body.get("strategy", "spread"),
-        memory_limit=body.get("memory"),
-        cpu_limit=body.get("cpu"),
-        environment=body.get("environment", []),
-        volumes=body.get("volumes", []),
-        ports=body.get("ports", []),
-    )
-    return {"success": True, "message": f"Auto-deploy 등록: '{image_pattern}' → 서비스 '{service_name}'"}
-
-
-@app.get("/v1/autodeploy")
-def autodeploy_list():
-    """List all auto-deploy rules."""
-    if not _cluster_state:
-        return {"rules": []}
-    import json as _json
-    rules = _cluster_state.list_autodeploy()
-    for r in rules:
-        for k in ("environment", "volumes", "ports"):
-            if isinstance(r.get(k), str):
-                try:
-                    r[k] = _json.loads(r[k])
-                except Exception:
-                    pass
-    return {"rules": rules}
-
-
-@app.delete("/v1/autodeploy/{image_pattern:path}")
-def autodeploy_delete(image_pattern: str):
-    """Delete an auto-deploy rule."""
-    if not _cluster_state:
-        return {"success": False}
-    ok = _cluster_state.delete_autodeploy(image_pattern)
-    return {"success": ok, "message": f"삭제됨: {image_pattern}" if ok else "규칙을 찾을 수 없습니다."}
-
-
-@app.post("/v1/webhooks/registry")
-async def webhook_registry(req: Request):
-    """Receive Docker Registry V2 push notifications and trigger auto-deploy.
-
-    Supports:
-    - Docker Registry V2 event format (notifications)
-    - Docker Hub webhook format
-    - Simple JSON with {image: "repo:tag"} (generic CI/CD)
-    """
-    if not _cluster_state:
-        return {"success": False, "message": "Not master"}
-
-    import logging
-    _logger = logging.getLogger("autodeploy")
-
-    body = await req.json()
-    images_pushed = []
-
-    # Parse Docker Registry V2 notification format
-    events = body.get("events", [])
-    if events:
-        for event in events:
-            if event.get("action") == "push":
-                target = event.get("target", {})
-                repo = target.get("repository", "")
-                tag = target.get("tag", "latest")
-                url = target.get("url", "")
-                # Extract registry host from request URL
-                host = ""
-                if event.get("request", {}).get("host"):
-                    host = event["request"]["host"]
-                full_image = f"{host}/{repo}:{tag}" if host else f"{repo}:{tag}"
-                images_pushed.append(full_image)
-
-    # Docker Hub webhook format
-    if body.get("push_data") and body.get("repository"):
-        repo_name = body["repository"].get("repo_name", "")
-        tag = body["push_data"].get("tag", "latest")
-        if repo_name:
-            images_pushed.append(f"{repo_name}:{tag}")
-
-    # Simple format: {image: "repo:tag"}
-    if body.get("image"):
-        images_pushed.append(body["image"])
-
-    if not images_pushed:
-        _logger.info(f"Webhook received but no images detected: {str(body)[:200]}")
-        return {"success": True, "message": "No images to process", "deployed": []}
-
-    # Match against auto-deploy rules and trigger deployment
-    deployed = []
-    for image in images_pushed:
-        rule = _cluster_state.find_autodeploy(image)
-        if not rule:
-            _logger.info(f"No autodeploy rule for image: {image}")
-            continue
-
-        svc_name = rule["service_name"]
-        replicas = rule.get("replicas", 1)
-        strategy = rule.get("strategy", "spread")
-        _logger.info(f"Auto-deploy triggered: {image} → {svc_name} (replicas={replicas})")
-
-        import json as _json
-        try:
-            # Build deploy request and call cluster_deploy internally
-            deploy_body = {
-                "image": image,
-                "name": svc_name,
-                "replicas": replicas,
-                "strategy": strategy,
-            }
-            if rule.get("memory_limit"):
-                deploy_body["memory"] = rule["memory_limit"]
-            if rule.get("cpu_limit"):
-                deploy_body["cpu"] = rule["cpu_limit"]
-            for k in ("environment", "volumes", "ports"):
-                val = rule.get(k, "[]")
-                if isinstance(val, str):
-                    val = _json.loads(val)
-                if val:
-                    deploy_body[k] = val
-
-            # Use httpx to call our own deploy endpoint (reuses all existing logic)
-            async with httpx.AsyncClient(timeout=300) as client:
-                resp = await client.post(
-                    "http://localhost:8000/v1/cluster/deploy",
-                    json=deploy_body,
-                )
-                result = resp.json()
-
-            _cluster_state.mark_autodeploy_deployed(rule["image_pattern"])
-            deployed.append({
-                "image": image, "service": svc_name,
-                "success": result.get("success", False),
-                "message": result.get("message", ""),
-            })
-            _logger.info(f"Auto-deploy result: {svc_name} = {result.get('success')}")
-        except Exception as e:
-            _logger.error(f"Auto-deploy failed for {image}: {e}")
-            deployed.append({"image": image, "service": svc_name, "success": False, "error": str(e)})
-
-    return {"success": True, "message": f"{len(deployed)}개 서비스 자동 배포 처리됨", "deployed": deployed}
-
-
-@app.post("/v1/images/push-and-deploy")
-async def push_and_deploy(req: Request):
-    """Convenience endpoint: receives an image name, pulls it (to get latest),
-    and triggers auto-deploy if a matching rule exists. Use this after `docker push`."""
-    body = await req.json()
-    image = (body.get("image") or "").strip()
-    if not image:
-        return {"success": False, "message": "image는 필수입니다."}
-
-    import logging
-    _logger = logging.getLogger("autodeploy")
-
-    # Step 1: Pull latest image on master
-    try:
-        client = _docker_client()
-        ok, msg = pull_image(client, image)
-        if not ok:
-            return {"success": False, "message": f"이미지 Pull 실패: {msg}"}
-    except Exception as e:
-        return {"success": False, "message": f"Pull 오류: {e}"}
-
-    # Step 2: Check for auto-deploy rule
-    if _cluster_state:
-        rule = _cluster_state.find_autodeploy(image)
-        if rule:
-            # Trigger deploy via webhook handler
-            _logger.info(f"push-and-deploy: triggering auto-deploy for {image}")
-            # Call webhook internally
-            from starlette.testclient import TestClient
-            # Simpler: just call the deploy logic directly
-            import json as _json
-            svc_name = rule["service_name"]
-            replicas = rule.get("replicas", 1)
-            deploy_body = {"image": image, "name": svc_name, "replicas": replicas, "strategy": rule.get("strategy", "spread")}
-            if rule.get("memory_limit"):
-                deploy_body["memory"] = rule["memory_limit"]
-            if rule.get("cpu_limit"):
-                deploy_body["cpu"] = rule["cpu_limit"]
-            for k in ("environment", "volumes", "ports"):
-                val = rule.get(k, "[]")
-                if isinstance(val, str):
-                    val = _json.loads(val)
-                if val:
-                    deploy_body[k] = val
-
-            try:
-                async with httpx.AsyncClient(timeout=300) as client:
-                    resp = await client.post("http://localhost:8000/v1/cluster/deploy", json=deploy_body)
-                    result = resp.json()
-                _cluster_state.mark_autodeploy_deployed(rule["image_pattern"])
-                return {
-                    "success": result.get("success", False),
-                    "message": f"이미지 Pull + 자동 배포 완료: {svc_name}",
-                    "deploy_result": result,
-                }
-            except Exception as e:
-                return {"success": False, "message": f"배포 실패: {e}"}
-        else:
-            return {"success": True, "message": f"이미지 Pull 완료 (자동 배포 규칙 없음): {image}", "auto_deploy": False}
-    else:
-        return {"success": True, "message": f"이미지 Pull 완료: {image}", "auto_deploy": False}
 
 
 # ==========================================

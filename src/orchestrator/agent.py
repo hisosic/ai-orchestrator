@@ -262,30 +262,6 @@ class WorkerAgent:
                         service_name = name
                 cid = c.id[:12]
                 st = stats_map.get(cid, {})
-
-                # Extract port info: host bindings + exposed ports
-                host_port = ""
-                internal_port = ""
-                try:
-                    ports_map = c.attrs.get("NetworkSettings", {}).get("Ports") or {}
-                    for container_port, bindings in ports_map.items():
-                        cp = container_port.split("/")[0]  # e.g. "80/tcp" -> "80"
-                        if bindings:
-                            # Has host binding: take the first one
-                            host_port = bindings[0].get("HostPort", "")
-                            internal_port = cp
-                            break
-                        elif not internal_port:
-                            internal_port = cp
-                    if not internal_port:
-                        # Fallback: check image EXPOSE
-                        exposed = c.attrs.get("Config", {}).get("ExposedPorts") or {}
-                        for ep in exposed:
-                            internal_port = ep.split("/")[0]
-                            break
-                except Exception:
-                    pass
-
                 result.append({
                     "container_id": cid,
                     "container_name": (c.name or "").strip("/"),
@@ -298,8 +274,6 @@ class WorkerAgent:
                     "memory_limit_mb": st.get("memory_limit_mb", 0.0),
                     "net_rx_mb": st.get("net_rx_mb", 0.0),
                     "net_tx_mb": st.get("net_tx_mb", 0.0),
-                    "host_port": host_port,
-                    "internal_port": internal_port,
                 })
         except Exception as e:
             logger.error(f"Error listing containers: {e}")
@@ -341,68 +315,15 @@ class WorkerAgent:
         logger.info(f"Exported container {container_id}: {len(tar_data)} bytes")
         return tar_data, config
 
-    def export_container_to_file(self, container_id: str) -> tuple:
-        """
-        Export container to a temp file instead of memory (for large images).
-        Returns (tar_file_path, config_dict, file_size).
-        """
-        import tempfile
-        if not self.docker_client:
-            raise RuntimeError("Docker client not available")
-
-        container = self.docker_client.containers.get(container_id)
-
-        # Commit the container to an image
-        commit_tag = f"migration-{container_id[:12]}:latest"
-        logger.info(f"Committing container {container_id} as {commit_tag}")
-        image = container.commit(repository=f"migration-{container_id[:12]}", tag="latest")
-
-        # Save image to temp file (streaming — no full-image memory load)
-        tar_path = tempfile.mktemp(suffix=".tar", prefix="migrate-")
-        logger.info(f"Saving image {commit_tag} to {tar_path}")
-        total = 0
-        with open(tar_path, "wb") as f:
-            for chunk in image.save(named=True):
-                f.write(chunk)
-                total += len(chunk)
-
-        config = {
-            "name": container.name,
-            "image": commit_tag,
-            "labels": dict(container.labels),
-            "environment": container.attrs.get("Config", {}).get("Env", []),
-            "ports": container.attrs.get("NetworkSettings", {}).get("Ports", {}),
-            "status": container.status,
-        }
-        logger.info(f"Exported container {container_id} to file: {tar_path} ({total} bytes)")
-        return tar_path, config, total
-
-    def import_container_from_file(self, tar_path: str, config: dict) -> str:
-        """
-        Import a container from a tar file on disk.
-        Returns the new container ID.
-        """
-        if not self.docker_client:
-            raise RuntimeError("Docker client not available")
-
-        logger.info(f"Loading migration image from {tar_path}")
-        with open(tar_path, "rb") as f:
-            images = self.docker_client.images.load(f)
-        if not images:
-            raise RuntimeError("Failed to load image from tar")
-
-        loaded_image = images[0]
-        image_name = loaded_image.tags[0] if loaded_image.tags else loaded_image.id
-        return self._run_migrated(image_name, config)
-
     def import_container(self, tar_data: bytes, config: dict) -> str:
         """
-        Import a container from migration tar data (in-memory).
+        Import a container from migration tar data.
         Returns the new container ID.
         """
         if not self.docker_client:
             raise RuntimeError("Docker client not available")
 
+        # Load the image
         logger.info(f"Loading migration image ({len(tar_data)} bytes)")
         images = self.docker_client.images.load(tar_data)
         if not images:
@@ -410,14 +331,13 @@ class WorkerAgent:
 
         loaded_image = images[0]
         image_name = loaded_image.tags[0] if loaded_image.tags else loaded_image.id
-        return self._run_migrated(image_name, config)
 
-    def _run_migrated(self, image_name: str, config: dict) -> str:
-        """Run a container from a migrated image with the given config."""
+        # Run the container with the same config
         name = config.get("name", "migrated")
         labels = config.get("labels", {})
         labels["ai.orchestrator.managed"] = "true"
         labels["ai.orchestrator.migrated"] = "true"
+
         env_list = config.get("environment", [])
 
         # Remove existing container with same name if exists
@@ -436,8 +356,9 @@ class WorkerAgent:
             labels=labels,
             environment=env_list,
             detach=True,
-            remove=False,
+            remove=False
         )
+
         logger.info(f"Migrated container started: {container.id[:12]}")
         return container.id[:12]
 

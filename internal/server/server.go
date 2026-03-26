@@ -4324,22 +4324,6 @@ var containerTools = []claudeTool{
 		},
 	},
 	{
-		Name:        "list_containers",
-		Description: "List all containers across the cluster with their names, IDs, service, node, status, and resource usage. Use this to find a specific container by name (e.g. orch-nginx-2) or to see all containers on a specific node.",
-		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
-	},
-	{
-		Name:        "inspect_container",
-		Description: "Get detailed information about a specific container by name or ID, including config, networking, mounts, and state.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"container": map[string]any{"type": "string", "description": "Container name (e.g. orch-nginx-2) or container ID"},
-			},
-			"required": []string{"container"},
-		},
-	},
-	{
 		Name:        "set_resource_limits",
 		Description: "Set memory or CPU limits for a service.",
 		InputSchema: map[string]any{
@@ -4387,46 +4371,6 @@ func executeContainerTool(toolName string, input json.RawMessage) (string, bool)
 		resp, err = client.Get(baseURL + "/v1/cluster/status")
 	case "list_services":
 		resp, err = client.Get(baseURL + "/v1/services")
-	case "list_containers":
-		resp, err = client.Get(baseURL + "/v1/cluster/placements")
-	case "inspect_container":
-		cname, _ := params["container"].(string)
-		if cname == "" {
-			return `{"error":"container name or ID required"}`, true
-		}
-		// Try local inspect first, then search placements for remote containers
-		resp, err = client.Get(baseURL + "/v1/containers/" + cname + "/inspect")
-		if err == nil {
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			// If local inspect failed (container on another node), search placements
-			var result map[string]any
-			if json.Unmarshal(body, &result) == nil {
-				if success, ok := result["success"].(bool); ok && !success {
-					// Search in cluster placements
-					pResp, pErr := client.Get(baseURL + "/v1/cluster/placements")
-					if pErr == nil {
-						pBody, _ := io.ReadAll(pResp.Body)
-						pResp.Body.Close()
-						var pData map[string]any
-						if json.Unmarshal(pBody, &pData) == nil {
-							if placements, ok := pData["placements"].([]any); ok {
-								for _, p := range placements {
-									pm, _ := p.(map[string]any)
-									cn, _ := pm["container_name"].(string)
-									cid, _ := pm["container_id"].(string)
-									if cn == cname || cid == cname || strings.HasPrefix(cid, cname) {
-										out, _ := json.Marshal(pm)
-										return string(out), false
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-			return string(body), false
-		}
 	case "cluster_migrate":
 		body, _ := json.Marshal(params)
 		resp, err = client.Post(baseURL+"/v1/cluster/migrate", "application/json", bytes.NewReader(body))
@@ -4486,13 +4430,8 @@ Respond in the same language as the user (Korean or English).
 You have tools to directly control containers:
 - Deploy, scale, stop services
 - Check cluster status and list services
-- List all containers across the cluster (with names like orch-nginx-2)
-- Inspect a specific container by name or ID
 - Migrate containers between nodes
 - Set resource limits (memory, CPU)
-
-IMPORTANT: Container names follow the pattern "orch-{service}-{index}" (e.g. orch-nginx-0, orch-nginx-1).
-When the user asks about a specific container, use list_containers or inspect_container to find it.
 
 When the user asks to perform an action, USE THE TOOLS to execute it directly.
 After executing tools, summarize what you did and the result.

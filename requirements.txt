@@ -7,8 +7,8 @@ pydantic-settings>=2.1.0
 httpx>=0.26.0
 psutil>=5.9.0
 
-# Optional: for richer NL understanding (uncomment if using)
-# openai>=1.12.0
+# AI API for natural language processing (Claude)
+anthropic>=0.39.0
 
 # Test
 pytest>=7.4.0

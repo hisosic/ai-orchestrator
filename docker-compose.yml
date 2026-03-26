@@ -10,7 +10,7 @@ networks:
 services:
   orchestrator:
     build: .
-    image: ai-orchestrator:latest
+    image: hisosic/ai-container:latest
     container_name: ai-orchestrator
     ports:
       - "8000:8000"
@@ -26,11 +26,15 @@ services:
       - ORCHESTRATOR_NODE_NAME=${ORCHESTRATOR_NODE_NAME:-master}
       - ORCHESTRATOR_MASTER_URL=${ORCHESTRATOR_MASTER_URL:-}
       - ORCHESTRATOR_HEARTBEAT_INTERVAL=${ORCHESTRATOR_HEARTBEAT_INTERVAL:-10}
+      - ORCHESTRATOR_ADVERTISE_ADDR=${ORCHESTRATOR_ADVERTISE_ADDR:-}
+      - ORCHESTRATOR_USE_AI=${ORCHESTRATOR_USE_AI:-true}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - AI_AUTO_MODE=${AI_AUTO_MODE:-suggest}
     networks:
       - orch-internal
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
       interval: 10s
       timeout: 5s
       retries: 3

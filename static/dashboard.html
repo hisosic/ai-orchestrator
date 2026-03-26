@@ -1362,6 +1362,9 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
           var tipText = cName + ' (' + pStatus + ')\n' + (p.image || '') + '\n' + statLine;
           html += '<div class="container-chip ' + colorCls + '" draggable="true" data-drag-cid="' + escapeHtml(p.container_id || '') + '" data-drag-name="' + escapeHtml(cName) + '" data-drag-src="' + escapeHtml(n.name) + '" data-drag-svc="' + escapeHtml(svc) + '" data-drag-img="' + escapeHtml(p.image || '') + '" title="' + escapeHtml(tipText) + '">';
           html += statusDot + ' ' + escapeHtml(cName);
+          if (svc && svc !== cName) {
+            html += ' <span style="font-size:0.6rem;color:var(--text-muted);opacity:0.7;">[' + escapeHtml(svc) + ']</span>';
+          }
           html += '<div style="font-size:0.65rem;color:var(--text-muted);margin-top:1px;">CPU ' + cpuP + '% · MEM ' + memM + 'MB · NET ' + nRxS + '/' + nTxS + '</div>';
           html += '</div>';
         });

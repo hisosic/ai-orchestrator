@@ -484,6 +484,19 @@ def run_container(
         net = _ensure_network(client) if use_internal_network else None
         group_name = name or image.split(":")[0].split("/")[-1]
         mode = volume_mode or "shared"
+
+        # Detect the image's exposed port for Traefik routing
+        traefik_port = TRAEFIK_HTTP_PORT
+        try:
+            img = client.images.get(image)
+            exposed = img.attrs.get("Config", {}).get("ExposedPorts") or {}
+            for ep in exposed:
+                p = int(ep.split("/")[0])
+                traefik_port = p
+                break
+        except Exception:
+            pass
+
         for i in range(count):
             cname = _container_name(group_name, i)
             vols = _volumes_for_replica(volumes, cname, mode)
@@ -491,7 +504,7 @@ def run_container(
             labels = {
                 LABEL_ORCHESTRATOR: "true",
                 LABEL_SERVICE: group_name,
-                **_traefik_labels(group_name),
+                **_traefik_labels(group_name, traefik_port),
             }
             kwargs = {
                 "image": image,

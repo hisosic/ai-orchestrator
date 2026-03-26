@@ -33,11 +33,19 @@ def _node_headers(node) -> dict:
     return headers
 
 
-async def _force_remove_container(node, container_id: str, container_name: str):
-    """Force remove a specific container on a remote node."""
+async def _force_remove_container(node, container_id: str, container_name: str, service_name: str = ""):
+    """Force remove a specific container on a remote node.
+    Sets replicas to 0 first to prevent auto-rescale, then removes container."""
     base_url = _node_base_url(node)
-    headers = _node_headers(node)
+    headers = {**_node_headers(node), "X-Cluster-Op": "true"}
     try:
+        # Set service replicas to 0 on source to prevent reconcile from recreating
+        if service_name:
+            async with httpx.AsyncClient(timeout=15) as client:
+                await client.post(f"{base_url}/v1/services/scale", json={
+                    "service_name": service_name, "replicas": 0,
+                }, headers=headers)
+
         async with httpx.AsyncClient(timeout=30) as client:
             try:
                 await client.post(f"{base_url}/v1/containers/{container_id}/stop", headers=headers)
@@ -132,13 +140,13 @@ class MigrationController:
             await _set_remote_reconcile_skip(dst_node, service_name, True)
 
         try:
-            # ---- Export ----
-            self.cluster_state.update_migration(migration_id, MigrationStatus.EXPORTING, progress=15)
-            logger.info(f"Migration {migration_id}: Exporting from {src_node.name}")
+            # ---- Export (file-based: commit + save to temp file) ----
+            self.cluster_state.update_migration(migration_id, MigrationStatus.EXPORTING, progress=10)
+            logger.info(f"Migration {migration_id}: Preparing export on {src_node.name}")
 
-            async with httpx.AsyncClient(timeout=300) as client:
+            async with httpx.AsyncClient(timeout=600) as client:
                 export_resp = await client.post(
-                    f"{src_url}/v1/agent/export/{container_id}", headers=src_headers
+                    f"{src_url}/v1/agent/export/{container_id}/prepare", headers=src_headers
                 )
 
             if export_resp.status_code != 200:
@@ -150,20 +158,56 @@ class MigrationController:
                 await self._fail_migration(migration_id, f"Export 실패: {export_data.get('error', 'unknown')}")
                 return
 
-            image_data_b64 = export_data.get("image_data")
+            tar_path = export_data["tar_path"]
             config = export_data.get("config", {})
-            logger.info(f"Migration {migration_id}: Export OK ({len(image_data_b64)} chars)")
+            file_size = export_data.get("file_size", 0)
+            logger.info(f"Migration {migration_id}: Export OK (file={tar_path}, size={file_size})")
+            self.cluster_state.update_migration(migration_id, MigrationStatus.EXPORTING, progress=25)
 
-            # ---- Import ----
-            self.cluster_state.update_migration(migration_id, MigrationStatus.TRANSFERRING, progress=40)
+            # ---- Transfer: stream tar from source → destination ----
+            self.cluster_state.update_migration(migration_id, MigrationStatus.TRANSFERRING, progress=35)
+            logger.info(f"Migration {migration_id}: Streaming {file_size} bytes {src_node.name} -> {dst_node.name}")
+
+            import json as _json
+            import_headers = {**dst_headers}
+            import_headers["Content-Type"] = "application/x-tar"
+            import_headers["X-Container-Config"] = _json.dumps(config)
+            if service_name:
+                import_headers["X-Service-Name"] = service_name
+
+            # Stream download from source and pipe to destination
+            async with httpx.AsyncClient(timeout=600) as src_client:
+                async with src_client.stream(
+                    "GET", f"{src_url}/v1/agent/export/download",
+                    params={"path": tar_path}, headers=src_headers
+                ) as download:
+                    if download.status_code != 200:
+                        await self._fail_migration(migration_id, f"Download 실패: HTTP {download.status_code}")
+                        return
+
+                    # Collect streamed chunks and upload to destination
+                    transferred = 0
+                    chunks = []
+                    async for chunk in download.aiter_bytes(chunk_size=1024 * 1024):
+                        chunks.append(chunk)
+                        transferred += len(chunk)
+                        if file_size > 0:
+                            pct = 35 + int(25 * transferred / file_size)
+                            self.cluster_state.update_migration(
+                                migration_id, MigrationStatus.TRANSFERRING, progress=min(pct, 59)
+                            )
+
+            tar_data = b"".join(chunks)
+            logger.info(f"Migration {migration_id}: Downloaded {transferred} bytes, uploading to {dst_node.name}")
+
             self.cluster_state.update_migration(migration_id, MigrationStatus.IMPORTING, progress=60)
             logger.info(f"Migration {migration_id}: Importing on {dst_node.name}")
 
-            async with httpx.AsyncClient(timeout=300) as client:
-                import_resp = await client.post(
-                    f"{dst_url}/v1/agent/import",
-                    json={"image_data": image_data_b64, "config": config, "service_name": service_name},
-                    headers=dst_headers
+            async with httpx.AsyncClient(timeout=600) as dst_client:
+                import_resp = await dst_client.post(
+                    f"{dst_url}/v1/agent/import/upload",
+                    content=tar_data,
+                    headers=import_headers,
                 )
 
             if import_resp.status_code != 200:
@@ -176,6 +220,16 @@ class MigrationController:
                 return
 
             new_container_id = import_result.get("container_id", "")
+
+            # Cleanup temp file on source
+            try:
+                async with httpx.AsyncClient(timeout=15) as cleanup_client:
+                    await cleanup_client.post(
+                        f"{src_url}/v1/agent/cleanup-file",
+                        json={"path": tar_path}, headers=src_headers
+                    )
+            except Exception:
+                pass
             logger.info(f"Migration {migration_id}: Import OK, new={new_container_id}")
 
             # ---- Verify ----
@@ -191,7 +245,7 @@ class MigrationController:
 
             # ---- Remove source container ONLY (replicas unchanged) ----
             logger.info(f"Migration {migration_id}: Removing source {container_name} on {src_node.name}")
-            await _force_remove_container(src_node, container_id, container_name)
+            await _force_remove_container(src_node, container_id, container_name, service_name)
 
             # ---- Complete ----
             self.cluster_state.update_migration(migration_id, MigrationStatus.COMPLETED, progress=100)

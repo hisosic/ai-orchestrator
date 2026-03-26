@@ -46,6 +46,8 @@ class ContainerPlacement(BaseModel):
     memory_limit_mb: float = 0.0
     net_rx_mb: float = 0.0
     net_tx_mb: float = 0.0
+    host_port: str = ""
+    internal_port: str = ""
 
 class HeartbeatPayload(BaseModel):
     node_name: str

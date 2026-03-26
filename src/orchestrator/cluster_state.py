@@ -93,13 +93,29 @@ class ClusterStateManager:
                     acknowledged INTEGER DEFAULT 0
                 );
 
+                CREATE TABLE IF NOT EXISTS autodeploy (
+                    image_pattern TEXT PRIMARY KEY,
+                    service_name TEXT NOT NULL,
+                    replicas INTEGER DEFAULT 1,
+                    strategy TEXT DEFAULT 'spread',
+                    memory_limit TEXT,
+                    cpu_limit TEXT,
+                    environment TEXT DEFAULT '[]',
+                    volumes TEXT DEFAULT '[]',
+                    ports TEXT DEFAULT '[]',
+                    enabled INTEGER DEFAULT 1,
+                    last_deployed TEXT,
+                    created_at TEXT NOT NULL
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_placements_node ON container_placements(node_name);
                 CREATE INDEX IF NOT EXISTS idx_placements_service ON container_placements(service_name);
                 CREATE INDEX IF NOT EXISTS idx_migrations_status ON migrations(status);
                 CREATE INDEX IF NOT EXISTS idx_alerts_ack ON alerts(acknowledged);
             """)
             # Add new columns if missing (migration for existing DBs)
-            for col, coltype in [("memory_limit_mb", "REAL DEFAULT 0"), ("net_rx_mb", "REAL DEFAULT 0"), ("net_tx_mb", "REAL DEFAULT 0")]:
+            for col, coltype in [("memory_limit_mb", "REAL DEFAULT 0"), ("net_rx_mb", "REAL DEFAULT 0"), ("net_tx_mb", "REAL DEFAULT 0"),
+                                  ("host_port", "TEXT DEFAULT ''"), ("internal_port", "TEXT DEFAULT ''")]:
                 try:
                     conn.execute(f"ALTER TABLE container_placements ADD COLUMN {col} {coltype}")
                 except Exception:
@@ -155,6 +171,11 @@ class ClusterStateManager:
         with self._lock, self._get_conn() as conn:
             conn.execute("UPDATE nodes SET status=? WHERE name=?", (status.value, name))
 
+    def update_node_address(self, name: str, address: str):
+        """Update the stored address for a node (e.g. when IP changes)."""
+        with self._lock, self._get_conn() as conn:
+            conn.execute("UPDATE nodes SET address=? WHERE name=?", (address, name))
+
     def _row_to_node(self, row) -> NodeInfo:
         resources = None
         if row["resources"]:
@@ -193,11 +214,12 @@ class ClusterStateManager:
             # Insert current placements
             for c in containers:
                 conn.execute("""
-                    INSERT OR REPLACE INTO container_placements (container_id, container_name, service_name, image, node_name, status, cpu_percent, memory_mb, memory_limit_mb, net_rx_mb, net_tx_mb, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT OR REPLACE INTO container_placements (container_id, container_name, service_name, image, node_name, status, cpu_percent, memory_mb, memory_limit_mb, net_rx_mb, net_tx_mb, host_port, internal_port, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (c.container_id, c.container_name, c.service_name, c.image, node_name, c.status,
                       c.cpu_percent, c.memory_mb, getattr(c, 'memory_limit_mb', 0.0),
-                      getattr(c, 'net_rx_mb', 0.0), getattr(c, 'net_tx_mb', 0.0), now))
+                      getattr(c, 'net_rx_mb', 0.0), getattr(c, 'net_tx_mb', 0.0),
+                      getattr(c, 'host_port', ''), getattr(c, 'internal_port', ''), now))
 
     def check_node_health(self, timeout_degraded: int = 30, timeout_offline: int = 90):
         """Check all nodes and update status based on heartbeat timeout.
@@ -235,6 +257,9 @@ class ClusterStateManager:
                 query += " AND node_name=?"
                 params.append(node_name)
             rows = conn.execute(query, params).fetchall()
+            cols = set()
+            if rows:
+                cols = set(rows[0].keys())
             return [ContainerPlacement(
                 container_id=r["container_id"],
                 container_name=r["container_name"],
@@ -244,9 +269,11 @@ class ClusterStateManager:
                 status=r["status"],
                 cpu_percent=r["cpu_percent"],
                 memory_mb=r["memory_mb"],
-                memory_limit_mb=r["memory_limit_mb"] if "memory_limit_mb" in r.keys() else 0.0,
-                net_rx_mb=r["net_rx_mb"] if "net_rx_mb" in r.keys() else 0.0,
-                net_tx_mb=r["net_tx_mb"] if "net_tx_mb" in r.keys() else 0.0,
+                memory_limit_mb=r["memory_limit_mb"] if "memory_limit_mb" in cols else 0.0,
+                net_rx_mb=r["net_rx_mb"] if "net_rx_mb" in cols else 0.0,
+                net_tx_mb=r["net_tx_mb"] if "net_tx_mb" in cols else 0.0,
+                host_port=r["host_port"] if "host_port" in cols else "",
+                internal_port=r["internal_port"] if "internal_port" in cols else "",
             ) for r in rows]
 
     def get_service_placement_summary(self) -> Dict[str, dict]:
@@ -425,3 +452,86 @@ class ClusterStateManager:
         with self._get_conn() as conn:
             rows = conn.execute("SELECT * FROM services").fetchall()
             return [dict(r) for r in rows]
+
+    # --- Auto-deploy rules ---
+
+    def save_autodeploy(self, image_pattern: str, service_name: str, replicas: int = 1, **kwargs):
+        with self._lock, self._get_conn() as conn:
+            now = datetime.utcnow().isoformat()
+            conn.execute("""
+                INSERT INTO autodeploy (image_pattern, service_name, replicas, strategy,
+                    memory_limit, cpu_limit, environment, volumes, ports, enabled, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                ON CONFLICT(image_pattern) DO UPDATE SET
+                    service_name=excluded.service_name,
+                    replicas=excluded.replicas,
+                    strategy=excluded.strategy,
+                    memory_limit=COALESCE(excluded.memory_limit, autodeploy.memory_limit),
+                    cpu_limit=COALESCE(excluded.cpu_limit, autodeploy.cpu_limit),
+                    environment=excluded.environment,
+                    volumes=excluded.volumes,
+                    ports=excluded.ports,
+                    enabled=1
+            """, (
+                image_pattern, service_name, replicas,
+                kwargs.get("strategy", "spread"),
+                kwargs.get("memory_limit"), kwargs.get("cpu_limit"),
+                json.dumps(kwargs.get("environment", [])),
+                json.dumps(kwargs.get("volumes", [])),
+                json.dumps(kwargs.get("ports", [])),
+                now,
+            ))
+
+    def delete_autodeploy(self, image_pattern: str) -> bool:
+        with self._lock, self._get_conn() as conn:
+            cursor = conn.execute("DELETE FROM autodeploy WHERE image_pattern=?", (image_pattern,))
+            return cursor.rowcount > 0
+
+    def list_autodeploy(self) -> List[dict]:
+        with self._get_conn() as conn:
+            rows = conn.execute("SELECT * FROM autodeploy ORDER BY created_at DESC").fetchall()
+            return [dict(r) for r in rows]
+
+    def find_autodeploy(self, image: str) -> Optional[dict]:
+        """Find matching autodeploy rule for an image.
+
+        Matches:
+        - Exact: "nginx:alpine" == "nginx:alpine"
+        - Base name: "nginx:alpine" matches rule "nginx"
+        - Registry prefix stripped: "registry:5000/nginx:v1" matches rule "nginx"
+        - Full registry match: "20.20.0.13:80/myapp:v1" matches rule "20.20.0.13:80/myapp"
+        """
+        with self._get_conn() as conn:
+            rows = conn.execute("SELECT * FROM autodeploy WHERE enabled=1").fetchall()
+
+            # Extract image components: strip registry host, get base name
+            img_parts = image.split("/")
+            img_name_tag = img_parts[-1]  # "nginx:v1" from "registry/namespace/nginx:v1"
+            img_base = img_name_tag.split(":")[0]  # "nginx"
+            img_no_tag = "/".join(img_parts[:-1] + [img_base]) if len(img_parts) > 1 else img_base
+
+            for r in rows:
+                pattern = r["image_pattern"]
+                pat_parts = pattern.split("/")
+                pat_name_tag = pat_parts[-1]
+                pat_base = pat_name_tag.split(":")[0]
+
+                # Exact match
+                if image == pattern:
+                    return dict(r)
+                # Base name match (ignoring tag and registry)
+                if img_base == pat_base:
+                    return dict(r)
+                # Full path without tag match
+                if img_no_tag == pattern.split(":")[0]:
+                    return dict(r)
+                # Pattern is prefix of image
+                if image.startswith(pattern):
+                    return dict(r)
+
+            return None
+
+    def mark_autodeploy_deployed(self, image_pattern: str):
+        with self._lock, self._get_conn() as conn:
+            now = datetime.utcnow().isoformat()
+            conn.execute("UPDATE autodeploy SET last_deployed=? WHERE image_pattern=?", (now, image_pattern))

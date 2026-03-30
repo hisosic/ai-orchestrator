@@ -1,3 +1,6 @@
+<img width="1470" height="1020" alt="image" src="https://github.com/user-attachments/assets/6a07615e-98e1-401a-bb17-33e32b343b57" />
+
+
 # AI Container Orchestrator
 
 베어메탈 서버에서 컨테이너를 관리하는 **멀티노드 클러스터 오케스트레이션 플랫폼**입니다.

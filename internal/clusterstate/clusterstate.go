@@ -247,7 +247,7 @@ func (m *ClusterStateManager) UpdateNodeStatus(name string, status models.NodeSt
 // --- Heartbeat ---
 
 // ProcessHeartbeat updates node resources, sets it healthy, and replaces its container placements.
-func (m *ClusterStateManager) ProcessHeartbeat(nodeName string, resources models.NodeResources, containers []models.ContainerPlacement) {
+func (m *ClusterStateManager) ProcessHeartbeat(nodeName string, address string, resources models.NodeResources, containers []models.ContainerPlacement) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -262,13 +262,14 @@ func (m *ClusterStateManager) ProcessHeartbeat(nodeName string, resources models
 
 	tx.Exec(`
 		INSERT INTO nodes (name, address, token, status, role, labels, resources, last_heartbeat, registered_at, container_count)
-		VALUES (?, '', '', 'healthy', 'worker', '{}', ?, ?, ?, ?)
+		VALUES (?, ?, '', 'healthy', 'worker', '{}', ?, ?, ?, ?)
 		ON CONFLICT(name) DO UPDATE SET
 			status=CASE WHEN nodes.status IN ('cordoned','draining') THEN nodes.status ELSE 'healthy' END,
+			address=CASE WHEN excluded.address != '' THEN excluded.address ELSE nodes.address END,
 			resources=excluded.resources,
 			last_heartbeat=excluded.last_heartbeat,
 			container_count=excluded.container_count
-	`, nodeName, string(resourcesJSON), ts, ts, len(containers))
+	`, nodeName, address, string(resourcesJSON), ts, ts, len(containers))
 
 	tx.Exec("DELETE FROM container_placements WHERE node_name=?", nodeName)
 

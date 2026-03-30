@@ -168,12 +168,14 @@ func (a *WorkerAgent) buildHeartbeat() map[string]any {
 	resources := a.GetNodeResources()
 	containers := a.GetManagedContainers()
 
+	addr := os.Getenv("ORCHESTRATOR_ADVERTISE_ADDR")
 	return map[string]any{
 		"node_name":     a.NodeName,
 		"timestamp":     time.Now().UTC().Format(time.RFC3339),
 		"resources":     resources,
 		"containers":    containers,
 		"agent_version": a.AgentVersion,
+		"address":       addr,
 	}
 }
 

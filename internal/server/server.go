@@ -309,7 +309,8 @@ func bearerTokenAuth(next http.Handler) http.Handler {
 			(path == "/v1/system" || path == "/v1/services" ||
 				path == "/v1/containers" || path == "/v1/images" ||
 				path == "/v1/stream" ||
-				strings.HasPrefix(path, "/v1/containers")) {
+				strings.HasPrefix(path, "/v1/containers") ||
+				strings.HasPrefix(path, "/v1/ai/")) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -318,6 +319,7 @@ func bearerTokenAuth(next http.Handler) http.Handler {
 		if strings.HasPrefix(path, "/v1/services/") ||
 			strings.HasPrefix(path, "/v1/containers/") ||
 			strings.HasPrefix(path, "/v1/images/") ||
+			strings.HasPrefix(path, "/v1/ai/") ||
 			path == "/v1/command" || path == "/v1/action" {
 			auth := r.Header.Get("Authorization")
 			if auth == "" {
@@ -1218,7 +1220,11 @@ func handleAction(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, models.CommandResponse{Success: false, Message: "서비스명 또는 이미지를 지정하세요."})
 			return
 		}
-		ok, msg, details = runtime.ExecuteDeploy(ctx, cli, name, req.Image)
+		replicas := 0
+		if req.Replicas != nil {
+			replicas = *req.Replicas
+		}
+		ok, msg, details = runtime.ExecuteDeploy(ctx, cli, name, req.Image, replicas)
 
 	case "scale":
 		if req.ServiceName == "" || req.Replicas == nil {
@@ -1686,13 +1692,23 @@ func handleClusterHeartbeat(w http.ResponseWriter, r *http.Request) {
 		NodeName   string                    `json:"node_name"`
 		Resources  models.NodeResources      `json:"resources"`
 		Containers []models.ContainerPlacement `json:"containers"`
+		Address    string                    `json:"address"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ack": false, "error": "Invalid payload"})
 		return
 	}
 
-	clusterState.ProcessHeartbeat(body.NodeName, body.Resources, body.Containers)
+	// Use advertised address from heartbeat, or derive from remote IP
+	addr := body.Address
+	if addr == "" {
+		host, _, _ := net.SplitHostPort(r.RemoteAddr)
+		if host != "" {
+			addr = host + ":8000"
+		}
+	}
+
+	clusterState.ProcessHeartbeat(body.NodeName, addr, body.Resources, body.Containers)
 	writeJSON(w, http.StatusOK, models.HeartbeatResponse{
 		Ack:      true,
 		Commands: []map[string]any{},
@@ -2924,7 +2940,8 @@ func masterSelfHeartbeat() {
 	if nodeName == "" {
 		nodeName = "master"
 	}
-	clusterState.ProcessHeartbeat(nodeName, resources, containers)
+	masterAddr := os.Getenv("ORCHESTRATOR_ADVERTISE_ADDR")
+	clusterState.ProcessHeartbeat(nodeName, masterAddr, resources, containers)
 }
 
 func syncTraefikRoutes() {

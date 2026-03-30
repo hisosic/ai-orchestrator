@@ -431,6 +431,32 @@ func createAndStartContainer(
 		}
 	}
 
+	// Auto-pull image if not present locally
+	_, _, imgErr := cli.ImageInspectWithRaw(ctx, imageName)
+	if imgErr != nil {
+		log.Printf("Image %s not found locally, pulling...", imageName)
+		pullReader, pullErr := cli.ImagePull(ctx, imageName, image.PullOptions{})
+		if pullErr != nil {
+			return "", fmt.Errorf("image pull failed: %w", pullErr)
+		}
+		io.Copy(io.Discard, pullReader)
+		pullReader.Close()
+		log.Printf("Image %s pulled successfully", imageName)
+	}
+
+	// Detect exposed port from image and update Traefik label if needed
+	if imgInspect, _, err := cli.ImageInspectWithRaw(ctx, imageName); err == nil {
+		for p := range imgInspect.Config.ExposedPorts {
+			port := p.Int()
+			if port > 0 && port != TraefikHTTPPort {
+				traefikKey := fmt.Sprintf("traefik.http.services.%s.loadbalancer.server.port",
+					strings.Trim(regexp.MustCompile(`[^a-z0-9-]`).ReplaceAllString(strings.ToLower(serviceName), "-"), "-"))
+				labels[traefikKey] = strconv.Itoa(port)
+				break
+			}
+		}
+	}
+
 	resp, err := cli.ContainerCreate(ctx, config, hostConfig, networkConfig, nil, name)
 	if err != nil {
 		return "", fmt.Errorf("container create failed: %w", err)
@@ -621,17 +647,22 @@ func ExecuteScale(ctx context.Context, cli *client.Client, serviceName string, r
 }
 
 // ExecuteDeploy deploys a new service (or updates an existing one). If image is empty, uses name as image.
-func ExecuteDeploy(ctx context.Context, cli *client.Client, name string, imageName string) (bool, string, map[string]any) {
+func ExecuteDeploy(ctx context.Context, cli *client.Client, name string, imageName string, requestedReplicas int) (bool, string, map[string]any) {
 	img := imageName
 	if img == "" {
 		img = name
 	}
-	replicas := 1
+	replicas := requestedReplicas
+	if replicas < 1 {
+		replicas = 1
+	}
 	var memory, cpu string
 
 	info := state.GetService(name)
 	if info != nil {
-		replicas = getInt(info, "replicas", 1)
+		if requestedReplicas < 1 {
+			replicas = getInt(info, "replicas", 1)
+		}
 		memory = getString(info, "memory_limit")
 		cpu = getString(info, "cpu_limit")
 	}
@@ -971,7 +1002,11 @@ func ExecuteIntent(intent models.ParsedIntent, dryRun bool) (bool, string, map[s
 			name = parts[len(parts)-1]
 		}
 		img := intent.Image
-		return ExecuteDeploy(ctx, cli, name, img)
+		replicas := 0
+		if intent.Replicas != nil {
+			replicas = *intent.Replicas
+		}
+		return ExecuteDeploy(ctx, cli, name, img, replicas)
 
 	case models.IntentResource:
 		if intent.ServiceName == "" {

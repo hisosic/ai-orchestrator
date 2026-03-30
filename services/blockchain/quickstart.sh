@@ -116,7 +116,7 @@ for i in $(seq 0 $((TOTAL - 1))); do
         echo -n "${KS_PW}" > "${CONF_DIR}/keysecret"
     fi
 
-    ADDR=$(python3 -c "import json; print(json.load(open('${CONF_DIR}/keystore.json'))['address'])")
+    ADDR=$(sed -n 's/.*"address" *: *"\([^"]*\)".*/\1/p' "${CONF_DIR}/keystore.json")
     ADDRESSES+=("${ADDR}")
     echo "  Node ${i}: ${ADDR}"
 done
@@ -154,6 +154,17 @@ echo "  gs.zip distributed to ${TOTAL} nodes"
 
 # ========== Phase 4: License ==========
 echo "[4/7] Generating license..."
+# Auto-generate issuer keystore if not provided
+if [ ! -f "${ISSUER_KS}" ]; then
+    echo "  No issuer keystore found at ${ISSUER_KS}, generating..."
+    mkdir -p "$(dirname "${ISSUER_KS}")"
+    ISSUER_TMP_DIR=$(mktemp -d)
+    run_goloop "${ISSUER_TMP_DIR}" \
+        goloop ks gen --out /work/issuer.json --password "${ISSUER_PW}"
+    cp "${ISSUER_TMP_DIR}/issuer.json" "${ISSUER_KS}"
+    rm -rf "${ISSUER_TMP_DIR}"
+    echo "  Issuer keystore generated"
+fi
 ALL_ADDR_ARGS=""
 for addr in "${ADDRESSES[@]}"; do
     ALL_ADDR_ARGS="${ALL_ADDR_ARGS} ${addr}"
@@ -316,16 +327,11 @@ echo "RPC endpoints: localhost:${BASE_RPC_PORT} ~ localhost:$((BASE_RPC_PORT + T
 echo "API: http://localhost:${BASE_RPC_PORT}/api/v3/${CHANNEL}"
 
 # Output JSON result
-python3 -c "
-import json
-result = {
-    'success': True,
-    'channel': '${CHANNEL}',
-    'validators': ${NUM_VALIDATORS},
-    'citizens': ${NUM_CITIZENS},
-    'containers': [$(printf '"%s",' "${CONTAINER_IDS[@]}" | sed 's/,$//')],
-    'rpc_base_port': ${BASE_RPC_PORT},
-    'p2p_base_port': ${BASE_P2P_PORT},
-}
-print(json.dumps(result))
-" > "${WORK_DIR}/quickstart-result.json"
+CONTAINER_LIST=""
+for cid in "${CONTAINER_IDS[@]}"; do
+    [ -n "${CONTAINER_LIST}" ] && CONTAINER_LIST="${CONTAINER_LIST},"
+    CONTAINER_LIST="${CONTAINER_LIST}\"${cid}\""
+done
+cat > "${WORK_DIR}/quickstart-result.json" <<RESJSON
+{"success":true,"channel":"${CHANNEL}","validators":${NUM_VALIDATORS},"citizens":${NUM_CITIZENS},"containers":[${CONTAINER_LIST}],"rpc_base_port":${BASE_RPC_PORT},"p2p_base_port":${BASE_P2P_PORT}}
+RESJSON

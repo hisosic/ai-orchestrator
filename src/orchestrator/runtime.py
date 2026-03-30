@@ -230,6 +230,19 @@ def execute_scale(client, service_name: str, replicas: int) -> Tuple[bool, str, 
             except (APIError, NotFound):
                 pass
 
+    # Auto-pull image if not available locally
+    if target > len(current):
+        try:
+            client.images.get(image)
+        except ImageNotFound:
+            ok, pull_msg = pull_image(client, image)
+            if not ok:
+                return False, f"이미지 pull 실패: {pull_msg}", {"removed": removed}
+        except APIError:
+            ok, pull_msg = pull_image(client, image)
+            if not ok:
+                return False, f"이미지 pull 실패: {pull_msg}", {"removed": removed}
+
     net = _ensure_network(client)
     for c in current:
         try:

@@ -612,8 +612,20 @@
             <!-- Deploy history (Task 4.1) -->
             <div class="deploy-history" id="deployHistory"></div>
           </div>
+          <!-- Source Upload & Auto Deploy -->
+          <div style="margin-top:0.75rem;padding:0.75rem 1rem;border:1px dashed var(--border);border-radius:var(--radius);position:relative;" id="sourceUploadZone">
+            <div style="font-weight:600;font-size:0.9rem;margin-bottom:0.5rem;">소스 업로드 배포</div>
+            <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
+              <input type="file" id="sourceFile" accept=".zip,.tar.gz,.tgz" style="flex:1;min-width:200px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.4rem;border-radius:var(--radius);font-family:inherit;">
+              <input type="text" id="sourceServiceName" placeholder="서비스명 (자동생성)" style="flex:0.6;min-width:100px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.5rem;border-radius:var(--radius);font-family:inherit;" autocomplete="off">
+              <button type="button" class="btn btn-success" id="btnDeploySource">빌드 & 배포</button>
+            </div>
+            <div style="font-size:0.78rem;color:var(--text-muted);margin-top:0.35rem;">zip / tar.gz 파일을 업로드하면 자동으로 Dockerfile 감지 → 이미지 빌드 → 컨테이너 배포됩니다. Dockerfile 없으면 언어 자동 감지 (Node.js, Python, Go, Java, HTML)</div>
+            <div id="sourceDeployLog" style="margin-top:0.5rem;font-size:0.85rem;"></div>
+          </div>
+
           <!-- Image pull (Task 4.7) -->
-          <div class="pull-row" style="padding:0 0 0.5rem;">
+          <div class="pull-row" style="padding:0.5rem 0 0.5rem;">
             <input type="text" id="pullImageName" placeholder="이미지 Pull (예: nginx:latest)" autocomplete="off">
             <button type="button" class="btn btn-sm" id="btnPullImage">Pull</button>
           </div>
@@ -2621,6 +2633,42 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
       }
       this.disabled = false;
       this.textContent = 'Pull';
+    });
+
+    // Source Upload & Auto Deploy
+    document.getElementById('btnDeploySource').addEventListener('click', async function() {
+      var fileEl = document.getElementById('sourceFile');
+      var nameEl = document.getElementById('sourceServiceName');
+      var logEl = document.getElementById('sourceDeployLog');
+      if (!fileEl.files || !fileEl.files[0]) { alert('소스 파일을 선택하세요.'); return; }
+      var file = fileEl.files[0];
+      var formData = new FormData();
+      formData.append('file', file);
+      if (nameEl.value.trim()) formData.append('name', nameEl.value.trim());
+      this.disabled = true;
+      logEl.innerHTML = '<span class="deploy-spinner"></span><span style="color:var(--accent);">빌드 & 배포 중... (소스 업로드 → 이미지 빌드 → 컨테이너 기동)</span>';
+      try {
+        var r = await fetch(API + '/v1/services/deploy-source', { method: 'POST', body: formData });
+        var data = await r.json();
+        if (data.success) {
+          logEl.innerHTML = '<span style="color:var(--success);">배포 완료!</span>' +
+            '<div style="margin-top:0.3rem;font-size:0.85rem;">' +
+            '<div>서비스: <strong>' + escapeHtml(data.service_name) + '</strong></div>' +
+            '<div>이미지: ' + escapeHtml(data.image) + '</div>' +
+            '<div>포트: <a href="http://localhost:' + data.host_port + '" target="_blank" style="color:var(--accent);">localhost:' + data.host_port + '</a></div>' +
+            '</div>';
+          appendLog('소스 배포: ' + data.service_name, data);
+          fileEl.value = '';
+          nameEl.value = '';
+          loadAll();
+        } else {
+          logEl.innerHTML = '<span style="color:var(--danger);">배포 실패: ' + escapeHtml(data.message || '') + '</span>';
+          appendLog('소스 배포 실패', data);
+        }
+      } catch (e) {
+        logEl.innerHTML = '<span style="color:var(--danger);">오류: ' + escapeHtml(e.message) + '</span>';
+      }
+      this.disabled = false;
     });
 
     // Task 4.1: Deploy history (localStorage)

@@ -141,6 +141,7 @@ func NewRouter() http.Handler {
 	r.Get("/v1/containers/{id}/inspect", handleInspectContainer)
 	r.Delete("/v1/images/{id}", handleRemoveImage)
 	r.Post("/v1/services/scale", handleScaleService)
+	r.Post("/v1/services/deploy-source", handleDeploySource)
 	r.Post("/v1/images/pull", handlePullImage)
 
 	// Cluster API (master)

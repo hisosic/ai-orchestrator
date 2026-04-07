@@ -28,11 +28,14 @@ services:
       - ORCHESTRATOR_NODE_NAME=${ORCHESTRATOR_NODE_NAME:-}
       - ORCHESTRATOR_MASTER_URL=${ORCHESTRATOR_MASTER_URL:-}
       - ORCHESTRATOR_HEARTBEAT_INTERVAL=${ORCHESTRATOR_HEARTBEAT_INTERVAL:-10}
+      - ORCHESTRATOR_ADVERTISE_ADDR=${ORCHESTRATOR_ADVERTISE_ADDR:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - orch-internal
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:8000/health"]
       interval: 10s
       timeout: 5s
       retries: 3

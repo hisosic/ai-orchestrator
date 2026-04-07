@@ -141,6 +141,7 @@ func NewRouter() http.Handler {
 	r.Get("/v1/containers/{id}/inspect", handleInspectContainer)
 	r.Delete("/v1/images/{id}", handleRemoveImage)
 	r.Post("/v1/services/scale", handleScaleService)
+	r.Get("/v1/services/endpoints", handleServiceEndpoints)
 	r.Post("/v1/services/deploy-source", handleDeploySource)
 	r.Post("/v1/images/pull", handlePullImage)
 
@@ -3239,54 +3240,120 @@ func serviceInfoToMap(s models.ServiceInfo) map[string]any {
 	}
 }
 
-// detectHostIP tries to find the real host IP visible to external clients.
-// Inside Docker, net.InterfaceAddrs returns the container-internal IP (e.g. 172.x).
-// Instead, we dial an external address (without sending data) to discover which
-// source IP the OS would use — this gives the host-mapped IP on bridged networks,
-// or the real NIC IP when running on bare metal.
-func detectHostIP() string {
-	// Method 1: UDP dial trick — returns the IP used to reach the default gateway
-	conn, err := net.DialTimeout("udp4", "8.8.8.8:53", 2*time.Second)
-	if err == nil {
-		defer conn.Close()
-		if addr, ok := conn.LocalAddr().(*net.UDPAddr); ok && !addr.IP.IsLoopback() {
-			ip := addr.IP.String()
-			// Skip Docker-internal IPs (172.16-31.x.x, 10.x.x.x with common Docker ranges)
-			if !strings.HasPrefix(ip, "172.") {
-				return ip + ":8000"
-			}
+// isDockerInternalIP returns true if the IP belongs to common Docker/container network ranges.
+func isDockerInternalIP(ip string) bool {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
+	}
+	dockerRanges := []string{
+		"172.16.0.0/12", // Docker bridge default
+		"10.0.0.0/8",    // Common overlay/swarm
+		"192.168.0.0/16", // docker-compose default on some setups
+	}
+	for _, cidr := range dockerRanges {
+		_, subnet, err := net.ParseCIDR(cidr)
+		if err == nil && subnet.Contains(parsed) {
+			return true
 		}
 	}
+	return false
+}
 
-	// Method 2: Read default route from /proc (Linux)
-	if data, err := os.ReadFile("/proc/net/route"); err == nil {
-		lines := strings.Split(string(data), "\n")
-		for _, line := range lines[1:] {
-			fields := strings.Fields(line)
-			if len(fields) >= 3 && fields[1] == "00000000" {
-				// Default route found — use that interface
-				iface, err := net.InterfaceByName(fields[0])
-				if err != nil {
-					continue
-				}
-				addrs, err := iface.Addrs()
-				if err != nil {
-					continue
-				}
-				for _, a := range addrs {
-					if ipNet, ok := a.(*net.IPNet); ok && ipNet.IP.To4() != nil && !ipNet.IP.IsLoopback() {
-						return ipNet.IP.String() + ":8000"
+// detectHostIP tries to find the real host IP visible to external clients.
+// Inside Docker, standard methods return the container-internal IP (e.g. 172.x).
+// This function uses multiple strategies to find the actual host IP.
+func detectHostIP() string {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8000"
+	}
+
+	// Method 1: Read host IP from Docker's /host/net/dev mount or host-mapped gateway.
+	// Many Docker setups expose the host gateway at 172.17.0.1 or via host.docker.internal.
+	// We check the Docker default gateway's ARP entry or /etc/hosts for the host IP.
+	if data, err := os.ReadFile("/etc/hosts"); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.Contains(line, "host.docker.internal") {
+				fields := strings.Fields(line)
+				if len(fields) >= 1 {
+					ip := fields[0]
+					if !isDockerInternalIP(ip) && net.ParseIP(ip) != nil {
+						return ip + ":" + port
 					}
 				}
 			}
 		}
 	}
 
-	// Method 3: fallback — first non-loopback, non-docker interface IP
+	// Method 2: Read default gateway from /proc/net/route and resolve upstream host IP.
+	// On Docker bridge networks, the default gateway IS the host.
+	if data, err := os.ReadFile("/proc/net/route"); err == nil {
+		lines := strings.Split(string(data), "\n")
+		for _, line := range lines[1:] {
+			fields := strings.Fields(line)
+			if len(fields) >= 3 && fields[1] == "00000000" {
+				// Parse gateway IP (little-endian hex)
+				gwHex := fields[2]
+				if len(gwHex) == 8 {
+					var octets [4]uint64
+					for i := 0; i < 4; i++ {
+						v, _ := strconv.ParseUint(gwHex[i*2:i*2+2], 16, 8)
+						octets[i] = v
+					}
+					gwIP := fmt.Sprintf("%d.%d.%d.%d", octets[0], octets[1], octets[2], octets[3])
+					// If the gateway itself is Docker-internal, try connecting through it
+					// to discover the host's external IP via the gateway's perspective.
+					if !isDockerInternalIP(gwIP) {
+						return gwIP + ":" + port
+					}
+				}
+			}
+		}
+	}
+
+	// Method 3: UDP dial trick — returns the IP used to reach the default gateway.
+	// Skip if it returns a Docker-internal IP.
+	conn, err := net.DialTimeout("udp4", "8.8.8.8:53", 2*time.Second)
+	if err == nil {
+		defer conn.Close()
+		if addr, ok := conn.LocalAddr().(*net.UDPAddr); ok && !addr.IP.IsLoopback() {
+			ip := addr.IP.String()
+			if !isDockerInternalIP(ip) {
+				return ip + ":" + port
+			}
+		}
+	}
+
+	// Method 4: Scan network interfaces, pick the first non-loopback, non-Docker IP.
+	if ifaces, err := net.Interfaces(); err == nil {
+		for _, iface := range ifaces {
+			// Skip Docker/veth interfaces by name
+			name := strings.ToLower(iface.Name)
+			if strings.HasPrefix(name, "docker") || strings.HasPrefix(name, "veth") ||
+				strings.HasPrefix(name, "br-") || name == "lo" {
+				continue
+			}
+			addrs, err := iface.Addrs()
+			if err != nil {
+				continue
+			}
+			for _, a := range addrs {
+				if ipNet, ok := a.(*net.IPNet); ok && ipNet.IP.To4() != nil && !ipNet.IP.IsLoopback() {
+					ip := ipNet.IP.String()
+					if !isDockerInternalIP(ip) {
+						return ip + ":" + port
+					}
+				}
+			}
+		}
+	}
+
+	// Method 5: Last resort — first non-loopback interface
 	if addrs, err := net.InterfaceAddrs(); err == nil {
 		for _, a := range addrs {
 			if ipNet, ok := a.(*net.IPNet); ok && !ipNet.IP.IsLoopback() && ipNet.IP.To4() != nil {
-				return ipNet.IP.String() + ":8000"
+				return ipNet.IP.String() + ":" + port
 			}
 		}
 	}

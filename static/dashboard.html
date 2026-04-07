@@ -1545,17 +1545,12 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
         var running = s.running != null ? s.running : (s.status === 'running' ? s.replicas : 0);
         var total = s.replicas != null ? s.replicas : 0;
         var nodesStr = (s.nodes && s.nodes.length) ? s.nodes.join(', ') : '—';
-        var urlHtml = '—';
-        var ep = s.endpoint || '';
-        if (ep) {
-          urlHtml = '<a href="' + escapeHtml(ep) + '" target="_blank" style="color:var(--accent);font-family:\'JetBrains Mono\',monospace;font-size:0.78rem;">' + escapeHtml(ep) + '</a>';
-        }
         html += '<tr>';
         html += '<td><strong>' + escapeHtml(s.name) + '</strong></td>';
         html += '<td style="font-family:\'JetBrains Mono\',monospace;font-size:0.8rem;">' + escapeHtml(s.image || '—') + '</td>';
         html += '<td><span class="badge badge-' + (running > 0 ? 'running' : 'stopped') + '">' + running + '/' + total + '</span></td>';
         html += '<td style="font-size:0.8rem;">' + escapeHtml(nodesStr) + '</td>';
-        html += '<td>' + urlHtml + '</td>';
+        html += '<td id="ep-' + escapeHtml(s.name) + '" style="font-size:0.78rem;"><span class="text-muted">확인 중...</span></td>';
         var displayValue = total;
         var pend = pendingScales[s.name];
         if (pend && Date.now() < pend.until) { displayValue = pend.value; if (total === pend.value) delete pendingScales[s.name]; }
@@ -1603,6 +1598,45 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
           } catch(e) { appendLog('중지 실패', {success:false, message:e.message}); }
         });
       });
+      // After rendering, fetch live endpoints
+      refreshEndpoints();
+    }
+
+    // Fetch live endpoint status from /v1/services/endpoints and update cells
+    var _epTimer = null;
+    function refreshEndpoints() {
+      fetch(API + '/v1/services/endpoints')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          var eps = data.endpoints || {};
+          Object.keys(eps).forEach(function(svc) {
+            var cell = document.getElementById('ep-' + svc);
+            if (!cell) return;
+            var list = eps[svc];
+            if (!list || list.length === 0) {
+              cell.innerHTML = '<span class="text-muted">—</span>';
+              return;
+            }
+            var html = '';
+            list.forEach(function(ep) {
+              var dot = ep.reachable
+                ? '<span style="color:var(--success);font-size:1.1em;" title="연결 가능 (' + ep.response_ms + 'ms)">&#9679;</span>'
+                : '<span style="color:var(--danger);font-size:1.1em;" title="연결 불가">&#9679;</span>';
+              var nodeTag = ep.node_name ? '<span style="color:var(--text-muted);font-size:0.7rem;"> [' + escapeHtml(ep.node_name) + ']</span>' : '';
+              html += '<div style="margin-bottom:2px;">' + dot + ' <a href="' + escapeHtml(ep.url) + '" target="_blank" style="color:var(--accent);font-family:\'JetBrains Mono\',monospace;font-size:0.75rem;">' + escapeHtml(ep.url) + '</a>' + nodeTag + '</div>';
+            });
+            cell.innerHTML = html;
+          });
+          // Clear cells for services with no endpoints
+          document.querySelectorAll('[id^="ep-"]').forEach(function(cell) {
+            var svc = cell.id.substring(3);
+            if (!eps[svc]) cell.innerHTML = '<span class="text-muted">—</span>';
+          });
+        })
+        .catch(function() {});
+      // Schedule next refresh
+      clearTimeout(_epTimer);
+      _epTimer = setTimeout(refreshEndpoints, 15000);
     }
 
     function updateServicesInPlace(data) {
@@ -1642,8 +1676,7 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
         cells[2].innerHTML = '<span class="badge badge-' + (running > 0 ? 'running' : 'stopped') + '">' + running + '/' + total + '</span>';
         var nodesStr = (s.nodes && s.nodes.length) ? s.nodes.join(', ') : '—';
         cells[3].innerHTML = '<span style="font-size:0.8rem;">' + escapeHtml(nodesStr) + '</span>';
-        var ep = s.endpoint || '';
-        cells[4].innerHTML = ep ? '<a href="' + escapeHtml(ep) + '" target="_blank" style="color:var(--accent);font-family:\'JetBrains Mono\',monospace;font-size:0.78rem;">' + escapeHtml(ep) + '</a>' : '—';
+        // endpoint cell is updated by refreshEndpoints(), skip here
         // cells[5] = scale input - sync unless user is editing or a pending scale is active
         var scaleInput = cells[5].querySelector('input[data-csvc-input]');
         if (scaleInput && document.activeElement !== scaleInput) {

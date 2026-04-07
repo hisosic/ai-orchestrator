@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	dtypes "github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 
@@ -52,7 +52,6 @@ func handleServiceEndpoints(w http.ResponseWriter, r *http.Request) {
 		var mu sync.Mutex
 		for _, node := range nodes {
 			if node.Name == masterNodeName || node.Role == "master" {
-				// Master endpoints already collected locally
 				continue
 			}
 			if node.Status == "offline" {
@@ -83,9 +82,14 @@ func handleServiceEndpoints(w http.ResponseWriter, r *http.Request) {
 	}
 	wg.Wait()
 
-	// Group by service
+	// Deduplicate by URL and group by service
+	seen := make(map[string]bool)
 	grouped := make(map[string][]ServiceEndpoint)
 	for _, ep := range all {
+		if seen[ep.URL] {
+			continue
+		}
+		seen[ep.URL] = true
 		grouped[ep.Service] = append(grouped[ep.Service], ep)
 	}
 
@@ -165,15 +169,16 @@ func getLocalEndpoints(filterSvc string) []ServiceEndpoint {
 	return endpoints
 }
 
-// getRemoteEndpoints queries a worker node's agent for its container port mappings.
+// getRemoteEndpoints queries a worker node for container port mappings.
+// Uses both container API data and cluster placement info for service matching.
 func getRemoteEndpoints(nodeAddr, filterSvc, nodeName string) []ServiceEndpoint {
 	nodeIP, _ := splitAddress(nodeAddr)
 	if nodeIP == "" {
 		return nil
 	}
 
-	url := fmt.Sprintf("http://%s/v1/containers", nodeAddr)
-	req, err := http.NewRequest("GET", url, nil)
+	apiURL := fmt.Sprintf("http://%s/v1/containers", nodeAddr)
+	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
 		return nil
 	}
@@ -182,33 +187,47 @@ func getRemoteEndpoints(nodeAddr, filterSvc, nodeName string) []ServiceEndpoint 
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
+	cl := &http.Client{Timeout: 5 * time.Second}
+	resp, err := cl.Do(req)
 	if err != nil {
 		return nil
 	}
 	defer resp.Body.Close()
 
-	var data []map[string]any
-	if err := readJSONBody(resp, &data); err != nil {
+	var wrapper struct {
+		Containers []map[string]any `json:"containers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&wrapper); err != nil {
 		return nil
 	}
 
+	// Build container-name -> service-name map from cluster placements
+	placementMap := make(map[string]string)
+	if clusterState != nil {
+		for _, p := range clusterState.GetPlacements("", nodeName) {
+			if p.ServiceName != "" {
+				placementMap[p.ContainerName] = p.ServiceName
+			}
+		}
+	}
+
+	// Resolve master IP for Traefik-routed services
+	masterIP := getMasterIP()
+
 	var endpoints []ServiceEndpoint
-	for _, c := range data {
+	for _, c := range wrapper.Containers {
 		stateStr, _ := c["state"].(string)
 		if stateStr != "running" {
 			continue
 		}
-		labels, _ := c["labels"].(map[string]any)
-		if labels == nil {
-			continue
+
+		cName, _ := c["name"].(string)
+
+		// Determine service name: from label, from API field, or from placement
+		svcName, _ := c["service"].(string)
+		if svcName == "" {
+			svcName = placementMap[cName]
 		}
-		managed, _ := labels[runtime.LabelOrchestrator].(string)
-		if managed != "true" {
-			continue
-		}
-		svcName, _ := labels[runtime.LabelService].(string)
 		if svcName == "" || systemServices[svcName] {
 			continue
 		}
@@ -216,41 +235,68 @@ func getRemoteEndpoints(nodeAddr, filterSvc, nodeName string) []ServiceEndpoint 
 			continue
 		}
 
+		// Parse ports: ["80/tcp->8080", "3000/tcp", ...]
 		portsRaw, _ := c["ports"].([]any)
-		hasPublicPort := false
+		hasPublic := false
 		for _, pRaw := range portsRaw {
-			pMap, _ := pRaw.(map[string]any)
-			if pMap == nil {
+			ps, ok := pRaw.(string)
+			if !ok || ps == "" {
 				continue
 			}
-			pubPort := toInt(pMap["public_port"])
-			privPort := toInt(pMap["private_port"])
-			if pubPort > 0 {
-				hasPublicPort = true
-				endpoints = append(endpoints, ServiceEndpoint{
-					Service:       svcName,
-					HostPort:      fmt.Sprintf("%d", pubPort),
-					ContainerPort: fmt.Sprintf("%d", privPort),
-					NodeName:      nodeName,
-					NodeIP:        nodeIP,
-					URL:           fmt.Sprintf("http://%s:%d", nodeIP, pubPort),
-				})
+			if strings.Contains(ps, "->") {
+				parts := strings.SplitN(ps, "->", 2)
+				hostPort := strings.TrimSpace(parts[1])
+				containerPort := strings.SplitN(strings.TrimSpace(parts[0]), "/", 2)[0]
+				if hostPort != "" {
+					hasPublic = true
+					endpoints = append(endpoints, ServiceEndpoint{
+						Service:       svcName,
+						HostPort:      hostPort,
+						ContainerPort: containerPort,
+						NodeName:      nodeName,
+						NodeIP:        nodeIP,
+						URL:           fmt.Sprintf("http://%s:%s", nodeIP, hostPort),
+					})
+				}
 			}
 		}
 
-		if !hasPublicPort {
+		// No direct port mapping → Traefik path route via master
+		if !hasPublic {
+			ep := masterIP
+			if ep == "" {
+				ep = nodeIP
+			}
 			endpoints = append(endpoints, ServiceEndpoint{
 				Service:       svcName,
 				HostPort:      "80",
 				ContainerPort: "80",
 				NodeName:      nodeName,
-				NodeIP:        nodeIP,
-				URL:           fmt.Sprintf("http://%s/%s/", nodeIP, svcName),
+				NodeIP:        ep,
+				URL:           fmt.Sprintf("http://%s/%s/", ep, svcName),
 			})
 		}
 	}
 
 	return endpoints
+}
+
+// getMasterIP returns the master node's host IP.
+func getMasterIP() string {
+	if clusterState == nil {
+		return ""
+	}
+	masterNodeName := os.Getenv("ORCHESTRATOR_NODE_NAME")
+	if masterNodeName == "" {
+		masterNodeName = "master"
+	}
+	for _, n := range clusterState.ListNodes() {
+		if n.Role == "master" || n.Name == masterNodeName {
+			ip, _ := splitAddress(n.Address)
+			return ip
+		}
+	}
+	return ""
 }
 
 // checkEndpoint performs an HTTP GET with a short timeout and returns reachability + latency.
@@ -289,7 +335,7 @@ func extractHostPort(url string) string {
 	return hp
 }
 
-func hasPublicPort(ports []dtypes.Port) bool {
+func hasPublicPort(ports []types.Port) bool {
 	for _, p := range ports {
 		if p.PublicPort > 0 {
 			return true
@@ -298,10 +344,6 @@ func hasPublicPort(ports []dtypes.Port) bool {
 	return false
 }
 
-func readJSONBody(resp *http.Response, v any) error {
-	defer resp.Body.Close()
-	return json.NewDecoder(resp.Body).Decode(v)
-}
 
 // detectHostIPOnly returns just the IP portion without port.
 func detectHostIPOnly() string {

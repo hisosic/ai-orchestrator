@@ -18,12 +18,18 @@ import (
 	"github.com/docker/docker/client"
 )
 
+// BuildResult contains the output of a Docker image build.
+type BuildResult struct {
+	ImageID  string
+	BuildLog string
+}
+
 // BuildImage builds a Docker image from a directory context.
-// Returns the built image ID.
-func BuildImage(ctx context.Context, cli *client.Client, contextDir string, imageName string, dockerfile string) (string, error) {
+// Returns BuildResult with the image ID and full build log.
+func BuildImage(ctx context.Context, cli *client.Client, contextDir string, imageName string, dockerfile string) (*BuildResult, error) {
 	buildCtx, err := createBuildContext(contextDir)
 	if err != nil {
-		return "", fmt.Errorf("failed to create build context: %w", err)
+		return nil, fmt.Errorf("failed to create build context: %w", err)
 	}
 
 	if dockerfile == "" {
@@ -39,12 +45,13 @@ func BuildImage(ctx context.Context, cli *client.Client, contextDir string, imag
 
 	resp, err := cli.ImageBuild(ctx, buildCtx, opts)
 	if err != nil {
-		return "", fmt.Errorf("docker build failed: %w", err)
+		return nil, fmt.Errorf("docker build failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	// Parse build output stream for errors
 	var imageID string
+	var buildLog strings.Builder
 	decoder := json.NewDecoder(resp.Body)
 	for {
 		var msg struct {
@@ -60,18 +67,20 @@ func BuildImage(ctx context.Context, cli *client.Client, contextDir string, imag
 			}
 			break
 		}
+		if msg.Stream != "" {
+			buildLog.WriteString(msg.Stream)
+			log.Printf("[build] %s", strings.TrimRight(msg.Stream, "\n"))
+		}
 		if msg.Error != "" {
-			return "", fmt.Errorf("build error: %s", msg.Error)
+			buildLog.WriteString("ERROR: " + msg.Error + "\n")
+			return &BuildResult{BuildLog: buildLog.String()}, fmt.Errorf("build error: %s", msg.Error)
 		}
 		if msg.Aux.ID != "" {
 			imageID = msg.Aux.ID
 		}
-		if msg.Stream != "" {
-			log.Printf("[build] %s", strings.TrimRight(msg.Stream, "\n"))
-		}
 	}
 
-	return imageID, nil
+	return &BuildResult{ImageID: imageID, BuildLog: buildLog.String()}, nil
 }
 
 // DetectDockerfile searches for an existing Dockerfile in the directory.

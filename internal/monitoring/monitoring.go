@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
@@ -20,8 +21,50 @@ import (
 	rt "ai-container-go/internal/runtime"
 )
 
+// ---------------------------------------------------------------------------
+// TTL cache for expensive Docker API calls
+// ---------------------------------------------------------------------------
+
+type cachedResult struct {
+	data      any
+	expiresAt time.Time
+}
+
+var (
+	cacheMu       sync.RWMutex
+	cacheStore    = map[string]cachedResult{}
+)
+
+func cacheGet(key string) (any, bool) {
+	cacheMu.RLock()
+	entry, ok := cacheStore[key]
+	cacheMu.RUnlock()
+	if !ok || time.Now().After(entry.expiresAt) {
+		return nil, false
+	}
+	return entry.data, true
+}
+
+func cacheSet(key string, data any, ttl time.Duration) {
+	cacheMu.Lock()
+	cacheStore[key] = cachedResult{data: data, expiresAt: time.Now().Add(ttl)}
+	cacheMu.Unlock()
+}
+
+// InvalidateCache removes a specific cache entry (e.g. after image pull/build).
+func InvalidateCache(key string) {
+	cacheMu.Lock()
+	delete(cacheStore, key)
+	cacheMu.Unlock()
+}
+
 // GetSystemInfo returns host and environment information including Docker server details.
+// Results are cached for 30 seconds since Docker daemon info rarely changes.
 func GetSystemInfo() map[string]any {
+	if cached, ok := cacheGet("system_info"); ok {
+		return cached.(map[string]any)
+	}
+
 	info := map[string]any{
 		"hostname":  hostname(),
 		"go":        runtime.Version(),
@@ -51,12 +94,23 @@ func GetSystemInfo() map[string]any {
 		"operating_system":   dinfo.OperatingSystem,
 		"architecture":       dinfo.Architecture,
 	}
+
+	cacheSet("system_info", info, 30*time.Second)
 	return info
 }
 
 // ListContainers returns basic information for all containers.
 // If includeStopped is true, stopped containers are included.
+// Results are cached for 5 seconds.
 func ListContainers(includeStopped bool) []map[string]any {
+	cacheKey := "containers_running"
+	if includeStopped {
+		cacheKey = "containers_all"
+	}
+	if cached, ok := cacheGet(cacheKey); ok {
+		return cached.([]map[string]any)
+	}
+
 	cli := rt.DockerClient()
 	if cli == nil {
 		return []map[string]any{}
@@ -101,6 +155,8 @@ func ListContainers(includeStopped bool) []map[string]any {
 			"ports":   formatPorts(c.Ports),
 		})
 	}
+
+	cacheSet(cacheKey, out, 5*time.Second)
 	return out
 }
 
@@ -122,8 +178,12 @@ func GetContainerStats(ctx context.Context, cli *client.Client, containerID stri
 
 // GetAllContainersWithStats lists all containers and attaches live stats
 // for running containers. Stats are fetched in parallel using goroutines
-// with a concurrency limit of 10.
+// with a concurrency limit of 10. Results are cached for 5 seconds.
 func GetAllContainersWithStats() []map[string]any {
+	if cached, ok := cacheGet("containers_with_stats"); ok {
+		return cached.([]map[string]any)
+	}
+
 	containers := ListContainers(true)
 
 	// Identify running containers.
@@ -169,11 +229,18 @@ func GetAllContainersWithStats() []map[string]any {
 		}(rc.idx, rc.id)
 	}
 	wg.Wait()
+
+	cacheSet("containers_with_stats", containers, 5*time.Second)
 	return containers
 }
 
 // ListImages returns information about all local Docker images.
+// Results are cached for 10 seconds.
 func ListImages() []map[string]any {
+	if cached, ok := cacheGet("images"); ok {
+		return cached.([]map[string]any)
+	}
+
 	cli := rt.DockerClient()
 	if cli == nil {
 		return []map[string]any{}
@@ -207,14 +274,19 @@ func ListImages() []map[string]any {
 
 		sizeMB := roundTo(float64(img.Size)/(1024*1024), 2)
 
+		created := time.Unix(img.Created, 0).UTC().Format(time.RFC3339)
+
 		out = append(out, map[string]any{
 			"id":         id,
 			"tags":       tags,
 			"repository": repo,
 			"tag":        tag,
 			"size_mb":    sizeMB,
+			"created":    created,
 		})
 	}
+
+	cacheSet("images", out, 10*time.Second)
 	return out
 }
 

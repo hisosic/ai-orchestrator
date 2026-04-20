@@ -29,6 +29,15 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+    labels:
+      # Expose the dashboard on port 80 via Traefik.
+      # Low priority so per-service PathPrefix routes (/{svc}/) still win.
+      - "traefik.enable=true"
+      - "traefik.http.routers.orchestrator-dashboard.rule=PathPrefix(`/`)"
+      - "traefik.http.routers.orchestrator-dashboard.entrypoints=web"
+      - "traefik.http.routers.orchestrator-dashboard.priority=1"
+      - "traefik.http.routers.orchestrator-dashboard.service=orchestrator-dashboard"
+      - "traefik.http.services.orchestrator-dashboard.loadbalancer.server.port=8000"
     networks:
       - orch-internal
 

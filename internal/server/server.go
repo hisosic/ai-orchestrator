@@ -34,6 +34,7 @@ import (
 
 	"ai-container-go/internal/agent"
 	"ai-container-go/internal/alerts"
+	"ai-container-go/internal/auth"
 	"ai-container-go/internal/clusterstate"
 	"ai-container-go/internal/discovery"
 	"ai-container-go/internal/migrate"
@@ -117,11 +118,19 @@ var longHTTPClient = &http.Client{Timeout: 120 * time.Second}
 func NewRouter() http.Handler {
 	r := chi.NewRouter()
 	r.Use(corsMiddleware)
+	r.Use(ipAllowlistMiddleware)
 	r.Use(bearerTokenAuth)
+	r.Use(sessionAuthMiddleware)
 
 	// Dashboard
 	r.Get("/", handleDashboard)
 	r.Get("/dashboard", handleDashboard)
+
+	// Auth
+	r.Post("/v1/auth/login", handleLogin)
+	r.Post("/v1/auth/logout", handleLogout)
+	r.Get("/v1/auth/me", handleAuthMe)
+	r.Post("/v1/auth/change-password", handleChangePassword)
 
 	// Health & info
 	r.Get("/health", handleHealth)
@@ -202,6 +211,16 @@ func NewRouter() http.Handler {
 	r.Post("/v1/ai/chat", handleAIChat)
 	r.Get("/v1/ai/advisor", handleAIAdvisor)
 
+	// Container Registry
+	r.Get("/v1/registry/status", handleRegistryStatus)
+	r.Post("/v1/registry/enable", handleRegistryEnable)
+	r.Post("/v1/registry/disable", handleRegistryDisable)
+	r.Get("/v1/registry/catalog", handleRegistryCatalog)
+	r.Get("/v1/registry/tags/*", handleRegistryTags)
+	r.Post("/v1/registry/push", handleRegistryPush)
+	r.Post("/v1/registry/pull", handleRegistryPull)
+	r.Handle("/v1/registry/v2/*", registryProxy())
+
 	return r
 }
 
@@ -214,6 +233,21 @@ func InitCluster() {
 	OrchestratorRole = strings.ToLower(os.Getenv("ORCHESTRATOR_ROLE"))
 	if OrchestratorRole == "" {
 		OrchestratorRole = "master"
+	}
+
+	// Initialize account-based auth (admin + guest seed users).
+	if OrchestratorRole == "master" {
+		stateDir := os.Getenv("ORCHESTRATOR_STATE_DIR")
+		if stateDir == "" {
+			stateDir = "/data"
+		}
+		adminPW := os.Getenv("ORCHESTRATOR_ADMIN_PASSWORD")
+		guestPW := os.Getenv("ORCHESTRATOR_GUEST_PASSWORD")
+		if err := auth.Init(stateDir, adminPW, guestPW); err != nil {
+			log.Printf("auth init failed: %v", err)
+		} else {
+			log.Printf("Auth initialized (users file: %s/users.json)", stateDir)
+		}
 	}
 
 	if OrchestratorRole == "master" {
@@ -244,6 +278,7 @@ func InitCluster() {
 		clusterState.RegisterNode(models.NodeInfo{
 			Name:    masterNodeName,
 			Address: masterAddr,
+			Token:   os.Getenv("ORCHESTRATOR_API_TOKEN"),
 			Status:  models.NodeHealthy,
 			Role:    "master",
 			Labels:  map[string]string{},
@@ -267,15 +302,242 @@ func StartBackgroundTasks() {
 	if OrchestratorRole == "master" {
 		go clusterHealthLoop()
 		go autoHealLoop()
+		writeDashboardTraefikRoute()
 	}
 
 	hub = newSSEHub()
 	go ssePublishLoop()
 }
 
+// writeDashboardTraefikRoute writes a Traefik file-provider config that
+// exposes the orchestrator dashboard on port 80 via Traefik.
+// Uses a low priority (1) so per-service PathPrefix routes still win.
+func writeDashboardTraefikRoute() {
+	configDir := "/traefik-dynamic"
+	if info, err := os.Stat(configDir); err != nil || !info.IsDir() {
+		return
+	}
+
+	content := `# Auto-generated: orchestrator dashboard route (port 80 → 8000)
+http:
+  routers:
+    orchestrator-dashboard:
+      rule: "PathPrefix(` + "`/`" + `)"
+      service: orchestrator-dashboard
+      entryPoints:
+        - web
+      priority: 1
+  services:
+    orchestrator-dashboard:
+      loadBalancer:
+        servers:
+          - url: "http://ai-orchestrator:8000"
+`
+	path := configDir + "/dashboard-route.yml"
+	existing, _ := os.ReadFile(path)
+	if string(existing) == content {
+		return
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		log.Printf("writeDashboardTraefikRoute: %v", err)
+		return
+	}
+	log.Printf("Dashboard Traefik route written to %s", path)
+}
+
 // ---------------------------------------------------------------------------
 // Middleware
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// IP allowlist middleware
+// ---------------------------------------------------------------------------
+
+// cloudflareCIDRs are the public Cloudflare proxy ranges (IPv4 + IPv6).
+// Source: https://www.cloudflare.com/ips/. Embedded so we don't make network
+// calls at startup; update on rebuild if Cloudflare publishes new ranges.
+var cloudflareCIDRs = []string{
+	// IPv4
+	"173.245.48.0/20",
+	"103.21.244.0/22",
+	"103.22.200.0/22",
+	"103.31.4.0/22",
+	"141.101.64.0/18",
+	"108.162.192.0/18",
+	"190.93.240.0/20",
+	"188.114.96.0/20",
+	"197.234.240.0/22",
+	"198.41.128.0/17",
+	"162.158.0.0/15",
+	"104.16.0.0/13",
+	"104.24.0.0/14",
+	"172.64.0.0/13",
+	"131.0.72.0/22",
+	// IPv6
+	"2400:cb00::/32",
+	"2606:4700::/32",
+	"2803:f800::/32",
+	"2405:b500::/32",
+	"2405:8100::/32",
+	"2a06:98c0::/29",
+	"2c0f:f248::/32",
+}
+
+var (
+	ipAllowOnce    sync.Once
+	ipAllowCIDRs   []*net.IPNet
+	ipAllowSingles []net.IP
+	cfCIDRs        []*net.IPNet // for CF-Connecting-IP trust decisions
+)
+
+// parseAllowlist reads ORCHESTRATOR_ALLOWED_IPS (comma-separated IPs/CIDRs)
+// once and caches the parsed result. Cloudflare proxy ranges are always
+// included so requests routed through CF pass through.
+func parseAllowlist() {
+	// Always include Cloudflare proxy ranges so CF-proxied traffic is accepted
+	// even when CF-Connecting-IP isn't propagated for some reason.
+	for _, s := range cloudflareCIDRs {
+		if _, cidr, err := net.ParseCIDR(s); err == nil {
+			ipAllowCIDRs = append(ipAllowCIDRs, cidr)
+			cfCIDRs = append(cfCIDRs, cidr)
+		}
+	}
+
+	raw := strings.TrimSpace(os.Getenv("ORCHESTRATOR_ALLOWED_IPS"))
+	if raw == "" {
+		return
+	}
+	for _, item := range strings.Split(raw, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if strings.Contains(item, "/") {
+			if _, cidr, err := net.ParseCIDR(item); err == nil {
+				ipAllowCIDRs = append(ipAllowCIDRs, cidr)
+			}
+			continue
+		}
+		if ip := net.ParseIP(item); ip != nil {
+			ipAllowSingles = append(ipAllowSingles, ip)
+		}
+	}
+}
+
+// isCloudflareIP reports whether ip belongs to a Cloudflare proxy range.
+func isCloudflareIP(ip net.IP) bool {
+	for _, cidr := range cfCIDRs {
+		if cidr.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// clientIP extracts the real client IP.
+// Priority:
+//  1. CF-Connecting-IP — trusted when the request comes from a Cloudflare
+//     edge IP or a private/loopback proxy (Traefik on docker internal net).
+//  2. X-Forwarded-For (leftmost).
+//  3. X-Real-IP.
+//  4. RemoteAddr.
+func clientIP(r *http.Request) net.IP {
+	// RemoteAddr first, to decide whether to trust CF-Connecting-IP.
+	remoteHost, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		remoteHost = r.RemoteAddr
+	}
+	remoteIP := net.ParseIP(remoteHost)
+
+	if cf := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cf != "" {
+		if ip := net.ParseIP(cf); ip != nil {
+			if remoteIP != nil && (isPrivateIP(remoteIP) || isCloudflareIP(remoteIP)) {
+				return ip
+			}
+		}
+	}
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if ip := net.ParseIP(p); ip != nil {
+				return ip
+			}
+		}
+	}
+	if xri := strings.TrimSpace(r.Header.Get("X-Real-IP")); xri != "" {
+		if ip := net.ParseIP(xri); ip != nil {
+			return ip
+		}
+	}
+	return remoteIP
+}
+
+// isPrivateIP returns true for loopback / link-local / RFC1918 / Docker-internal.
+// These are always allowed so cluster traffic and local admin calls keep working.
+func isPrivateIP(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return true
+	}
+	return ip.IsPrivate()
+}
+
+// ipAllowlistMiddleware enforces ORCHESTRATOR_ALLOWED_IPS. If the env is
+// unset, the middleware is a no-op. Internal/private IPs and requests with
+// a valid ORCHESTRATOR_API_TOKEN bearer (inter-node) are always allowed.
+func ipAllowlistMiddleware(next http.Handler) http.Handler {
+	ipAllowOnce.Do(parseAllowlist)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if len(ipAllowCIDRs) == 0 && len(ipAllowSingles) == 0 {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// /health always public so LBs/probes work.
+		if r.URL.Path == "/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// Inter-node requests authenticated by the shared API token pass through.
+		if tok := strings.TrimSpace(os.Getenv("ORCHESTRATOR_API_TOKEN")); tok != "" {
+			if r.Header.Get("Authorization") == "Bearer "+tok {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+
+		ip := clientIP(r)
+		if ip != nil {
+			if isPrivateIP(ip) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			for _, single := range ipAllowSingles {
+				if single.Equal(ip) {
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+			for _, cidr := range ipAllowCIDRs {
+				if cidr.Contains(ip) {
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+		}
+
+		ipStr := "unknown"
+		if ip != nil {
+			ipStr = ip.String()
+		}
+		log.Printf("[ip-allowlist] blocked request from %s to %s", ipStr, r.URL.Path)
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte("403 Forbidden — 이 IP(" + ipStr + ")는 접근 허용 목록에 없습니다."))
+	})
+}
 
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -301,7 +563,8 @@ func bearerTokenAuth(next http.Handler) http.Handler {
 		if token == "" || !strings.HasPrefix(path, "/v1/") ||
 			strings.HasPrefix(path, "/v1/cluster/") ||
 			strings.HasPrefix(path, "/v1/agent/") ||
-			strings.HasPrefix(path, "/v1/quickstart/") {
+			strings.HasPrefix(path, "/v1/quickstart/") ||
+			strings.HasPrefix(path, "/v1/auth/") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -343,6 +606,179 @@ func bearerTokenAuth(next http.Handler) http.Handler {
 			return
 		}
 		next.ServeHTTP(w, r)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Session auth: account-based auth with role gating
+// ---------------------------------------------------------------------------
+
+// sessionAuthMiddleware enforces login + role-based access for the dashboard APIs.
+//
+// Rules:
+//   - Static dashboard HTML (GET /, GET /dashboard), /health, /v1/auth/*,
+//     /v1/cluster/heartbeat, /v1/agent/* (worker→master), and /v1/registry/v2/*
+//     (Docker registry protocol) are always allowed.
+//   - All other /v1/* endpoints require a valid session.
+//   - Guest role is viewer-only: only GET (and OPTIONS) allowed. Any mutating
+//     method returns 403.
+func sessionAuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		method := r.Method
+
+		// Unauthenticated endpoints (health, dashboard HTML, login, inter-node).
+		if method == http.MethodOptions ||
+			path == "/" || path == "/dashboard" || path == "/health" ||
+			strings.HasPrefix(path, "/v1/auth/") ||
+			strings.HasPrefix(path, "/v1/cluster/heartbeat") ||
+			strings.HasPrefix(path, "/v1/agent/") ||
+			strings.HasPrefix(path, "/v1/registry/v2/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Inter-node calls authenticated via the shared bearer token bypass.
+		if tok := strings.TrimSpace(os.Getenv("ORCHESTRATOR_API_TOKEN")); tok != "" {
+			if r.Header.Get("Authorization") == "Bearer "+tok {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+
+		// Anything else (under /v1/) needs a session.
+		if !strings.HasPrefix(path, "/v1/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		sess := auth.SessionFromRequest(r)
+		isRead := method == http.MethodGet || method == http.MethodHead
+
+		// Unauthenticated visitors default to guest view — reads are allowed,
+		// writes require admin login.
+		if isRead {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Mutating methods: must have admin session.
+		if sess == nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{
+				"success": false,
+				"message": "관리자 로그인이 필요합니다",
+				"code":    "unauthenticated",
+			})
+			return
+		}
+		if sess.Role != auth.RoleAdmin {
+			writeJSON(w, http.StatusForbidden, map[string]any{
+				"success": false,
+				"message": "게스트 계정은 조회만 가능합니다",
+				"code":    "forbidden",
+				"role":    string(sess.Role),
+			})
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func handleLogin(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "Invalid request"})
+		return
+	}
+	body.Username = strings.TrimSpace(body.Username)
+	if body.Username == "" || body.Password == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "아이디와 비밀번호를 입력하세요"})
+		return
+	}
+	sess, err := auth.Login(body.Username, body.Password)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"success": false, "message": err.Error()})
+		return
+	}
+	secure := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+	auth.SetSessionCookie(w, sess.Token, secure)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":  true,
+		"username": sess.Username,
+		"role":     string(sess.Role),
+		"token":    sess.Token,
+	})
+}
+
+func handleLogout(w http.ResponseWriter, r *http.Request) {
+	if c, err := r.Cookie(auth.CookieName); err == nil {
+		auth.Logout(c.Value)
+	}
+	auth.ClearSessionCookie(w)
+	writeJSON(w, http.StatusOK, map[string]any{"success": true})
+}
+
+// handleChangePassword lets the logged-in user change their own password.
+// Both admin and guest can change their own; anonymous visitors cannot.
+func handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromRequest(r)
+	if sess == nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"success": false, "message": "로그인이 필요합니다"})
+		return
+	}
+	var body struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "Invalid request"})
+		return
+	}
+	if body.CurrentPassword == "" || body.NewPassword == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "현재/새 비밀번호를 입력하세요"})
+		return
+	}
+	if err := auth.ChangePassword(sess.Username, body.CurrentPassword, body.NewPassword); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": err.Error()})
+		return
+	}
+	// Invalidate all OTHER sessions for this user (keep the current one).
+	auth.InvalidateUserSessions(sess.Username)
+	// Re-create a fresh session for the current request.
+	newSess, err := auth.Login(sess.Username, body.NewPassword)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "비밀번호가 변경되었습니다. 다시 로그인해주세요"})
+		return
+	}
+	secure := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+	auth.SetSessionCookie(w, newSess.Token, secure)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":  true,
+		"message":  "비밀번호가 변경되었습니다",
+		"username": newSess.Username,
+		"role":     string(newSess.Role),
+	})
+}
+
+func handleAuthMe(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromRequest(r)
+	if sess == nil {
+		// Anonymous visitor — treated as guest (read-only).
+		writeJSON(w, http.StatusOK, map[string]any{
+			"authenticated": false,
+			"role":          string(auth.RoleGuest),
+			"anonymous":     true,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"authenticated": true,
+		"username":      sess.Username,
+		"role":          string(sess.Role),
 	})
 }
 
@@ -442,75 +878,57 @@ func handleSSEStream(w http.ResponseWriter, r *http.Request) {
 func buildSSEPayload() []byte {
 	payload := map[string]any{}
 
-	// Health
+	// Health (static, no I/O)
 	payload["health"] = map[string]any{
 		"status": "ok", "version": Version, "role": OrchestratorRole,
 	}
 
-	// System info
-	payload["system"] = monitoring.GetSystemInfo()
-	payload["system"].(map[string]any)["role"] = OrchestratorRole
+	// Fetch expensive data in parallel
+	var wg sync.WaitGroup
+	var systemInfo map[string]any
+	var services []map[string]any
+	var images []map[string]any
 
-	// Services
-	payload["services"] = getServicesData(false)
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		systemInfo = monitoring.GetSystemInfo()
+	}()
+	go func() {
+		defer wg.Done()
+		services = getServicesData(false)
+	}()
+	go func() {
+		defer wg.Done()
+		images = monitoring.ListImages()
+	}()
+	wg.Wait()
 
-	// Images
-	payload["images"] = monitoring.ListImages()
+	if systemInfo != nil {
+		systemInfo["role"] = OrchestratorRole
+	}
+	payload["system"] = systemInfo
+	payload["services"] = services
+	payload["images"] = images
 
-	// Cluster status
+	// Cluster data: read from in-memory state (cheap, no I/O).
+	// Use json.Marshal once for the whole payload at the end instead of
+	// marshal/unmarshal per struct.
 	if clusterState != nil {
-		status := clusterState.GetClusterStatus()
-		statusJSON, _ := json.Marshal(status)
-		var statusMap map[string]any
-		json.Unmarshal(statusJSON, &statusMap)
-		payload["cluster_status"] = statusMap
-
-		// Nodes
-		nodes := clusterState.ListNodes()
-		nodesData := make([]map[string]any, 0)
-		for _, n := range nodes {
-			nJSON, _ := json.Marshal(n)
-			var nMap map[string]any
-			json.Unmarshal(nJSON, &nMap)
-			nodesData = append(nodesData, nMap)
-		}
-		payload["nodes"] = nodesData
+		payload["cluster_status"] = clusterState.GetClusterStatus()
+		payload["nodes"] = clusterState.ListNodes()
 
 		// Placements (filter system)
-		placements := clusterState.GetPlacements("", "")
-		placementsData := make([]map[string]any, 0)
-		for _, p := range placements {
-			if systemServices[p.ServiceName] {
-				continue
+		allPlacements := clusterState.GetPlacements("", "")
+		filtered := make([]any, 0, len(allPlacements))
+		for i := range allPlacements {
+			if !systemServices[allPlacements[i].ServiceName] {
+				filtered = append(filtered, allPlacements[i])
 			}
-			pJSON, _ := json.Marshal(p)
-			var pMap map[string]any
-			json.Unmarshal(pJSON, &pMap)
-			placementsData = append(placementsData, pMap)
 		}
-		payload["placements"] = placementsData
-
-		// Alerts
-		alerts := clusterState.ListAlerts(true)
-		alertsData := make([]map[string]any, 0)
-		for _, a := range alerts {
-			aJSON, _ := json.Marshal(a)
-			var aMap map[string]any
-			json.Unmarshal(aJSON, &aMap)
-			alertsData = append(alertsData, aMap)
-		}
-		payload["alerts"] = alertsData
-
-		// Migrations
-		migrations := clusterState.ListMigrations(false)
-		migrationsData := make([]map[string]any, 0)
-		for _, m := range migrations {
-			mJSON, _ := json.Marshal(m)
-			var mMap map[string]any
-			json.Unmarshal(mJSON, &mMap)
-			migrationsData = append(migrationsData, mMap)
-		}
-		payload["migrations"] = migrationsData
+		payload["placements"] = filtered
+		payload["alerts"] = clusterState.ListAlerts(true)
+		payload["migrations"] = clusterState.ListMigrations(false)
 	}
 
 	result, _ := json.Marshal(payload)
@@ -675,7 +1093,10 @@ func handleQuickstartBlockchainStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var nodes []map[string]any
+	// Reuse a single http.Client for all RPC/admin calls in this request.
+	shortClient := &http.Client{Timeout: 3 * time.Second}
+
+	nodes := make([]map[string]any, 0, len(containers))
 	for _, c := range containers {
 		name := ""
 		if len(c.Names) > 0 {
@@ -687,24 +1108,19 @@ func handleQuickstartBlockchainStatus(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Try to get chain status via RPC
-		// Use container name on orch-internal network (port 9080 internal)
-		// Fallback to host-mapped port via 127.0.0.1
 		chainStatus := ""
 		if c.State == "running" {
 			channel := c.Labels["blockchain.channel"]
 			rpcURLs := []string{}
-			// Primary: container name via Docker network
 			if name != "" && channel != "" {
 				rpcURLs = append(rpcURLs, fmt.Sprintf("http://%s:9080/api/v3/%s", name, channel))
 			}
-			// Fallback: host-mapped port
 			for _, p := range c.Ports {
 				if p.PrivatePort == 9080 && p.PublicPort > 0 && channel != "" {
 					rpcURLs = append(rpcURLs, fmt.Sprintf("http://127.0.0.1:%d/api/v3/%s", p.PublicPort, channel))
 					break
 				}
 			}
-			shortClient := &http.Client{Timeout: 3 * time.Second}
 			for _, rpcURL := range rpcURLs {
 				req, _ := http.NewRequest("POST", rpcURL, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"icx_getLastBlock"}`))
 				req.Header.Set("Content-Type", "application/json")
@@ -738,8 +1154,7 @@ func handleQuickstartBlockchainStatus(w http.ResponseWriter, r *http.Request) {
 		endpoint := ""
 		if c.State == "running" && name != "" {
 			adminURL := fmt.Sprintf("http://%s:9080/admin/chain", name)
-			shortClient2 := &http.Client{Timeout: 3 * time.Second}
-			adminResp, adminErr := shortClient2.Get(adminURL)
+			adminResp, adminErr := shortClient.Get(adminURL)
 			if adminErr == nil {
 				var chains []map[string]any
 				json.NewDecoder(adminResp.Body).Decode(&chains)
@@ -1102,8 +1517,139 @@ func handleListContainers(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// registryCatalogCache caches the registry catalog set to avoid blocking image listing.
+var (
+	regCatalogMu      sync.RWMutex
+	regCatalogCache   map[string]bool
+	regCatalogExpires time.Time
+	regEndpointCache  string
+)
+
+func getCachedRegistryInfo() (string, map[string]bool) {
+	regCatalogMu.RLock()
+	if time.Now().Before(regCatalogExpires) {
+		ep, cat := regEndpointCache, regCatalogCache
+		regCatalogMu.RUnlock()
+		return ep, cat
+	}
+	regCatalogMu.RUnlock()
+
+	// Refresh in background to not block the caller on the first miss.
+	go refreshRegistryCatalog()
+	return "", nil
+}
+
+func refreshRegistryCatalog() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if !isRegistryRunning(ctx) {
+		regCatalogMu.Lock()
+		regEndpointCache = ""
+		regCatalogCache = nil
+		regCatalogExpires = time.Now().Add(15 * time.Second)
+		regCatalogMu.Unlock()
+		return
+	}
+
+	endpoint := ""
+	if info := getRegistryInfo(ctx); info != nil {
+		if ep, ok := info["endpoint"].(string); ok {
+			endpoint = ep
+		}
+	}
+	regURL := getRegistryInternalURL(ctx)
+	catalog := buildRegistryCatalogSet(regURL)
+
+	regCatalogMu.Lock()
+	regEndpointCache = endpoint
+	regCatalogCache = catalog
+	regCatalogExpires = time.Now().Add(15 * time.Second)
+	regCatalogMu.Unlock()
+}
+
 func handleListImages(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, monitoring.ListImages())
+	images := monitoring.ListImages()
+
+	// Use cached registry info instead of blocking on registry calls
+	endpoint, regSet := getCachedRegistryInfo()
+
+	for i, img := range images {
+		tags, _ := img["tags"].([]string)
+		repo, _ := img["repository"].(string)
+		tag, _ := img["tag"].(string)
+		if repo == "<none>" || repo == "" {
+			continue
+		}
+
+		if endpoint == "" {
+			images[i]["image"] = repo + ":" + tag
+			continue
+		}
+
+		var registryPath string
+		for _, t := range tags {
+			if strings.HasPrefix(t, "localhost:5000/") {
+				registryPath = strings.Replace(t, "localhost:5000", endpoint, 1)
+				break
+			}
+			if strings.HasPrefix(t, endpoint+"/") {
+				registryPath = t
+				break
+			}
+		}
+
+		if registryPath == "" && regSet != nil {
+			candidate := repo + ":" + tag
+			if regSet[candidate] {
+				registryPath = endpoint + "/" + candidate
+			}
+		}
+
+		if registryPath != "" {
+			images[i]["image"] = registryPath
+			images[i]["in_registry"] = true
+		} else {
+			images[i]["image"] = repo + ":" + tag
+			images[i]["in_registry"] = false
+		}
+	}
+
+	writeJSON(w, http.StatusOK, images)
+}
+
+// buildRegistryCatalogSet queries the registry and returns a set of "repo:tag" strings.
+func buildRegistryCatalogSet(regURL string) map[string]bool {
+	result := make(map[string]bool)
+	if regURL == "" {
+		return result
+	}
+	resp, err := http.Get(regURL + "/v2/_catalog")
+	if err != nil {
+		return result
+	}
+	defer resp.Body.Close()
+	var catalog struct {
+		Repositories []string `json:"repositories"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&catalog); err != nil {
+		return result
+	}
+	for _, repo := range catalog.Repositories {
+		tagsResp, err := http.Get(fmt.Sprintf("%s/v2/%s/tags/list", regURL, repo))
+		if err != nil {
+			continue
+		}
+		var tagList struct {
+			Tags []string `json:"tags"`
+		}
+		json.NewDecoder(tagsResp.Body).Decode(&tagList)
+		tagsResp.Body.Close()
+		for _, t := range tagList.Tags {
+			result[repo+":"+t] = true
+		}
+	}
+	return result
 }
 
 // ---------------------------------------------------------------------------
@@ -1346,6 +1892,10 @@ func handleRunContainer(w http.ResponseWriter, r *http.Request) {
 		VolumeMode:         req.VolumeMode,
 		AutoPull:           true,
 	})
+	if ok {
+		monitoring.InvalidateCache("containers_all")
+		monitoring.InvalidateCache("containers_running")
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"success": ok, "message": msg, "details": details})
 }
 
@@ -1361,6 +1911,10 @@ func handleStopContainer(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	ok, msg, _ := runtime.StopContainerByID(ctx, cli, containerID)
+	if ok {
+		monitoring.InvalidateCache("containers_all")
+		monitoring.InvalidateCache("containers_running")
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"success": ok, "message": msg})
 }
 
@@ -1516,6 +2070,9 @@ func handlePullImage(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	ok, msg := runtime.PullImage(ctx, cli, image)
+	if ok {
+		monitoring.InvalidateCache("images")
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"success": ok, "message": msg})
 }
 
@@ -2916,12 +3473,17 @@ func clusterHealthLoop() {
 	}
 }
 
+// masterAgent is reused across heartbeats to avoid allocation overhead.
+var masterAgent *agent.WorkerAgent
+
 func masterSelfHeartbeat() {
 	if clusterState == nil {
 		return
 	}
-	ag := agent.NewWorkerAgent()
-	resourcesMap := ag.GetNodeResources()
+	if masterAgent == nil {
+		masterAgent = agent.NewWorkerAgent()
+	}
+	resourcesMap := masterAgent.GetNodeResources()
 
 	// Convert map to NodeResources struct.
 	resJSON, _ := json.Marshal(resourcesMap)
@@ -2929,8 +3491,8 @@ func masterSelfHeartbeat() {
 	json.Unmarshal(resJSON, &resources)
 
 	// Get managed containers.
-	containersRaw := ag.GetManagedContainers()
-	var containers []models.ContainerPlacement
+	containersRaw := masterAgent.GetManagedContainers()
+	containers := make([]models.ContainerPlacement, 0, len(containersRaw))
 	for _, c := range containersRaw {
 		cJSON, _ := json.Marshal(c)
 		var cp models.ContainerPlacement

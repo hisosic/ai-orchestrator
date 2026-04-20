@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -71,18 +73,60 @@ func handleServiceEndpoints(w http.ResponseWriter, r *http.Request) {
 
 	all := append(localEndpoints, clusterEndpoints...)
 
-	// Health-check all endpoints concurrently
+	// Determine the user-facing base URL (scheme + host[:port]).
+	// Priority:
+	//   1. The URL the client used to reach us — derived from headers set by
+	//      the reverse proxy (X-Forwarded-Proto / X-Forwarded-Host) or the
+	//      Host header itself. This lets endpoint URLs follow whatever
+	//      domain/port the user accessed (https://itda.24x365.online,
+	//      http://20.20.6.248, http://localhost:8000, etc.).
+	//   2. ORCHESTRATOR_PUBLIC_URL env (full URL) — fallback.
+	//   3. ORCHESTRATOR_PUBLIC_HOST env — fallback.
+	//   4. master node IP.
+	pubScheme, pubHost, forceRewrite := detectRequestBase(r)
+	if pubHost == "" {
+		pubScheme, pubHost, forceRewrite = parsePublicURL()
+	}
+	if pubHost == "" {
+		pubHost = strings.TrimSpace(os.Getenv("ORCHESTRATOR_PUBLIC_HOST"))
+	}
+	if pubHost == "" {
+		pubHost = getMasterIP()
+	}
+	if pubHost == "" {
+		pubHost = detectHostIPOnly()
+	}
+	if pubScheme == "" {
+		pubScheme = "http"
+	}
+
+	// Ensure every service has a user-facing endpoint on the public base URL.
+	all = ensurePublicEndpoints(all, pubScheme, pubHost, forceRewrite)
+
+	// Health-check endpoints concurrently.
+	// Skip the probe for external public URLs (https domain) — internal
+	// containers can't reach them by design. Mark them reachable so the
+	// UI doesn't show false negatives.
+	externalBase := ""
+	if forceRewrite {
+		externalBase = pubHost
+	}
 	var wg sync.WaitGroup
 	for i := range all {
 		wg.Add(1)
 		go func(ep *ServiceEndpoint) {
 			defer wg.Done()
+			if externalBase != "" && strings.Contains(ep.URL, externalBase) {
+				ep.Reachable = true
+				ep.ResponseMs = 0
+				return
+			}
 			ep.Reachable, ep.ResponseMs = checkEndpoint(ep.URL)
 		}(&all[i])
 	}
 	wg.Wait()
 
-	// Deduplicate by URL and group by service
+	// Deduplicate by URL and group by service; sort so user-facing URLs come first.
 	seen := make(map[string]bool)
 	grouped := make(map[string][]ServiceEndpoint)
 	for _, ep := range all {
@@ -92,10 +136,182 @@ func handleServiceEndpoints(w http.ResponseWriter, r *http.Request) {
 		seen[ep.URL] = true
 		grouped[ep.Service] = append(grouped[ep.Service], ep)
 	}
+	for svc, eps := range grouped {
+		sort.SliceStable(eps, func(i, j int) bool {
+			pi := strings.Contains(eps[i].URL, pubHost)
+			pj := strings.Contains(eps[j].URL, pubHost)
+			if pi != pj {
+				return pi
+			}
+			return eps[i].Reachable && !eps[j].Reachable
+		})
+		grouped[svc] = eps
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"endpoints": grouped,
+		"endpoints":  grouped,
+		"public_url": strings.TrimRight(fmt.Sprintf("%s://%s", pubScheme, pubHost), "/"),
 	})
+}
+
+// detectRequestBase extracts the user-facing scheme + host from the incoming request.
+//
+// Scheme detection (Traefik and some proxies overwrite X-Forwarded-Proto to the
+// entrypoint's scheme, losing the original TLS info). Priority:
+//  1. X-Forwarded-Proto header (if set)
+//  2. r.TLS (direct TLS connection)
+//  3. Heuristic: Host is a public FQDN (has a dot, not an IP) → assume "https".
+//     Production domains are almost always served over HTTPS; this avoids
+//     returning http:// URLs that browsers then block as mixed content.
+//  4. Default: "http"
+//
+// Host is container-internal IP (172.x) or loopback → returns empty so callers
+// fall back to env/master IP.
+func detectRequestBase(r *http.Request) (scheme, host string, ok bool) {
+	host = strings.TrimSpace(r.Header.Get("X-Forwarded-Host"))
+	if host == "" {
+		host = r.Host
+	}
+	if host == "" {
+		return "", "", false
+	}
+	if i := strings.Index(host, ","); i >= 0 {
+		host = strings.TrimSpace(host[:i])
+	}
+
+	hostOnly := host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		hostOnly = h
+	}
+	if hostOnly == "localhost" || hostOnly == "127.0.0.1" || hostOnly == "::1" {
+		return "", "", false
+	}
+	if isDockerInternalIP(hostOnly) {
+		return "", "", false
+	}
+
+	// When Host is a public domain, assume https. Traefik and similar proxies
+	// often rewrite X-Forwarded-Proto to their entrypoint scheme (http on :80),
+	// which would cause the orchestrator to emit http:// URLs that browsers
+	// block as mixed content on an HTTPS dashboard. Production domains are
+	// virtually always served over HTTPS, so default to that.
+	if isPublicFQDN(hostOnly) {
+		scheme = "https"
+	} else {
+		scheme = strings.TrimSpace(r.Header.Get("X-Forwarded-Proto"))
+		if scheme == "" {
+			if r.TLS != nil {
+				scheme = "https"
+			} else {
+				scheme = "http"
+			}
+		}
+	}
+
+	return scheme, host, true
+}
+
+// isPublicFQDN returns true if host is a domain name (contains a dot and is not an IP).
+func isPublicFQDN(host string) bool {
+	if host == "" || !strings.Contains(host, ".") {
+		return false
+	}
+	if net.ParseIP(host) != nil {
+		return false
+	}
+	return true
+}
+
+// parsePublicURL reads ORCHESTRATOR_PUBLIC_URL and splits it into scheme and host[:port].
+// When set, forceRewrite=true signals that ALL endpoint URLs should be rewritten under this base.
+func parsePublicURL() (scheme, host string, forceRewrite bool) {
+	raw := strings.TrimSpace(os.Getenv("ORCHESTRATOR_PUBLIC_URL"))
+	if raw == "" {
+		return "", "", false
+	}
+	raw = strings.TrimRight(raw, "/")
+	if u, err := url.Parse(raw); err == nil && u.Host != "" {
+		s := u.Scheme
+		if s == "" {
+			s = "http"
+		}
+		return s, u.Host, true
+	}
+	// Bare hostname without scheme — treat as http host.
+	return "http", raw, true
+}
+
+// ensurePublicEndpoints makes sure every service has a user-facing endpoint
+// served via the public base URL (scheme://host).
+//
+// Rules:
+//   - If forceRewrite is true (request uses an external URL or PUBLIC_URL env
+//     is set): REPLACE per-node entries with a single primary public URL.
+//     This avoids mixed-content issues (HTTPS page + HTTP alt URL) and
+//     duplicate cards in the dashboard.
+//   - Otherwise: add a single Traefik path URL via the public host as the
+//     primary URL, keeping per-node direct URLs as alternates for debugging.
+func ensurePublicEndpoints(all []ServiceEndpoint, pubScheme, pubHost string, forceRewrite bool) []ServiceEndpoint {
+	if pubHost == "" {
+		return all
+	}
+
+	bySvc := map[string][]ServiceEndpoint{}
+	for _, ep := range all {
+		bySvc[ep.Service] = append(bySvc[ep.Service], ep)
+	}
+
+	// forceRewrite=true: one primary URL per service (hides internal alternates).
+	if forceRewrite {
+		out := make([]ServiceEndpoint, 0, len(bySvc))
+		for svc, eps := range bySvc {
+			if svc == "" {
+				continue
+			}
+			if systemServices[svc] {
+				out = append(out, eps...)
+				continue
+			}
+			publicURL := fmt.Sprintf("%s://%s/%s/", pubScheme, pubHost, svc)
+			out = append(out, ServiceEndpoint{
+				Service:       svc,
+				HostPort:      "80",
+				ContainerPort: "80",
+				NodeName:      eps[0].NodeName,
+				NodeIP:        pubHost,
+				URL:           publicURL,
+			})
+		}
+		return out
+	}
+
+	// forceRewrite=false: append a primary public URL if missing, keep alternates.
+	out := make([]ServiceEndpoint, 0, len(all)+len(bySvc))
+	out = append(out, all...)
+	for svc, eps := range bySvc {
+		if svc == "" || systemServices[svc] {
+			continue
+		}
+		hasPublic := false
+		for _, ep := range eps {
+			if strings.Contains(ep.URL, pubHost) && strings.HasPrefix(ep.URL, pubScheme+"://") {
+				hasPublic = true
+				break
+			}
+		}
+		if hasPublic {
+			continue
+		}
+		out = append(out, ServiceEndpoint{
+			Service:       svc,
+			HostPort:      "80",
+			ContainerPort: "80",
+			NodeName:      eps[0].NodeName,
+			NodeIP:        pubHost,
+			URL:           fmt.Sprintf("%s://%s/%s/", pubScheme, pubHost, svc),
+		})
+	}
+	return out
 }
 
 // getLocalEndpoints inspects Docker containers on this node for port mappings.

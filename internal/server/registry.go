@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
@@ -268,16 +269,45 @@ func handleRegistryCatalog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fetch tags for each repository
+	// Concurrently fetch tags + per-tag metadata (creation time, size) for
+	// each repository. Creation time lives in the image config blob; size
+	// is the sum of compressed layer sizes from the manifest.
+	type tagInfo struct {
+		Tag     string  `json:"tag"`
+		Created string  `json:"created,omitempty"` // RFC3339
+		SizeMB  float64 `json:"size_mb,omitempty"`
+	}
 	type repoInfo struct {
-		Name string   `json:"name"`
-		Tags []string `json:"tags"`
+		Name     string    `json:"name"`
+		Tags     []string  `json:"tags"` // kept for backwards-compat
+		TagInfos []tagInfo `json:"tag_infos"`
 	}
-	var repos []repoInfo
-	for _, name := range catalog.Repositories {
-		tags := fetchTags(registryURL, name)
-		repos = append(repos, repoInfo{Name: name, Tags: tags})
+	repos := make([]repoInfo, len(catalog.Repositories))
+	var wg sync.WaitGroup
+	for i, name := range catalog.Repositories {
+		wg.Add(1)
+		go func(idx int, repoName string) {
+			defer wg.Done()
+			tags := fetchTags(registryURL, repoName)
+			tagInfos := make([]tagInfo, len(tags))
+			var innerWG sync.WaitGroup
+			for j, t := range tags {
+				innerWG.Add(1)
+				go func(ti int, tag string) {
+					defer innerWG.Done()
+					meta := fetchTagMeta(registryURL, repoName, tag)
+					tagInfos[ti] = tagInfo{
+						Tag:     tag,
+						Created: meta.Created,
+						SizeMB:  meta.SizeMB,
+					}
+				}(j, t)
+			}
+			innerWG.Wait()
+			repos[idx] = repoInfo{Name: repoName, Tags: tags, TagInfos: tagInfos}
+		}(i, name)
 	}
+	wg.Wait()
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success":      true,
@@ -313,6 +343,92 @@ func handleRegistryTags(w http.ResponseWriter, r *http.Request) {
 		"success": true,
 		"name":    name,
 		"tags":    tags,
+	})
+}
+
+// ---------------------------------------------------------------------------
+// DELETE /v1/registry/repo/{name}?tag=X — delete a single tag (manifest) from registry.
+// Requires REGISTRY_STORAGE_DELETE_ENABLED=true on the registry (set by
+// handleRegistryEnable). A garbage collection pass is needed to free storage,
+// but the tag immediately disappears from catalog after this.
+// ---------------------------------------------------------------------------
+
+func handleRegistryDeleteTag(w http.ResponseWriter, r *http.Request) {
+	registryURL := getRegistryInternalURL(r.Context())
+	if registryURL == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"success": false, "message": "Registry가 실행 중이 아닙니다",
+		})
+		return
+	}
+	name := strings.TrimPrefix(r.URL.Path, "/v1/registry/repo/")
+	name = strings.TrimSuffix(name, "/")
+	tag := strings.TrimSpace(r.URL.Query().Get("tag"))
+	if name == "" || tag == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"success": false, "message": "repo 이름과 tag 쿼리 파라미터가 필요합니다",
+		})
+		return
+	}
+
+	headReq, _ := http.NewRequest(http.MethodHead,
+		fmt.Sprintf("%s/v2/%s/manifests/%s", registryURL, name, tag), nil)
+	// Accept all current manifest schemas. If we only request v2, the registry
+	// returns 404 for OCI image indexes (multi-arch builds, buildx) because it
+	// can't satisfy the Accept constraint — even though the tag exists.
+	headReq.Header.Set("Accept", strings.Join([]string{
+		"application/vnd.docker.distribution.manifest.v2+json",
+		"application/vnd.docker.distribution.manifest.list.v2+json",
+		"application/vnd.oci.image.manifest.v1+json",
+		"application/vnd.oci.image.index.v1+json",
+	}, ", "))
+	headResp, err := http.DefaultClient.Do(headReq)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{
+			"success": false, "message": "Registry HEAD 실패: " + err.Error(),
+		})
+		return
+	}
+	defer headResp.Body.Close()
+	if headResp.StatusCode == http.StatusNotFound {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"success": false, "message": "해당 태그를 찾을 수 없습니다",
+		})
+		return
+	}
+	digest := headResp.Header.Get("Docker-Content-Digest")
+	if digest == "" {
+		writeJSON(w, http.StatusBadGateway, map[string]any{
+			"success": false, "message": "manifest digest를 가져올 수 없습니다",
+		})
+		return
+	}
+
+	delReq, _ := http.NewRequest(http.MethodDelete,
+		fmt.Sprintf("%s/v2/%s/manifests/%s", registryURL, name, digest), nil)
+	delResp, err := http.DefaultClient.Do(delReq)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{
+			"success": false, "message": "Registry DELETE 실패: " + err.Error(),
+		})
+		return
+	}
+	defer delResp.Body.Close()
+
+	if delResp.StatusCode != http.StatusAccepted && delResp.StatusCode != http.StatusOK {
+		writeJSON(w, delResp.StatusCode, map[string]any{
+			"success": false,
+			"message": fmt.Sprintf("Registry가 %d 응답 (DELETE 미활성화 가능성)", delResp.StatusCode),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"message": fmt.Sprintf("%s:%s 삭제됨", name, tag),
+		"repo":    name,
+		"tag":     tag,
+		"digest":  digest,
 	})
 }
 
@@ -598,6 +714,92 @@ func getRegistryInternalURL(ctx context.Context) string {
 		return fmt.Sprintf("http://%s:%d", hostIP, registryPort)
 	}
 	return fmt.Sprintf("http://localhost:%d", registryPort)
+}
+
+// tagMeta bundles the data we extract per-tag from the registry.
+type tagMeta struct {
+	Created string // RFC3339; "" if unknown
+	SizeMB  float64 // rounded to 2 decimals; 0 if unknown
+}
+
+// fetchTagMeta returns creation timestamp + total image size (sum of
+// compressed layer sizes) for the given repo:tag in the registry.
+// Flow: GET manifest → parse config digest + sum layer sizes → GET config blob
+// → parse `created`. Supports Docker v2 and OCI image manifests, including
+// multi-arch indexes (first platform's manifest is used).
+func fetchTagMeta(registryURL, repo, tag string) tagMeta {
+	manifestURL := fmt.Sprintf("%s/v2/%s/manifests/%s", registryURL, repo, tag)
+	req, err := http.NewRequest(http.MethodGet, manifestURL, nil)
+	if err != nil {
+		return tagMeta{}
+	}
+	// Accept all current manifest schemas. Without this, the registry may
+	// return 404 for OCI indexes or downgrade to schema 1.
+	req.Header.Set("Accept", strings.Join([]string{
+		"application/vnd.docker.distribution.manifest.v2+json",
+		"application/vnd.docker.distribution.manifest.list.v2+json",
+		"application/vnd.oci.image.manifest.v1+json",
+		"application/vnd.oci.image.index.v1+json",
+	}, ", "))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return tagMeta{}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return tagMeta{}
+	}
+	var m struct {
+		MediaType string `json:"mediaType"`
+		Config    struct {
+			Digest string `json:"digest"`
+		} `json:"config"`
+		Layers []struct {
+			Size int64 `json:"size"`
+		} `json:"layers"`
+		Manifests []struct {
+			Digest    string `json:"digest"`
+			MediaType string `json:"mediaType"`
+		} `json:"manifests"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
+		return tagMeta{}
+	}
+	// Multi-arch index: recurse into the first platform's manifest by digest.
+	if m.Config.Digest == "" && len(m.Manifests) > 0 {
+		return fetchTagMeta(registryURL, repo, m.Manifests[0].Digest)
+	}
+	if m.Config.Digest == "" {
+		return tagMeta{}
+	}
+
+	var totalBytes int64
+	for _, l := range m.Layers {
+		totalBytes += l.Size
+	}
+	meta := tagMeta{
+		SizeMB: float64(totalBytes) / (1024 * 1024),
+	}
+	// Round to 2 decimals.
+	meta.SizeMB = float64(int(meta.SizeMB*100+0.5)) / 100
+
+	// Fetch the config blob to read the `created` field.
+	blobResp, err := http.Get(fmt.Sprintf("%s/v2/%s/blobs/%s", registryURL, repo, m.Config.Digest))
+	if err != nil {
+		return meta
+	}
+	defer blobResp.Body.Close()
+	if blobResp.StatusCode != http.StatusOK {
+		return meta
+	}
+	var cfg struct {
+		Created string `json:"created"`
+	}
+	if err := json.NewDecoder(blobResp.Body).Decode(&cfg); err != nil {
+		return meta
+	}
+	meta.Created = strings.TrimSpace(cfg.Created)
+	return meta
 }
 
 func fetchTags(registryURL, repoName string) []string {

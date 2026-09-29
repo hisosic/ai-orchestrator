@@ -4,11 +4,24 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AI Container Orchestrator — Dashboard</title>
+  <!-- Apply the saved theme before first paint to avoid a flash of the
+       wrong palette. "system" leaves data-theme unset so CSS follows the OS. -->
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('dashboardTheme');
+        if (t === 'light' || t === 'dark') {
+          document.documentElement.setAttribute('data-theme', t);
+        }
+      } catch (e) {}
+    })();
+  </script>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚙</text></svg>">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@400;600;700&display=swap" rel="stylesheet">
   <style>
+    /* Dark palette is the default (also used when system preference is dark). */
     :root {
       --bg: #0d1117;
       --surface: #161b22;
@@ -19,7 +32,48 @@
       --success: #3fb950;
       --warn: #d29922;
       --danger: #f85149;
+      --panel-title-bg: rgba(255,255,255,0.03);
       --radius: 8px;
+    }
+    /* Follow the OS when the user hasn't explicitly forced dark. */
+    @media (prefers-color-scheme: light) {
+      :root:not([data-theme="dark"]) {
+        --bg: #ffffff;
+        --surface: #f6f8fa;
+        --border: #d0d7de;
+        --text: #1f2328;
+        --text-muted: #656d76;
+        --accent: #0969da;
+        --success: #1a7f37;
+        --warn: #9a6700;
+        --danger: #cf222e;
+        --panel-title-bg: rgba(0,0,0,0.03);
+      }
+    }
+    /* Explicit user choice always wins over the system preference. */
+    [data-theme="light"] {
+      --bg: #ffffff;
+      --surface: #f6f8fa;
+      --border: #d0d7de;
+      --text: #1f2328;
+      --text-muted: #656d76;
+      --accent: #0969da;
+      --success: #1a7f37;
+      --warn: #9a6700;
+      --danger: #cf222e;
+      --panel-title-bg: rgba(0,0,0,0.03);
+    }
+    [data-theme="dark"] {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --text-muted: #8b949e;
+      --accent: #58a6ff;
+      --success: #3fb950;
+      --warn: #d29922;
+      --danger: #f85149;
+      --panel-title-bg: rgba(255,255,255,0.03);
     }
     * { box-sizing: border-box; }
     body { margin: 0; background: var(--bg); color: var(--text); font-family: 'Outfit', sans-serif; font-size: 14px; line-height: 1.5; min-height: 100vh; }
@@ -42,7 +96,7 @@
     .btn-outline:hover { border-color: var(--accent); color: var(--accent); }
     .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
     .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
-    .panel-title { padding: 0.75rem 1rem; font-weight: 600; border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.03); }
+    .panel-title { padding: 0.75rem 1rem; font-weight: 600; border-bottom: 1px solid var(--border); background: var(--panel-title-bg); }
     .panel-body { padding: 1rem; overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
     th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
@@ -472,7 +526,7 @@
         <button type="button" onclick="hideLoginOverlay()" style="position:absolute;top:0.5rem;right:0.7rem;background:none;border:none;color:var(--text-muted);font-size:1.3rem;cursor:pointer;">&times;</button>
         <h2 style="margin:0 0 0.5rem 0;font-size:1.2rem;">관리자 로그인</h2>
         <p style="margin:0 0 1rem 0;color:var(--text-muted);font-size:0.85rem;">로그인하지 않아도 조회는 가능합니다</p>
-        <form id="loginForm" onsubmit="return doLogin(event)">
+        <form id="loginForm" action="javascript:void(0);" onsubmit="event.preventDefault(); if(typeof doLogin==='function') doLogin(event); return false;">
           <div style="margin-bottom:0.75rem;">
             <label style="display:block;color:var(--text-muted);font-size:0.8rem;margin-bottom:0.25rem;">아이디</label>
             <input type="text" id="loginUsername" autocomplete="username" required
@@ -486,6 +540,13 @@
           <div id="loginError" style="color:var(--danger);font-size:0.8rem;margin-bottom:0.5rem;min-height:1.2em;"></div>
           <button type="submit" class="btn" style="width:100%;">로그인</button>
         </form>
+        <div id="googleLoginWrap" style="display:none;margin-top:0.75rem;">
+          <div style="display:flex;align-items:center;gap:0.5rem;color:var(--text-muted);font-size:0.78rem;margin:0.5rem 0;"><span style="flex:1;height:1px;background:var(--border);"></span>또는<span style="flex:1;height:1px;background:var(--border);"></span></div>
+          <a href="/v1/auth/google/login?redirect=/admin" class="btn btn-outline" style="width:100%;display:flex;align-items:center;justify-content:center;gap:0.5rem;text-decoration:none;box-sizing:border-box;">
+            <svg width="16" height="16" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9 3.6l6.7-6.7C35.6 2.6 30.2 0 24 0 14.6 0 6.4 5.4 2.6 13.2l7.8 6.1C12.2 13.6 17.6 9.5 24 9.5z"/><path fill="#4285F4" d="M46.1 24.6c0-1.6-.1-3.1-.4-4.6H24v9.1h12.4c-.5 2.9-2.1 5.3-4.6 7l7.1 5.5c4.2-3.9 6.6-9.6 6.6-16.5z"/><path fill="#FBBC05" d="M10.4 28.7c-.5-1.4-.8-2.9-.8-4.7s.3-3.3.8-4.7l-7.8-6.1C1 16.3 0 20 0 24s1 7.7 2.6 10.8l7.8-6.1z"/><path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.1-5.5c-2 1.3-4.5 2.1-8.8 2.1-6.4 0-11.8-4.1-13.7-9.8l-7.8 6.1C6.4 42.6 14.6 48 24 48z"/></svg>
+            Google로 로그인
+          </a>
+        </div>
         <div style="margin-top:1rem;color:var(--text-muted);font-size:0.75rem;">
           기본 계정: <code>admin</code> / <code>admin</code> (관리자) · <code>guest</code> / <code>guest</code> (조회 전용)
         </div>
@@ -512,13 +573,135 @@
           <label style="cursor:pointer;" onclick="toggleLive()"><span id="liveLabel">실시간</span></label>
         </div>
         <span class="last-updated" id="lastUpdated">—</span>
+        <label class="refresh-control" style="gap:0.3rem;" title="화면 테마">
+          <span style="color:var(--text-muted);font-size:0.85rem;">테마</span>
+          <select id="themeSelect" onchange="setTheme(this.value)">
+            <option value="system">시스템</option>
+            <option value="light">라이트</option>
+            <option value="dark">다크</option>
+          </select>
+        </label>
         <button type="button" class="btn" id="btnRefresh">새로고침</button>
         <span id="userBadge" style="display:none;font-size:0.8rem;padding:0.25rem 0.6rem;border-radius:var(--radius);background:rgba(88,166,255,0.15);color:var(--accent);font-weight:600;"></span>
         <button type="button" class="btn btn-sm btn-outline" id="btnLogin" style="display:none;" onclick="showLoginOverlay()">로그인</button>
         <button type="button" class="btn btn-sm btn-outline" id="btnChangePw" style="display:none;" onclick="showChangePwModal()">비밀번호 변경</button>
+        <button type="button" class="btn btn-sm btn-outline" id="btnMySecrets" style="display:none;" onclick="showMySecretsModal()">🔑 내 시크릿</button>
+        <button type="button" class="btn btn-sm btn-outline" id="btnUserMgmt" style="display:none;" onclick="showUserMgmtModal()">사용자 관리</button>
         <button type="button" class="btn btn-sm btn-outline" id="btnLogout" style="display:none;" onclick="doLogout()">로그아웃</button>
       </div>
     </header>
+
+    <!-- Service Update Modal — choose target image/tag -->
+    <div id="updateSvcOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:9999;align-items:center;justify-content:center;" onclick="if(event.target===this) hideUpdateSvcModal()">
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:2rem;width:480px;max-width:90%;position:relative;">
+        <button type="button" onclick="hideUpdateSvcModal()" style="position:absolute;top:0.5rem;right:0.7rem;background:none;border:none;color:var(--text-muted);font-size:1.3rem;cursor:pointer;">&times;</button>
+        <h2 style="margin:0 0 0.5rem 0;font-size:1.2rem;">서비스 업데이트</h2>
+        <p style="margin:0 0 0.75rem 0;font-size:0.85rem;"><span style="color:var(--text-muted);">서비스:</span> <strong id="usvcName">-</strong></p>
+        <p style="margin:0 0 1rem 0;font-size:0.82rem;color:var(--text-muted);font-family:'JetBrains Mono',monospace;">현재 이미지: <span id="usvcCurrent">-</span></p>
+        <form id="updateSvcForm">
+          <div style="margin-bottom:0.75rem;">
+            <label style="display:block;color:var(--text-muted);font-size:0.8rem;margin-bottom:0.25rem;">태그 선택 (또는 직접 입력)</label>
+            <div style="display:flex;gap:0.5rem;">
+              <select id="usvcTagSelect" style="flex:1;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.5rem;border-radius:var(--radius);font-family:'JetBrains Mono',monospace;font-size:0.85rem;">
+                <option value="">-- 현재 태그 유지 (재pull만) --</option>
+              </select>
+              <button type="button" class="btn btn-sm btn-outline" id="usvcTagRefresh" title="태그 목록 새로고침">🔄</button>
+            </div>
+          </div>
+          <div style="margin-bottom:0.75rem;">
+            <label style="display:block;color:var(--text-muted);font-size:0.8rem;margin-bottom:0.25rem;">또는 이미지 전체 경로</label>
+            <input type="text" id="usvcImageOverride" placeholder="예: nginx:1.25-alpine 또는 20.20.6.248:5000/app:v2" autocomplete="off"
+              style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.5rem 0.7rem;border-radius:var(--radius);font-family:'JetBrains Mono',monospace;font-size:0.82rem;">
+          </div>
+          <div style="display:flex;gap:0.5rem;margin-bottom:0.75rem;">
+            <div style="flex:1;"><label style="display:block;color:var(--text-muted);font-size:0.8rem;margin-bottom:0.25rem;">메모리 제한 (선택)</label>
+              <input type="text" id="usvcMemory" placeholder="예: 512m, 1g" autocomplete="off" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.5rem 0.7rem;border-radius:var(--radius);font-size:0.82rem;"></div>
+            <div style="flex:1;"><label style="display:block;color:var(--text-muted);font-size:0.8rem;margin-bottom:0.25rem;">CPU 제한 (선택)</label>
+              <input type="text" id="usvcCpu" placeholder="예: 0.5, 2" autocomplete="off" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.5rem 0.7rem;border-radius:var(--radius);font-size:0.82rem;"></div>
+          </div>
+          <div id="usvcMsg" style="font-size:0.82rem;margin-bottom:0.5rem;min-height:1.2em;"></div>
+          <button type="submit" class="btn" style="width:100%;background:var(--warn);color:#000;">업데이트</button>
+        </form>
+      </div>
+    </div>
+
+    <!-- Service Logs Modal -->
+    <div id="svcLogsOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:9999;align-items:center;justify-content:center;" onclick="if(event.target===this) hideSvcLogs()">
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:1.5rem;width:860px;max-width:94%;position:relative;">
+        <button type="button" onclick="hideSvcLogs()" style="position:absolute;top:0.5rem;right:0.7rem;background:none;border:none;color:var(--text-muted);font-size:1.3rem;cursor:pointer;">&times;</button>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.6rem;gap:1rem;">
+          <h2 style="margin:0;font-size:1.1rem;">📜 로그 — <span id="svcLogsName" style="font-family:'JetBrains Mono',monospace;"></span></h2>
+          <span>
+            <select id="svcLogsTail" onchange="loadSvcLogs()" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.25rem;border-radius:var(--radius);font-size:0.8rem;"><option value="100">100줄</option><option value="200" selected>200줄</option><option value="500">500줄</option></select>
+            <button type="button" class="btn btn-sm btn-outline" onclick="loadSvcLogs()">새로고침</button>
+          </span>
+        </div>
+        <pre id="svcLogsBody" style="background:#0b0e14;color:#cdd6f4;font-size:0.75rem;padding:0.7rem;border-radius:6px;max-height:60vh;overflow:auto;white-space:pre-wrap;word-break:break-all;margin:0;"></pre>
+      </div>
+    </div>
+
+    <!-- Quick Run Modal (called from image list 기동 button) -->
+    <div id="quickRunOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:9999;align-items:center;justify-content:center;" onclick="if(event.target===this) hideQuickRunModal()">
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:2rem;width:420px;max-width:90%;position:relative;">
+        <button type="button" onclick="hideQuickRunModal()" style="position:absolute;top:0.5rem;right:0.7rem;background:none;border:none;color:var(--text-muted);font-size:1.3rem;cursor:pointer;">&times;</button>
+        <h2 style="margin:0 0 0.5rem 0;font-size:1.2rem;">이미지 바로 기동</h2>
+        <p style="margin:0 0 1rem 0;color:var(--text-muted);font-size:0.85rem;" id="qrModalImage">—</p>
+        <form id="quickRunForm">
+          <div style="margin-bottom:0.75rem;">
+            <label style="display:block;color:var(--text-muted);font-size:0.8rem;margin-bottom:0.25rem;">서비스명</label>
+            <input type="text" id="qrServiceName" required
+              style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.5rem 0.7rem;border-radius:var(--radius);font-family:'JetBrains Mono',monospace;">
+          </div>
+          <div style="display:flex;gap:0.5rem;margin-bottom:0.75rem;">
+            <div style="flex:1;">
+              <label style="display:block;color:var(--text-muted);font-size:0.8rem;margin-bottom:0.25rem;">복제 수</label>
+              <input type="number" id="qrReplicas" value="1" min="1" max="20"
+                style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.5rem 0.7rem;border-radius:var(--radius);font-family:inherit;">
+            </div>
+            <div style="flex:1.5;">
+              <label style="display:block;color:var(--text-muted);font-size:0.8rem;margin-bottom:0.25rem;">배치 전략</label>
+              <select id="qrStrategy" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.5rem 0.7rem;border-radius:var(--radius);font-family:inherit;">
+                <option value="spread">spread (노드 분산)</option>
+                <option value="binpack">binpack (한 곳 집중)</option>
+                <option value="least-loaded">least-loaded (부하 낮은 곳)</option>
+              </select>
+            </div>
+          </div>
+          <div style="margin-bottom:0.75rem;">
+            <label style="display:block;color:var(--text-muted);font-size:0.8rem;margin-bottom:0.25rem;">포트 매핑 (옵션, 예: 8080:80)</label>
+            <input type="text" id="qrPorts" placeholder="생략 시 Traefik 경로로 노출" autocomplete="off"
+              style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.5rem 0.7rem;border-radius:var(--radius);font-family:'JetBrains Mono',monospace;">
+          </div>
+          <div style="display:flex;gap:0.5rem;margin-bottom:0.75rem;">
+            <div style="flex:1;">
+              <label style="display:block;color:var(--text-muted);font-size:0.8rem;margin-bottom:0.25rem;">메모리 (예: 512m, 1g)</label>
+              <input type="text" id="qrMemory" placeholder="(무제한)" autocomplete="off"
+                style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.5rem 0.7rem;border-radius:var(--radius);font-family:inherit;">
+            </div>
+            <div style="flex:1;">
+              <label style="display:block;color:var(--text-muted);font-size:0.8rem;margin-bottom:0.25rem;">CPU (예: 0.5, 2)</label>
+              <input type="text" id="qrCpu" placeholder="(무제한)" autocomplete="off"
+                style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.5rem 0.7rem;border-radius:var(--radius);font-family:inherit;">
+            </div>
+          </div>
+          <details style="margin-bottom:0.75rem;">
+            <summary style="cursor:pointer;color:var(--text-muted);font-size:0.85rem;">고급 옵션 (환경변수 / 볼륨)</summary>
+            <div style="margin-top:0.5rem;">
+              <label style="display:block;color:var(--text-muted);font-size:0.8rem;margin-bottom:0.25rem;">환경변수 (한 줄에 하나, KEY=VALUE)</label>
+              <textarea id="qrEnv" rows="3" placeholder="예: DB_URL=postgresql://user:pass@postgres:5432/app&#10;APP_ENV=production" autocomplete="off"
+                style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.5rem 0.7rem;border-radius:var(--radius);font-family:'JetBrains Mono',monospace;font-size:0.82rem;resize:vertical;"></textarea>
+            </div>
+            <div style="margin-top:0.5rem;">
+              <label style="display:block;color:var(--text-muted);font-size:0.8rem;margin-bottom:0.25rem;">볼륨 (한 줄에 하나, HOST:CONTAINER[:ro])</label>
+              <textarea id="qrVolumes" rows="2" placeholder="예: /data/app:/var/lib/app" autocomplete="off"
+                style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.5rem 0.7rem;border-radius:var(--radius);font-family:'JetBrains Mono',monospace;font-size:0.82rem;resize:vertical;"></textarea>
+            </div>
+          </details>
+          <div id="qrMsg" style="font-size:0.8rem;margin-bottom:0.5rem;min-height:1.2em;"></div>
+          <button type="submit" class="btn" style="width:100%;">기동</button>
+        </form>
+      </div>
+    </div>
 
     <!-- Change Password Modal -->
     <div id="changePwOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:9999;align-items:center;justify-content:center;" onclick="if(event.target===this) hideChangePwModal()">
@@ -526,7 +709,7 @@
         <button type="button" onclick="hideChangePwModal()" style="position:absolute;top:0.5rem;right:0.7rem;background:none;border:none;color:var(--text-muted);font-size:1.3rem;cursor:pointer;">&times;</button>
         <h2 style="margin:0 0 0.5rem 0;font-size:1.2rem;">비밀번호 변경</h2>
         <p style="margin:0 0 1rem 0;color:var(--text-muted);font-size:0.85rem;" id="changePwUserLabel">—</p>
-        <form id="changePwForm" onsubmit="return doChangePassword(event)">
+        <form id="changePwForm">
           <div style="margin-bottom:0.75rem;">
             <label style="display:block;color:var(--text-muted);font-size:0.8rem;margin-bottom:0.25rem;">현재 비밀번호</label>
             <input type="password" id="cpCurrent" autocomplete="current-password" required
@@ -555,10 +738,87 @@
       body.role-guest input[type="number"][readonly-for-guest] { opacity: 0.5; pointer-events: none; }
     </style>
 
+    <!-- Default password warning banner -->
+    <div id="defaultPwBanner" class="alert-banner level-warning active" style="display:none;">
+      <span>⚠️</span>
+      <span class="alert-text msg">기본 비밀번호를 사용 중입니다.</span>
+      <button type="button" class="btn btn-sm btn-warn" onclick="showChangePwModal()">비밀번호 변경</button>
+    </div>
+
     <!-- (Cluster overview bar merged into placement grid below) -->
     <!-- Node Tabs -->
     <div class="tabs" id="nodeTabs" style="display:none;">
       <button type="button" class="tab active" data-tab-node="__cluster__">클러스터</button>
+    </div>
+
+    <!-- System Architecture Diagram (KOMSA on-prem + Parameta IDC + NCP VPC-A) -->
+    <div class="panel" id="archPanel" style="margin-bottom:1.5rem;">
+      <div class="panel-title" style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;" onclick="var b=document.getElementById('archBody');b.style.display=b.style.display==='none'?'':'none';">
+        <span>🗺️ 시스템 구성도</span>
+        <span style="font-size:0.78rem;color:var(--text-muted);">KOMSA 내부망 · 파라메타 IDC · NCP VPC-A (IPsec VPN)</span>
+        <span style="margin-left:auto;font-size:0.8rem;color:var(--text-muted);">▼ 펼치기/접기</span>
+      </div>
+      <div class="panel-body" id="archBody" style="padding:1rem;overflow-x:auto;">
+        <svg viewBox="0 0 940 610" style="width:100%;min-width:720px;max-width:1000px;height:auto;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;" role="img" aria-label="KOMSA 시스템 구성도">
+          <defs>
+            <marker id="arrOpen" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6" fill="none" stroke="context-stroke" stroke-width="1.4"/></marker>
+          </defs>
+          <!-- On-premise container -->
+          <rect x="18" y="14" width="904" height="322" rx="12" fill="var(--bg)" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="7 4"/>
+          <text x="36" y="42" font-size="16" font-weight="700" fill="var(--text)">🏢 KOMSA 내부망 (On-premise)</text>
+
+          <!-- MTIS group -->
+          <rect x="42" y="58" width="392" height="150" rx="9" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="58" y="82" font-size="14" font-weight="600" fill="var(--text)">MTIS</text>
+          <g font-size="13" fill="var(--text)" text-anchor="middle">
+            <rect x="58" y="96" width="112" height="94" rx="7" fill="var(--bg)" stroke="var(--border)"/><text x="114" y="138">🖥️ FE</text><text x="114" y="158" font-size="11" fill="var(--text-muted)">프론트엔드</text>
+            <rect x="182" y="96" width="112" height="94" rx="7" fill="var(--bg)" stroke="var(--border)"/><text x="238" y="138">⚙️ BE</text><text x="238" y="158" font-size="11" fill="var(--text-muted)">백엔드</text>
+            <rect x="306" y="96" width="112" height="94" rx="7" fill="var(--bg)" stroke="var(--border)"/><text x="362" y="138">🗄️ DB</text><text x="362" y="158" font-size="11" fill="var(--text-muted)">데이터베이스</text>
+          </g>
+
+          <!-- 관리자포털 group -->
+          <rect x="470" y="58" width="432" height="150" rx="9" fill="var(--surface)" stroke="var(--border)"/>
+          <text x="486" y="82" font-size="14" font-weight="600" fill="var(--text)">관리자포털</text>
+          <g font-size="13" fill="var(--text)" text-anchor="middle">
+            <rect x="486" y="96" width="120" height="94" rx="7" fill="var(--bg)" stroke="var(--border)"/><text x="546" y="138">🖥️ FE</text><text x="546" y="158" font-size="11" fill="var(--text-muted)">프론트엔드</text>
+            <rect x="618" y="96" width="120" height="94" rx="7" fill="var(--bg)" stroke="var(--warn)" stroke-width="2"/><text x="678" y="134">⚙️ BE 🌐</text><text x="678" y="153" font-size="10.5" fill="var(--warn)">→ 파라메타 IDC</text>
+            <rect x="750" y="96" width="120" height="94" rx="7" fill="var(--bg)" stroke="var(--border)"/><text x="810" y="138">🗄️ DB</text><text x="810" y="158" font-size="11" fill="var(--text-muted)">데이터베이스</text>
+          </g>
+
+          <!-- AI platform server -->
+          <rect x="42" y="238" width="392" height="78" rx="9" fill="var(--surface)" stroke="var(--success)" stroke-width="1.5"/>
+          <text x="62" y="272" font-size="14.5" font-weight="600" fill="var(--text)">🤖 AI 플랫폼 시스템 서버</text>
+          <text x="62" y="295" font-size="11.5" fill="var(--text-muted)">AI 컨테이너 오케스트레이터</text>
+
+          <!-- IPsec VPN: AI server → NCP VPC-A (bidirectional, green dashed) -->
+          <line x1="238" y1="316" x2="238" y2="452" stroke="var(--success)" stroke-width="2" stroke-dasharray="6 4" marker-start="url(#arrOpen)" marker-end="url(#arrOpen)"/>
+          <rect x="150" y="372" width="176" height="24" rx="12" fill="var(--bg)" stroke="var(--success)"/>
+          <text x="238" y="389" font-size="12" font-weight="600" fill="var(--success)" text-anchor="middle">🔒 IPsec VPN</text>
+
+          <!-- Internet: 관리자포털 BE → Parameta IDC (warn dashed) -->
+          <line x1="678" y1="190" x2="678" y2="456" stroke="var(--warn)" stroke-width="2" stroke-dasharray="4 4" marker-end="url(#arrOpen)"/>
+          <rect x="596" y="360" width="164" height="24" rx="12" fill="var(--bg)" stroke="var(--warn)"/>
+          <text x="678" y="377" font-size="12" font-weight="600" fill="var(--warn)" text-anchor="middle">🌐 인터넷망</text>
+
+          <!-- NCP VPC-A (bottom-left) -->
+          <rect x="42" y="452" width="392" height="140" rx="10" fill="var(--surface)" stroke="var(--success)" stroke-width="1.5" stroke-dasharray="7 4"/>
+          <text x="62" y="480" font-size="14.5" font-weight="700" fill="var(--text)">☁️ NCP · VPC-A 계정 (개발 서브넷)</text>
+          <rect x="66" y="498" width="344" height="72" rx="8" fill="var(--bg)" stroke="var(--border)"/>
+          <text x="238" y="530" font-size="13.5" fill="var(--text)" text-anchor="middle">🖥️ 개발서버 1대</text>
+          <text x="238" y="551" font-size="11.5" fill="var(--text-muted)" text-anchor="middle">스테이징 환경</text>
+
+          <!-- Parameta IDC (bottom-right) -->
+          <rect x="508" y="456" width="394" height="120" rx="10" fill="var(--surface)" stroke="var(--warn)" stroke-width="1.5"/>
+          <text x="528" y="486" font-size="14.5" font-weight="700" fill="var(--text)">🏢 파라메타 IDC</text>
+          <text x="528" y="510" font-size="12" fill="var(--text-muted)">관리자포털 BE ↔ 인터넷망 연동</text>
+          <text x="528" y="532" font-size="12" fill="var(--text-muted)">(외부 데이터센터)</text>
+        </svg>
+        <div style="margin-top:0.6rem;font-size:0.78rem;color:var(--text-muted);display:flex;flex-wrap:wrap;gap:1.2rem;">
+          <span>┈┈ <span style="color:var(--accent);">내부망 경계</span></span>
+          <span>🔒 <span style="color:var(--success);">IPsec VPN (스테이징, 양방향)</span></span>
+          <span>🌐 <span style="color:var(--warn);">인터넷망 연동</span></span>
+        </div>
+      </div>
     </div>
 
     <!-- Service Thumbnails (live previews of reachable services) -->
@@ -571,6 +831,16 @@
       <div class="panel-body" style="padding:0.75rem;">
         <div id="thumbnailGrid" style="display:flex;flex-wrap:wrap;gap:1rem;"></div>
       </div>
+    </div>
+
+    <!-- Service Groups (docker-compose deployments) -->
+    <div class="panel" id="serviceGroupsPanel" style="margin-bottom:1.5rem;display:none;">
+      <div class="panel-title" style="display:flex;align-items:center;gap:0.5rem;">
+        <span>🗂️ 서비스 그룹</span>
+        <span id="groupsCount" style="font-size:0.8rem;color:var(--text-muted);"></span>
+        <button class="btn btn-sm btn-outline" style="margin-left:auto;" onclick="refreshGroups()">🔄</button>
+      </div>
+      <div class="panel-body" id="groupsBody" style="padding:0.6rem 0.9rem;"></div>
     </div>
 
     <!-- Command Console (primary action — placed first for quick access) -->
@@ -618,13 +888,35 @@
     </div>
 
     <div class="grid">
+      <!-- Image-deploy / Service-management top-level tabs.
+           Two big sections were stacked before; users asked to surface them
+           as side-by-side tabs so only one is active at a time. -->
+      <div class="panel" id="mainTabsBar" style="grid-column: 1 / -1;padding:0.5rem 0.75rem;display:flex;gap:0.4rem;flex-wrap:wrap;border-bottom:1px solid var(--border);">
+        <button type="button" class="main-tab main-tab-active" data-main-tab="deploy"
+          style="background:none;border:none;border-bottom:2px solid var(--accent);color:var(--accent);padding:0.4rem 0.9rem;cursor:pointer;font-family:inherit;font-weight:600;font-size:0.92rem;">이미지 / 배포</button>
+        <button type="button" class="main-tab" data-main-tab="services"
+          style="background:none;border:none;border-bottom:2px solid transparent;color:var(--text-muted);padding:0.4rem 0.9rem;cursor:pointer;font-family:inherit;font-size:0.92rem;">서비스 관리</button>
+      </div>
       <!-- Images + Deploy -->
       <!-- (placed before service management — deploy first, manage after) -->
-      <div class="panel" style="grid-column: 1 / -1;">
+      <div class="panel main-tab-pane" data-main-pane="deploy" style="grid-column: 1 / -1;">
         <div class="panel-title">이미지 / 배포</div>
         <div class="panel-body">
-          <!-- Deploy section -->
-          <div style="margin-bottom:1rem;">
+
+          <!-- Deploy-mode tabs: preset / source / git / compose -->
+          <div class="deploy-tabs" role="tablist" style="display:flex;gap:0.25rem;border-bottom:1px solid var(--border);margin-bottom:0.75rem;flex-wrap:wrap;">
+            <button type="button" role="tab" class="deploy-tab deploy-tab-active" data-deploy-tab="preset"
+              style="background:none;border:none;border-bottom:2px solid var(--accent);color:var(--accent);padding:0.45rem 0.9rem;cursor:pointer;font-family:inherit;font-weight:600;font-size:0.88rem;">프리셋 / 이미지 배포</button>
+            <button type="button" role="tab" class="deploy-tab" data-deploy-tab="source"
+              style="background:none;border:none;border-bottom:2px solid transparent;color:var(--text-muted);padding:0.45rem 0.9rem;cursor:pointer;font-family:inherit;font-size:0.88rem;">소스 업로드</button>
+            <button type="button" role="tab" class="deploy-tab" data-deploy-tab="git"
+              style="background:none;border:none;border-bottom:2px solid transparent;color:var(--text-muted);padding:0.45rem 0.9rem;cursor:pointer;font-family:inherit;font-size:0.88rem;">Git URL</button>
+            <button type="button" role="tab" class="deploy-tab" data-deploy-tab="compose"
+              style="background:none;border:none;border-bottom:2px solid transparent;color:var(--text-muted);padding:0.45rem 0.9rem;cursor:pointer;font-family:inherit;font-size:0.88rem;">docker-compose.yml</button>
+          </div>
+
+          <!-- Deploy section: preset / image deploy -->
+          <div class="deploy-tab-pane" data-deploy-pane="preset" style="margin-bottom:1rem;">
             <!-- Preset buttons (Task 4.4) -->
             <div class="preset-row">
               <span style="color:var(--text-muted);font-size:0.78rem;margin-right:0.2rem;">프리셋:</span>
@@ -654,6 +946,9 @@
               <label style="display:flex;align-items:center;gap:0.3rem;cursor:pointer;font-size:0.85rem;color:var(--text-muted);white-space:nowrap;margin-top:0.15rem;">
                 <input type="checkbox" id="deployDistributed"> 분산 배포 (노드 선택)
               </label>
+              <label style="display:flex;align-items:center;gap:0.3rem;cursor:pointer;font-size:0.85rem;color:var(--text-muted);white-space:nowrap;margin-top:0.15rem;" title="기본은 경로 방식(itda.24x365.online/서비스명), 체크 시 서브도메인(서비스명.24x365.online)">
+                <input type="checkbox" id="deploySubdomain"> 서브도메인 연결
+              </label>
               <div id="deployNodeSelector" style="display:none;flex:1;min-width:200px;">
                 <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.25rem;">배포 대상 노드:</div>
                 <div id="deployNodeList" style="display:flex;flex-wrap:wrap;gap:0.4rem;"></div>
@@ -663,12 +958,17 @@
               <summary class="text-muted" style="cursor:pointer;font-size:0.85rem;">고급 옵션 (환경변수, 포트, 볼륨, 리소스 제한)</summary>
               <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;margin-top:0.5rem;">
                 <div class="field"><label>환경변수 (KEY=value, 줄바꿈)</label><textarea id="deployEnv" rows="2" placeholder="APP_ENV=prod&#10;DEBUG=0" style="max-width:100%;"></textarea></div>
+                <div class="field"><label>🔒 시크릿 키 (한 줄에 변수명 하나, 본인만 평문 조회 가능)</label><textarea id="deploySecrets" rows="2" placeholder="DB_PASSWORD&#10;API_KEY" style="max-width:100%;"></textarea></div>
                 <div class="field"><label>포트 (호스트:컨테이너, 줄바꿈)</label><textarea id="deployPorts" rows="2" placeholder="8080:80&#10;8443:443" style="max-width:100%;"></textarea></div>
                 <div class="field"><label>볼륨 (호스트:컨테이너, 줄바꿈)</label><textarea id="deployVolumes" rows="2" placeholder="/data:/app/data" style="max-width:100%;"></textarea></div>
                 <div style="display:flex;gap:0.5rem;">
                   <div class="field"><label>메모리 제한</label><input type="text" id="deployMemory" placeholder="512m / 1g" style="max-width:100%;"></div>
                   <div class="field"><label>CPU 제한</label><input type="text" id="deployCpu" placeholder="0.5 / 1" style="max-width:100%;"></div>
                 </div>
+              </div>
+              <div style="margin-top:0.6rem;padding:0.5rem 0.7rem;border:1px dashed var(--border);border-radius:var(--radius);">
+                <div style="font-weight:600;font-size:0.85rem;margin-bottom:0.3rem;">🔑 저장된 시크릿 적용</div>
+                <div id="deploySecretRefList"><div style="font-size:0.78rem;color:var(--text-muted);">로그인 후 등록한 시크릿을 적용할 수 있습니다.</div></div>
               </div>
             </details>
             <div id="deployLog" style="padding:0 1rem 0.5rem;font-size:0.85rem;"></div>
@@ -683,38 +983,131 @@
             <!-- Deploy history (Task 4.1) -->
             <div class="deploy-history" id="deployHistory"></div>
           </div>
+          <!-- end preset pane -->
+
           <!-- Source Upload & Auto Deploy -->
-          <div style="margin-top:0.75rem;padding:0.75rem 1rem;border:1px dashed var(--border);border-radius:var(--radius);position:relative;" id="sourceUploadZone">
+          <div class="deploy-tab-pane" data-deploy-pane="source" style="display:none;">
+          <div style="padding:0.75rem 1rem;border:1px dashed var(--border);border-radius:var(--radius);position:relative;" id="sourceUploadZone">
             <div style="font-weight:600;font-size:0.9rem;margin-bottom:0.5rem;">소스 업로드 배포</div>
             <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
               <input type="file" id="sourceFile" accept=".zip,.gz,.tgz,application/zip,application/gzip,application/x-gzip,application/x-tar,application/x-compressed-tar" style="flex:1;min-width:200px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.4rem;border-radius:var(--radius);font-family:inherit;">
               <input type="text" id="sourceServiceName" placeholder="서비스명 (자동생성)" style="flex:0.6;min-width:100px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.5rem;border-radius:var(--radius);font-family:inherit;" autocomplete="off">
+              <label style="font-size:0.78rem;color:var(--text-muted);display:inline-flex;align-items:center;gap:0.25rem;"><input type="checkbox" id="sourceLiveProgress" checked> 실시간 진행상황</label>
               <button type="button" class="btn btn-success" id="btnDeploySource">빌드 & 배포</button>
             </div>
-            <div style="font-size:0.78rem;color:var(--text-muted);margin-top:0.35rem;">zip / tar.gz 파일을 업로드하면 자동으로 Dockerfile 감지 → 이미지 빌드 → 컨테이너 배포됩니다. Dockerfile 없으면 언어 자동 감지 (Node.js, Python, Go, Java, HTML)</div>
+            <div style="font-size:0.78rem;color:var(--text-muted);margin-top:0.35rem;">zip / tar.gz 파일 업로드 (최대 800MB) → Dockerfile 감지/자동생성 → 이미지 빌드 → 컨테이너 배포. Dockerfile 없으면 언어 자동 감지 (Node.js, Python, Go, Java, HTML). Cloudflare 경유 시 100MB 제한에 걸립니다 — 큰 파일은 직접 IP(http://20.20.6.248:8000) 사용 또는 Git URL 배포를 이용하세요.</div>
             <div id="sourceDeployLog" style="margin-top:0.5rem;font-size:0.85rem;"></div>
           </div>
+          </div>
+          <!-- end source pane -->
+
+          <!-- Git URL deploy (public repos only: github/gitlab/bitbucket/codeberg/gitea/sr.ht) -->
+          <div class="deploy-tab-pane" data-deploy-pane="git" style="display:none;">
+          <div style="padding:0.75rem 1rem;border:1px dashed var(--border);border-radius:var(--radius);" id="gitDeployZone">
+            <div style="font-weight:600;font-size:0.9rem;margin-bottom:0.5rem;">Git URL 배포</div>
+            <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
+              <input type="text" id="gitUrl" placeholder="https://github.com/owner/repo" style="flex:2;min-width:220px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.5rem;border-radius:var(--radius);font-family:inherit;" autocomplete="off">
+              <input type="text" id="gitBranch" placeholder="branch (main)" style="flex:0.5;min-width:80px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.5rem;border-radius:var(--radius);font-family:inherit;" autocomplete="off">
+              <input type="text" id="gitSubpath" placeholder="subpath (선택)" style="flex:0.7;min-width:120px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.5rem;border-radius:var(--radius);font-family:inherit;" autocomplete="off">
+              <input type="text" id="gitServiceName" placeholder="서비스명 (자동)" style="flex:0.5;min-width:100px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.5rem;border-radius:var(--radius);font-family:inherit;" autocomplete="off">
+              <button type="button" class="btn btn-success" id="btnDeployGit">Clone &amp; 배포</button>
+            </div>
+            <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-top:0.5rem;">
+              <span style="font-size:0.8rem;color:var(--text-muted);">🔒 Private:</span>
+              <input type="password" id="gitToken" placeholder="Access Token (PAT) — private repo 시" style="flex:1.5;min-width:200px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.5rem;border-radius:var(--radius);font-family:inherit;" autocomplete="off">
+              <span style="font-size:0.8rem;color:var(--text-muted);">또는 저장된 시크릿:</span>
+              <select id="gitTokenSecret" style="flex:1;min-width:140px;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.45rem;border-radius:var(--radius);font-family:inherit;font-size:0.82rem;">
+                <option value="">-- 선택 안 함 --</option>
+              </select>
+            </div>
+            <div style="font-size:0.78rem;color:var(--text-muted);margin-top:0.35rem;">공개 repo는 토큰 없이, <strong>private repo는 GitHub Personal Access Token(PAT)</strong>을 입력하거나 저장된 시크릿에서 선택하세요. 토큰은 로그·저장·응답에 노출되지 않습니다. depth=1 clone → 동일 파이프라인.</div>
+            <div id="gitDeployLog" style="margin-top:0.5rem;font-size:0.85rem;"></div>
+          </div>
+          </div>
+          <!-- end git pane -->
+
+          <!-- Live deploy progress (shared — lives OUTSIDE the tab panes so
+               users don't lose their view when switching tabs mid-build). -->
+          <div id="deployProgressPanel" style="margin-top:0.75rem;padding:0.75rem 1rem;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);display:none;">
+            <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem;">
+              <div style="font-weight:600;font-size:0.9rem;" id="deployProgressTitle">배포 진행 상황</div>
+              <span id="deployProgressPhase" style="font-size:0.78rem;color:var(--accent);"></span>
+              <span style="flex:1;"></span>
+              <span id="deployProgressSpinner" style="font-size:0.85rem;">⏳</span>
+              <button type="button" class="btn btn-sm btn-outline" onclick="document.getElementById('deployProgressPanel').style.display='none';" title="닫기">✕</button>
+            </div>
+            <div id="deployProgressTimeline" style="font-family:'JetBrains Mono',monospace;font-size:0.78rem;max-height:260px;overflow:auto;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:0.5rem;"></div>
+          </div>
+
+          <!-- docker-compose.yml content deploy -->
+          <div class="deploy-tab-pane" data-deploy-pane="compose" style="display:none;">
+          <div style="padding:0.75rem 1rem;border:1px dashed var(--border);border-radius:var(--radius);" id="composeUploadZone">
+            <div style="font-weight:600;font-size:0.9rem;margin-bottom:0.5rem;">docker-compose.yml 배포</div>
+
+            <!-- Template selector -->
+            <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-bottom:0.5rem;padding:0.4rem 0.6rem;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);">
+              <label style="font-size:0.82rem;color:var(--text-muted);">저장된 템플릿:</label>
+              <select id="composeTemplateSelect" style="flex:1;min-width:160px;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.4rem;border-radius:var(--radius);font-family:inherit;font-size:0.82rem;">
+                <option value="">-- 선택 --</option>
+              </select>
+              <button type="button" class="btn btn-sm" id="btnComposeTemplateLoad">불러오기</button>
+              <button type="button" class="btn btn-sm btn-success write-only" id="btnComposeTemplateRun" title="선택한 템플릿으로 바로 기동">기동</button>
+              <button type="button" class="btn btn-sm btn-danger write-only" id="btnComposeTemplateDelete">삭제</button>
+              <button type="button" class="btn btn-sm btn-outline" id="btnComposeTemplateRefresh" title="목록 새로고침">🔄</button>
+            </div>
+
+            <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-bottom:0.4rem;">
+              <input type="file" id="composeFile" accept=".yml,.yaml,text/yaml" style="flex:1;min-width:200px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.4rem;border-radius:var(--radius);font-family:inherit;">
+              <input type="text" id="composeProjectName" placeholder="프로젝트명 (자동생성)" style="flex:0.6;min-width:100px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.5rem;border-radius:var(--radius);font-family:inherit;" autocomplete="off">
+              <button type="button" class="btn btn-success write-only" id="btnDeployCompose">기동</button>
+            </div>
+            <details style="margin-bottom:0.4rem;" id="composeTextDetails">
+              <summary style="cursor:pointer;color:var(--text-muted);font-size:0.82rem;">또는 YAML 직접 붙여넣기 / 편집</summary>
+              <textarea id="composeText" rows="8" placeholder="services:&#10;  web:&#10;    image: nginx:alpine&#10;    ports:&#10;      - 8080:80&#10;  redis:&#10;    image: redis:7" autocomplete="off" style="width:100%;margin-top:0.4rem;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.5rem;border-radius:var(--radius);font-family:'JetBrains Mono',monospace;font-size:0.8rem;resize:vertical;"></textarea>
+            </details>
+            <div style="font-size:0.78rem;color:var(--text-muted);">compose 파일의 모든 서비스를 의존성 순서대로 기동합니다. <code>image:</code> 지정된 서비스만 지원. <strong>기동 시 프로젝트명으로 자동 저장되어 재사용 가능</strong>합니다.</div>
+            <div id="composeDeployLog" style="margin-top:0.5rem;font-size:0.85rem;"></div>
+          </div>
+          </div>
+          <!-- end compose pane -->
 
           <!-- Image pull (Task 4.7) -->
           <div class="pull-row" style="padding:0.5rem 0 0.5rem;">
             <input type="text" id="pullImageName" placeholder="이미지 Pull (예: nginx:latest)" autocomplete="off">
             <button type="button" class="btn btn-sm" id="btnPullImage">Pull</button>
           </div>
-          <!-- Image list (collapsible) -->
-          <details style="margin-top:0.5rem;">
+          <!-- Image list (collapsible) with tabs -->
+          <details style="margin-top:0.5rem;" id="imageListDetails">
             <summary style="cursor:pointer;font-size:0.9rem;font-weight:600;color:var(--text-muted);user-select:none;padding:0.4rem 0;">이미지 목록 <span style="font-size:0.8rem;">&#x25BC;</span></summary>
-            <!-- Image search/filter (Task 4.2) -->
-            <input type="text" class="img-search-input" id="imageSearchInput" placeholder="이미지 검색 (이름으로 필터)..." autocomplete="off" style="margin-top:0.5rem;">
-            <div id="imagesPanel"><span class="loading">불러오는 중…</span></div>
+
+            <!-- Tabs header (Registry is the default — that's what most users want to see) -->
+            <div style="display:flex;gap:0.5rem;margin-top:0.5rem;border-bottom:1px solid var(--border);">
+              <button type="button" class="img-tab img-tab-active" data-img-tab="registry" style="background:none;border:none;border-bottom:2px solid var(--accent);color:var(--accent);padding:0.4rem 0.8rem;cursor:pointer;font-family:inherit;font-weight:600;">Registry <span class="img-tab-count" id="imgTabCountRegistry" style="font-size:0.75rem;opacity:0.7;"></span></button>
+              <button type="button" class="img-tab" data-img-tab="cluster" style="background:none;border:none;border-bottom:2px solid transparent;color:var(--text-muted);padding:0.4rem 0.8rem;cursor:pointer;font-family:inherit;">클러스터 노드 <span class="img-tab-count" id="imgTabCountCluster" style="font-size:0.75rem;opacity:0.7;"></span></button>
+            </div>
+
+            <!-- Search + bulk actions -->
+            <div style="display:flex;gap:0.5rem;align-items:center;margin-top:0.5rem;flex-wrap:wrap;">
+              <input type="text" class="img-search-input" id="imageSearchInput" placeholder="검색 (이름 필터)..." autocomplete="off" style="flex:1;min-width:180px;">
+              <button type="button" class="btn btn-sm btn-danger write-only" id="btnImageBulkDelete" disabled>선택 삭제 <span id="imgBulkCount" style="font-size:0.75rem;">(0)</span></button>
+              <button type="button" class="btn btn-sm btn-outline" id="btnImageRefresh">🔄</button>
+            </div>
+
+            <!-- Tab bodies (Registry default-visible) -->
+            <div id="imagesPanelRegistry" class="img-tab-body"><span class="loading">불러오는 중…</span></div>
+            <div id="imagesPanelCluster" class="img-tab-body" style="display:none;"><span class="loading">불러오는 중…</span></div>
+
+            <!-- Backwards-compat alias for code that still queries #imagesPanel -->
+            <div id="imagesPanel" style="display:none;"></div>
           </details>
         </div>
       </div>
 
-      <!-- Service Management -->
-      <details class="panel" style="grid-column: 1 / -1;">
-        <summary class="panel-title" style="cursor:pointer;user-select:none;">서비스 관리 (스케일 / Endpoint / 중지) <span style="float:right;font-size:0.8rem;color:var(--text-muted);">&#x25BC;</span></summary>
+      <!-- Service Management (second top-level tab, hidden by default) -->
+      <div class="panel main-tab-pane" data-main-pane="services" style="grid-column: 1 / -1;display:none;">
+        <div class="panel-title">서비스 관리 (스케일 / Endpoint / 중지)</div>
         <div class="panel-body" id="servicesPanel"><span class="loading">불러오는 중…</span></div>
-      </details>
+      </div>
 
       <!-- QuickStart (collapsible) -->
       <details class="panel" style="grid-column: 1 / -1;" id="qsPanel">
@@ -822,11 +1215,44 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
       if (!node || node === 'local') return API + path;
       return API + '/v1/cluster/' + encodeURIComponent(node) + '/proxy?path=' + encodeURIComponent(path);
     }
+    // Read CSRF token from cookie (set by backend after login).
+    function getCsrfToken() {
+      var m = document.cookie.match(/(?:^|;\s*)orch_csrf=([^;]+)/);
+      return m ? decodeURIComponent(m[1]) : '';
+    }
+
+    // Global fetch wrapper — attach CSRF header on same-origin mutating
+    // requests. Keeps existing direct fetch(...) callers working without edits.
+    (function wrapFetchForCSRF() {
+      var origFetch = window.fetch.bind(window);
+      window.fetch = function(input, init) {
+        init = init || {};
+        var method = ((init && init.method) ? init.method : (input && input.method) || 'GET').toUpperCase();
+        if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+          var tok = getCsrfToken();
+          if (tok) {
+            var h = new Headers(init.headers || (input && input.headers) || {});
+            if (!h.has('X-CSRF-Token')) h.set('X-CSRF-Token', tok);
+            init.headers = h;
+          }
+          if (!init.credentials) init.credentials = 'same-origin';
+        }
+        return origFetch(input, init);
+      };
+    })();
+
     async function apiFetch(path, opts) {
       opts = opts || {};
       opts.credentials = opts.credentials || 'same-origin';
+      // Attach CSRF token on mutating methods.
+      var method = (opts.method || 'GET').toUpperCase();
+      if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+        var tok = getCsrfToken();
+        if (tok) {
+          opts.headers = Object.assign({}, opts.headers, { 'X-CSRF-Token': tok });
+        }
+      }
       const r = await fetch(apiUrl(path), opts);
-      // 401 on writes → user needs to log in as admin. Open login overlay.
       if (r.status === 401) showLoginOverlay();
       return r;
     }
@@ -858,13 +1284,21 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
       var btnLogin = document.getElementById('btnLogin');
       var btnLogout = document.getElementById('btnLogout');
       var btnChangePw = document.getElementById('btnChangePw');
+      var btnUserMgmt = document.getElementById('btnUserMgmt');
 
+      var btnMySecrets = document.getElementById('btnMySecrets');
       if (username) {
         badge.textContent = username + (role === 'admin' ? ' (관리자)' : ' (조회전용)');
         badge.style.display = '';
         btnLogout.style.display = '';
         btnChangePw.style.display = '';
         btnLogin.style.display = 'none';
+        if (btnUserMgmt) btnUserMgmt.style.display = (role === 'admin') ? '' : 'none';
+        if (btnMySecrets) btnMySecrets.style.display = '';
+        // Refresh the deploy-form secret dropdown for the new user.
+        if (typeof refreshDeploySecretsDropdown === 'function') {
+          refreshDeploySecretsDropdown();
+        }
       } else {
         // Anonymous visitor (guest view).
         badge.textContent = 'Guest (조회전용)';
@@ -872,7 +1306,686 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
         btnLogout.style.display = 'none';
         btnChangePw.style.display = 'none';
         btnLogin.style.display = '';
+        if (btnUserMgmt) btnUserMgmt.style.display = 'none';
+        if (btnMySecrets) btnMySecrets.style.display = 'none';
+        if (typeof refreshDeploySecretsDropdown === 'function') {
+          refreshDeploySecretsDropdown();
+        }
       }
+    }
+
+    /* ===== My Secrets (Phase 4 — per-account encrypted secret store) ===== */
+    async function showMySecretsModal() {
+      var overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      overlay.innerHTML =
+        '<div class="modal-content" style="min-width:560px;max-width:760px;">' +
+        '<div class="modal-header"><span>🔑 내 시크릿 관리</span><button type="button" class="modal-close" aria-label="닫기">&times;</button></div>' +
+        '<div class="modal-body">' +
+        '<p style="color:var(--text-muted);font-size:0.82rem;margin-top:0;">여기에 등록한 시크릿은 본인만 평문으로 조회/사용할 수 있습니다. 배포 시 "저장된 시크릿 적용" 항목에서 선택해 환경변수로 주입하세요.</p>' +
+        '<div id="mySecretsList" style="margin-bottom:1rem;"><span class="loading">불러오는 중…</span></div>' +
+        '<div style="border-top:1px solid var(--border);padding-top:0.75rem;">' +
+        '<div style="font-weight:600;margin-bottom:0.4rem;">새 시크릿 등록</div>' +
+        '<div style="display:flex;gap:0.4rem;align-items:center;flex-wrap:wrap;">' +
+        '<input type="text" id="newSecretName" placeholder="이름 (예: PROD_DB_PASSWORD)" style="flex:1;min-width:160px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.4rem 0.6rem;border-radius:var(--radius);font-family:inherit;" autocomplete="off">' +
+        '<input type="password" id="newSecretValue" placeholder="값 (평문, 저장 시 암호화)" style="flex:1.4;min-width:180px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.4rem 0.6rem;border-radius:var(--radius);font-family:inherit;" autocomplete="new-password">' +
+        '<button type="button" class="btn btn-sm btn-success" id="btnSecretAdd">추가</button>' +
+        '</div>' +
+        '<div id="mySecretsMsg" style="font-size:0.8rem;margin-top:0.4rem;min-height:1.2em;"></div>' +
+        '</div></div>' +
+        '<div class="modal-footer"><button type="button" class="btn btn-sm btn-outline" id="mySecretsClose">닫기</button></div>' +
+        '</div>';
+      document.body.appendChild(overlay);
+      function close() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); refreshDeploySecretsDropdown(); }
+      overlay.addEventListener('click', function(e) { if (e.target === overlay) close(); });
+      overlay.querySelector('.modal-close').addEventListener('click', close);
+      overlay.querySelector('#mySecretsClose').addEventListener('click', close);
+
+      async function refreshList() {
+        var listEl = overlay.querySelector('#mySecretsList');
+        listEl.innerHTML = '<span class="loading">불러오는 중…</span>';
+        try {
+          var r = await fetch(API + '/v1/user/secrets', { credentials: 'same-origin' });
+          var d = await r.json();
+          var items = (d && d.secrets) || [];
+          if (!items.length) { listEl.innerHTML = '<p class="text-muted" style="font-size:0.85rem;">등록된 시크릿이 없습니다.</p>'; return; }
+          var html = '<table style="width:100%;font-size:0.85rem;"><thead><tr><th style="text-align:left;padding:0.3rem;">이름</th><th style="text-align:left;padding:0.3rem;">값</th><th style="text-align:left;padding:0.3rem;">수정일</th><th style="padding:0.3rem;text-align:right;">동작</th></tr></thead><tbody>';
+          items.forEach(function(s) {
+            html += '<tr data-secret-row="' + escapeHtml(s.id) + '">';
+            html += '<td style="padding:0.3rem;font-family:\'JetBrains Mono\',monospace;">🔒 ' + escapeHtml(s.name) + '</td>';
+            html += '<td style="padding:0.3rem;font-family:\'JetBrains Mono\',monospace;" data-secret-value="' + escapeHtml(s.id) + '">***</td>';
+            html += '<td style="padding:0.3rem;color:var(--text-muted);font-size:0.75rem;">' + escapeHtml((s.updated_at || '').substring(0, 16).replace('T', ' ')) + '</td>';
+            html += '<td style="padding:0.3rem;text-align:right;white-space:nowrap;">';
+            html += '<button type="button" class="btn btn-sm btn-outline" data-secret-reveal="' + escapeHtml(s.id) + '">보기</button> ';
+            html += '<button type="button" class="btn btn-sm btn-outline" data-secret-edit="' + escapeHtml(s.id) + '" data-secret-name="' + escapeHtml(s.name) + '">수정</button> ';
+            html += '<button type="button" class="btn btn-sm btn-danger" data-secret-del="' + escapeHtml(s.id) + '" data-secret-name="' + escapeHtml(s.name) + '">삭제</button>';
+            html += '</td></tr>';
+          });
+          html += '</tbody></table>';
+          listEl.innerHTML = html;
+
+          listEl.querySelectorAll('[data-secret-reveal]').forEach(function(btn) {
+            btn.addEventListener('click', async function() {
+              var id = this.getAttribute('data-secret-reveal');
+              var cell = listEl.querySelector('[data-secret-value="' + id + '"]');
+              if (cell.textContent !== '***') { cell.textContent = '***'; this.textContent = '보기'; return; }
+              try {
+                var rr = await fetch(API + '/v1/user/secrets/' + encodeURIComponent(id), { credentials: 'same-origin' });
+                var dd = await rr.json();
+                if (dd.success) { cell.textContent = dd.value || ''; btn.textContent = '숨김'; }
+                else { cell.textContent = '조회 실패'; }
+              } catch (e) { cell.textContent = '조회 실패'; }
+            });
+          });
+          listEl.querySelectorAll('[data-secret-del]').forEach(function(btn) {
+            btn.addEventListener('click', async function() {
+              var id = this.getAttribute('data-secret-del');
+              var nm = this.getAttribute('data-secret-name');
+              if (!confirm("'" + nm + "' 시크릿을 삭제할까요?")) return;
+              try {
+                var rr = await fetch(API + '/v1/user/secrets/' + encodeURIComponent(id), {
+                  method: 'DELETE', credentials: 'same-origin',
+                  headers: { 'X-CSRF-Token': getCsrfToken() }
+                });
+                var dd = await rr.json();
+                if (dd.success) refreshList();
+                else overlay.querySelector('#mySecretsMsg').textContent = '삭제 실패: ' + (dd.message || '');
+              } catch(e) { overlay.querySelector('#mySecretsMsg').textContent = '삭제 실패: ' + e.message; }
+            });
+          });
+          listEl.querySelectorAll('[data-secret-edit]').forEach(function(btn) {
+            btn.addEventListener('click', async function() {
+              var id = this.getAttribute('data-secret-edit');
+              var curName = this.getAttribute('data-secret-name');
+              var newVal = prompt("'" + curName + "' 시크릿의 새 값을 입력하세요 (빈 값이면 변경 안 됨):");
+              if (newVal == null) return;
+              if (!newVal) return;
+              try {
+                var rr = await fetch(API + '/v1/user/secrets/' + encodeURIComponent(id), {
+                  method: 'PUT', credentials: 'same-origin',
+                  headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                  body: JSON.stringify({ value: newVal })
+                });
+                var dd = await rr.json();
+                if (dd.success) refreshList();
+                else overlay.querySelector('#mySecretsMsg').textContent = '수정 실패: ' + (dd.message || '');
+              } catch(e) { overlay.querySelector('#mySecretsMsg').textContent = '수정 실패: ' + e.message; }
+            });
+          });
+        } catch (e) {
+          listEl.innerHTML = '<span style="color:var(--danger);">불러오기 실패: ' + escapeHtml(e.message) + '</span>';
+        }
+      }
+      refreshList();
+
+      overlay.querySelector('#btnSecretAdd').addEventListener('click', async function() {
+        var name = overlay.querySelector('#newSecretName').value.trim();
+        var value = overlay.querySelector('#newSecretValue').value;
+        var msgEl = overlay.querySelector('#mySecretsMsg');
+        msgEl.textContent = '';
+        if (!name) { msgEl.style.color = 'var(--danger)'; msgEl.textContent = '이름을 입력하세요.'; return; }
+        try {
+          var r = await fetch(API + '/v1/user/secrets', {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+            body: JSON.stringify({ name: name, value: value })
+          });
+          var d = await r.json();
+          if (d.success) {
+            overlay.querySelector('#newSecretName').value = '';
+            overlay.querySelector('#newSecretValue').value = '';
+            msgEl.style.color = 'var(--success)';
+            msgEl.textContent = "'" + name + "' 등록됨";
+            refreshList();
+          } else {
+            msgEl.style.color = 'var(--danger)';
+            msgEl.textContent = d.message || '등록 실패';
+          }
+        } catch(e) { msgEl.style.color = 'var(--danger)'; msgEl.textContent = '등록 실패: ' + e.message; }
+      });
+    }
+
+    // Deploy form: refresh the dropdown of available user secrets.
+    // Populate the git-token secret dropdown (private repo auth).
+    function fillGitTokenSecrets(items) {
+      var sel = document.getElementById('gitTokenSecret');
+      if (!sel) return;
+      var cur = sel.value;
+      sel.innerHTML = '<option value="">-- 선택 안 함 --</option>';
+      (items || []).forEach(function(s) {
+        var o = document.createElement('option');
+        o.value = s.id; o.textContent = '🔒 ' + s.name;
+        sel.appendChild(o);
+      });
+      sel.value = cur;
+    }
+
+    async function refreshDeploySecretsDropdown() {
+      var box = document.getElementById('deploySecretRefList');
+      if (!box) return;
+      if (!_currentUser || !_currentUser.username) {
+        box.innerHTML = '<div style="font-size:0.78rem;color:var(--text-muted);">로그인 후 등록한 시크릿을 적용할 수 있습니다.</div>';
+        fillGitTokenSecrets([]);
+        return;
+      }
+      try {
+        var r = await fetch(API + '/v1/user/secrets', { credentials: 'same-origin' });
+        var d = await r.json();
+        var items = (d && d.secrets) || [];
+        fillGitTokenSecrets(items);
+        if (!items.length) {
+          box.innerHTML = '<div style="font-size:0.78rem;color:var(--text-muted);">등록된 시크릿이 없습니다. 상단 "🔑 내 시크릿"에서 먼저 등록하세요.</div>';
+          return;
+        }
+        var html = '<div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:0.3rem;">사용할 시크릿을 선택하고 환경변수 이름을 지정하세요 (비우면 시크릿 이름 그대로 사용):</div>';
+        items.forEach(function(s) {
+          html += '<div style="display:flex;gap:0.4rem;align-items:center;margin-bottom:0.25rem;">';
+          html += '<label style="font-size:0.78rem;display:flex;align-items:center;gap:0.3rem;cursor:pointer;flex:0 0 auto;"><input type="checkbox" data-secret-ref-id="' + escapeHtml(s.id) + '"> 🔒 ' + escapeHtml(s.name) + '</label>';
+          html += '<input type="text" data-secret-ref-envname="' + escapeHtml(s.id) + '" placeholder="환경변수명 (기본: ' + escapeHtml(s.name) + ')" style="flex:1;min-width:160px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.25rem 0.5rem;border-radius:var(--radius);font-family:inherit;font-size:0.78rem;" autocomplete="off">';
+          html += '</div>';
+        });
+        box.innerHTML = html;
+      } catch (e) {
+        box.innerHTML = '<div style="font-size:0.78rem;color:var(--danger);">시크릿 목록 불러오기 실패: ' + escapeHtml(e.message) + '</div>';
+      }
+    }
+
+    /* ===== Service Env Edit modal — list, edit, add, save ===== */
+    function showEnvEditModal(svc) {
+      var canEdit = !!svc.can_edit_secrets || !svc.owner;
+      var existing = (svc.env_vars || []).map(function(e){ return Object.assign({}, e); });
+      var overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      overlay.innerHTML =
+        '<div class="modal-content" style="min-width:640px;max-width:880px;">' +
+        '<div class="modal-header"><span>환경변수 편집 — ' + escapeHtml(svc.name) + '</span><button type="button" class="modal-close" aria-label="닫기">&times;</button></div>' +
+        '<div class="modal-body">' +
+        '<div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.5rem;">소유자: ' + escapeHtml(svc.owner || '—') +
+        (canEdit ? ' <span style="color:var(--success);">· 편집 가능</span>' : ' <span style="color:var(--warn);">· 다른 사용자 소유 — 수정 불가</span>') + '</div>' +
+        '<div id="envEditList" style="margin-bottom:0.6rem;"></div>' +
+        (canEdit ? '<button type="button" class="btn btn-sm btn-outline" id="envAddRow">+ 변수 추가</button>' : '') +
+        (canEdit
+          ? '<div style="margin-top:0.6rem;padding:0.5rem 0.7rem;border:1px dashed var(--border);border-radius:var(--radius);">' +
+            '<div style="font-weight:600;font-size:0.85rem;margin-bottom:0.3rem;">🔑 저장된 시크릿 적용</div>' +
+            '<div id="envEditSecretRefList"><div style="font-size:0.78rem;color:var(--text-muted);">불러오는 중…</div></div>' +
+            '</div>'
+          : '') +
+        '<div style="margin-top:0.6rem;font-size:0.78rem;color:var(--text-muted);">💡 시크릿 변수의 값을 변경하지 않을 때는 *** 그대로 두세요. 시크릿 키 이름을 바꾸면 저장 시 새 키로 다시 입력해야 합니다.</div>' +
+        '<div id="envEditMsg" style="font-size:0.82rem;margin-top:0.4rem;min-height:1.2em;"></div>' +
+        '</div>' +
+        '<div class="modal-footer">' +
+        '<label style="margin-right:auto;font-size:0.82rem;display:flex;align-items:center;gap:0.3rem;cursor:pointer;"><input type="checkbox" id="envEditRestart" checked> 저장 후 컨테이너 재시작</label>' +
+        '<button type="button" class="btn btn-sm btn-outline" id="envEditCancel">취소</button>' +
+        (canEdit ? '<button type="button" class="btn btn-sm btn-success" id="envEditSave">저장</button>' : '') +
+        '</div></div>';
+      document.body.appendChild(overlay);
+      function close() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }
+      overlay.addEventListener('click', function(e) { if (e.target === overlay) close(); });
+      overlay.querySelector('.modal-close').addEventListener('click', close);
+      overlay.querySelector('#envEditCancel').addEventListener('click', close);
+
+      var listEl = overlay.querySelector('#envEditList');
+      function renderRows() {
+        var html = '<table style="width:100%;font-size:0.85rem;border-collapse:collapse;"><thead><tr>'
+          + '<th style="text-align:left;padding:0.25rem;">변수명</th>'
+          + '<th style="text-align:left;padding:0.25rem;">값</th>'
+          + '<th style="padding:0.25rem;text-align:center;">🔒</th>'
+          + (canEdit ? '<th style="padding:0.25rem;"></th>' : '')
+          + '</tr></thead><tbody>';
+        existing.forEach(function(e, i) {
+          var readonly = canEdit ? '' : ' readonly';
+          html += '<tr>'
+            + '<td style="padding:0.2rem;"><input type="text" data-env-name="' + i + '" value="' + escapeHtml(e.name || '') + '"' + readonly + ' style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.25rem 0.4rem;border-radius:var(--radius);font-family:\'JetBrains Mono\',monospace;font-size:0.8rem;"></td>'
+            + '<td style="padding:0.2rem;"><input type="' + (e.is_secret ? 'password' : 'text') + '" data-env-value="' + i + '" value="' + escapeHtml(e.value || '') + '"' + readonly + ' style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.25rem 0.4rem;border-radius:var(--radius);font-family:\'JetBrains Mono\',monospace;font-size:0.8rem;"></td>'
+            + '<td style="padding:0.2rem;text-align:center;"><input type="checkbox" data-env-secret="' + i + '"' + (e.is_secret ? ' checked' : '') + (canEdit ? '' : ' disabled') + '></td>'
+            + (canEdit ? '<td style="padding:0.2rem;"><button type="button" class="btn btn-sm btn-danger" data-env-del="' + i + '" title="삭제">✕</button></td>' : '')
+            + '</tr>';
+        });
+        html += '</tbody></table>';
+        listEl.innerHTML = html;
+        // Wire inputs back into the `existing` array on change.
+        listEl.querySelectorAll('[data-env-name]').forEach(function(el) {
+          el.addEventListener('input', function(){ existing[+this.getAttribute('data-env-name')].name = this.value; });
+        });
+        listEl.querySelectorAll('[data-env-value]').forEach(function(el) {
+          el.addEventListener('input', function(){ existing[+this.getAttribute('data-env-value')].value = this.value; });
+        });
+        listEl.querySelectorAll('[data-env-secret]').forEach(function(el) {
+          el.addEventListener('change', function(){
+            existing[+this.getAttribute('data-env-secret')].is_secret = this.checked;
+            renderRows(); // re-render so the value input switches to password type
+          });
+        });
+        listEl.querySelectorAll('[data-env-del]').forEach(function(el) {
+          el.addEventListener('click', function(){
+            existing.splice(+this.getAttribute('data-env-del'), 1);
+            renderRows();
+          });
+        });
+      }
+      renderRows();
+
+      var addBtn = overlay.querySelector('#envAddRow');
+      if (addBtn) {
+        addBtn.addEventListener('click', function() {
+          existing.push({ name: '', value: '', is_secret: false });
+          renderRows();
+          // Focus the new name input.
+          var inputs = listEl.querySelectorAll('[data-env-name]');
+          if (inputs.length) inputs[inputs.length - 1].focus();
+        });
+      }
+
+      // Populate the user-secret picker (canEdit-only). Reuses the same
+      // mark-up as the deploy form so the user has a familiar pattern.
+      if (canEdit) {
+        (async function loadSecretsForEdit() {
+          var box = overlay.querySelector('#envEditSecretRefList');
+          if (!box) return;
+          try {
+            var r = await fetch(API + '/v1/user/secrets', { credentials: 'same-origin' });
+            var d = await r.json();
+            var items = (d && d.secrets) || [];
+            if (!items.length) {
+              box.innerHTML = '<div style="font-size:0.78rem;color:var(--text-muted);">등록된 시크릿이 없습니다. 상단 "🔑 내 시크릿"에서 먼저 등록하세요.</div>';
+              return;
+            }
+            var html = '<div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:0.3rem;">체크한 시크릿이 환경변수로 추가됩니다. 같은 이름이 이미 있으면 시크릿 값으로 덮어씁니다.</div>';
+            items.forEach(function(s) {
+              html += '<div style="display:flex;gap:0.4rem;align-items:center;margin-bottom:0.25rem;">';
+              html += '<label style="font-size:0.78rem;display:flex;align-items:center;gap:0.3rem;cursor:pointer;flex:0 0 auto;"><input type="checkbox" data-edit-secret-ref-id="' + escapeHtml(s.id) + '"> 🔒 ' + escapeHtml(s.name) + '</label>';
+              html += '<input type="text" data-edit-secret-ref-envname="' + escapeHtml(s.id) + '" placeholder="환경변수명 (기본: ' + escapeHtml(s.name) + ')" style="flex:1;min-width:160px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.25rem 0.5rem;border-radius:var(--radius);font-family:inherit;font-size:0.78rem;" autocomplete="off">';
+              html += '</div>';
+            });
+            box.innerHTML = html;
+          } catch (e) {
+            box.innerHTML = '<div style="font-size:0.78rem;color:var(--danger);">시크릿 목록 불러오기 실패: ' + escapeHtml(e.message) + '</div>';
+          }
+        })();
+      }
+
+      var saveBtn = overlay.querySelector('#envEditSave');
+      if (saveBtn) {
+        saveBtn.addEventListener('click', async function() {
+          var msg = overlay.querySelector('#envEditMsg');
+          msg.style.color = 'var(--text-muted)';
+          msg.textContent = '저장 중…';
+          var restart = !!overlay.querySelector('#envEditRestart').checked;
+          // Drop any blank rows the user left behind.
+          var payload = existing
+            .map(function(e){ return { name: (e.name||'').trim(), value: e.value || '', is_secret: !!e.is_secret }; })
+            .filter(function(e){ return e.name; });
+          // Collect any pre-saved user-secret references the user ticked.
+          var secretRefs = [];
+          overlay.querySelectorAll('[data-edit-secret-ref-id]:checked').forEach(function(cb) {
+            var id = cb.getAttribute('data-edit-secret-ref-id');
+            var nameInput = overlay.querySelector('[data-edit-secret-ref-envname="' + id + '"]');
+            var envName = (nameInput && nameInput.value || '').trim();
+            secretRefs.push({ secret_id: id, env_name: envName });
+          });
+          try {
+            var r = await fetch(API + '/v1/services/' + encodeURIComponent(svc.name) + '/env', {
+              method: 'PUT', credentials: 'same-origin',
+              headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+              body: JSON.stringify({ env_vars: payload, secret_refs: secretRefs, restart: restart })
+            });
+            var d = await r.json();
+            if (d.success) {
+              msg.style.color = 'var(--success)';
+              msg.textContent = d.message || '저장 완료';
+              appendLog('환경변수 갱신: ' + svc.name, d);
+              setTimeout(function(){ close(); loadAll(); }, 600);
+            } else {
+              msg.style.color = 'var(--danger)';
+              msg.textContent = d.message || '저장 실패';
+            }
+          } catch(e) {
+            msg.style.color = 'var(--danger)';
+            msg.textContent = '저장 실패: ' + e.message;
+          }
+        });
+      }
+    }
+
+    /* ===== User Management (Phase 3 — multi-admin) ===== */
+    async function showUserMgmtModal() {
+      var overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      overlay.innerHTML =
+        '<div class="modal-content" style="min-width:520px;max-width:720px;">' +
+        '<div class="modal-header"><span>사용자 관리</span><button type="button" class="modal-close" aria-label="닫기">&times;</button></div>' +
+        '<div class="modal-body">' +
+        '<div id="userMgmtList" style="margin-bottom:1rem;"><span class="loading">불러오는 중…</span></div>' +
+        '<div style="border-top:1px solid var(--border);padding-top:0.75rem;">' +
+        '<div style="font-weight:600;margin-bottom:0.4rem;">새 사용자 추가</div>' +
+        '<div style="display:flex;gap:0.4rem;align-items:center;flex-wrap:wrap;">' +
+        '<input type="text" id="newUsername" placeholder="username" style="flex:1;min-width:120px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.4rem 0.6rem;border-radius:var(--radius);font-family:inherit;" autocomplete="off">' +
+        '<input type="password" id="newUserPassword" placeholder="password (4자 이상)" style="flex:1;min-width:140px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.4rem 0.6rem;border-radius:var(--radius);font-family:inherit;" autocomplete="new-password">' +
+        '<select id="newUserRole" style="background:var(--surface);border:1px solid var(--border);color:var(--text);padding:0.4rem;border-radius:var(--radius);font-family:inherit;">' +
+        '<option value="guest">guest (조회전용)</option><option value="admin">admin (관리자)</option></select>' +
+        '<button type="button" class="btn btn-sm btn-success" id="btnUserAdd">추가</button>' +
+        '</div>' +
+        '<div id="userMgmtMsg" style="font-size:0.8rem;margin-top:0.4rem;min-height:1.2em;"></div>' +
+        '</div></div>' +
+        '<div class="modal-footer"><button type="button" class="btn btn-sm btn-outline" id="userMgmtClose">닫기</button></div>' +
+        '</div>';
+      document.body.appendChild(overlay);
+      function close() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }
+      overlay.addEventListener('click', function(e) { if (e.target === overlay) close(); });
+      overlay.querySelector('.modal-close').addEventListener('click', close);
+      overlay.querySelector('#userMgmtClose').addEventListener('click', close);
+
+      async function refreshList() {
+        var listEl = overlay.querySelector('#userMgmtList');
+        listEl.innerHTML = '<span class="loading">불러오는 중…</span>';
+        try {
+          var r = await fetch(API + '/v1/auth/users', { credentials: 'same-origin' });
+          var d = await r.json();
+          var users = (d && d.users) || [];
+          if (!users.length) { listEl.textContent = '사용자 없음'; return; }
+          var html = '<table style="width:100%;font-size:0.85rem;"><thead><tr><th style="text-align:left;padding:0.3rem;">Username</th><th style="text-align:left;padding:0.3rem;">Role</th><th style="text-align:left;padding:0.3rem;">생성일</th><th style="padding:0.3rem;">동작</th></tr></thead><tbody>';
+          users.sort(function(a,b){ return (a.username||'').localeCompare(b.username||''); });
+          users.forEach(function(u) {
+            html += '<tr>';
+            html += '<td style="padding:0.3rem;font-family:\'JetBrains Mono\',monospace;">' + escapeHtml(u.username) + '</td>';
+            html += '<td style="padding:0.3rem;"><span class="badge badge-' + (u.role === 'admin' ? 'running' : 'stopped') + '">' + escapeHtml(u.role) + '</span></td>';
+            html += '<td style="padding:0.3rem;color:var(--text-muted);font-size:0.75rem;">' + escapeHtml((u.created_at || '').substring(0, 10)) + '</td>';
+            html += '<td style="padding:0.3rem;text-align:right;"><button type="button" class="btn btn-sm btn-danger" data-user-del="' + escapeHtml(u.username) + '">삭제</button></td>';
+            html += '</tr>';
+          });
+          html += '</tbody></table>';
+          listEl.innerHTML = html;
+          listEl.querySelectorAll('[data-user-del]').forEach(function(btn) {
+            btn.addEventListener('click', async function() {
+              var uname = this.getAttribute('data-user-del');
+              if (!confirm("'" + uname + "' 사용자를 삭제할까요? 이 사용자가 소유한 서비스의 시크릿은 더 이상 평문으로 조회할 수 없게 됩니다.")) return;
+              try {
+                var rr = await fetch(API + '/v1/auth/users/' + encodeURIComponent(uname), {
+                  method: 'DELETE', credentials: 'same-origin',
+                  headers: { 'X-CSRF-Token': getCsrfToken() }
+                });
+                var dd = await rr.json();
+                if (dd.success) refreshList();
+                else overlay.querySelector('#userMgmtMsg').textContent = '삭제 실패: ' + (dd.message || '');
+              } catch(e) { overlay.querySelector('#userMgmtMsg').textContent = '삭제 실패: ' + e.message; }
+            });
+          });
+        } catch(e) {
+          listEl.innerHTML = '<span style="color:var(--danger);">불러오기 실패: ' + escapeHtml(e.message) + '</span>';
+        }
+      }
+      refreshList();
+
+      overlay.querySelector('#btnUserAdd').addEventListener('click', async function() {
+        var username = overlay.querySelector('#newUsername').value.trim();
+        var password = overlay.querySelector('#newUserPassword').value;
+        var role = overlay.querySelector('#newUserRole').value;
+        var msgEl = overlay.querySelector('#userMgmtMsg');
+        msgEl.textContent = '';
+        if (!username || password.length < 4) { msgEl.textContent = '사용자명과 4자 이상의 비밀번호가 필요합니다.'; return; }
+        try {
+          var r = await fetch(API + '/v1/auth/users', {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+            body: JSON.stringify({ username: username, password: password, role: role })
+          });
+          var d = await r.json();
+          if (d.success) {
+            overlay.querySelector('#newUsername').value = '';
+            overlay.querySelector('#newUserPassword').value = '';
+            msgEl.style.color = 'var(--success)';
+            msgEl.textContent = "'" + username + "' 추가됨";
+            refreshList();
+          } else {
+            msgEl.style.color = 'var(--danger)';
+            msgEl.textContent = d.message || '추가 실패';
+          }
+        } catch(e) {
+          msgEl.style.color = 'var(--danger)';
+          msgEl.textContent = '추가 실패: ' + e.message;
+        }
+      });
+    }
+
+    /* ===== Service Update (tag selection) ===== */
+    var _usvcState = { name: '', image: '' };
+    async function showUpdateSvcModal(svcName, image) {
+      _usvcState.name = svcName;
+      _usvcState.image = image || '';
+      document.getElementById('usvcName').textContent = svcName;
+      document.getElementById('usvcCurrent').textContent = image || '(알 수 없음)';
+      document.getElementById('usvcImageOverride').value = '';
+      var _ur = (window._svcRecords||{})[svcName] || {};
+      document.getElementById('usvcMemory').value = _ur.memory_limit || '';
+      document.getElementById('usvcCpu').value = _ur.cpu_limit || '';
+      document.getElementById('usvcMsg').textContent = '';
+      document.getElementById('usvcMsg').style.color = 'var(--danger)';
+      // Pre-fill selector with "current" option, then load tags async.
+      var sel = document.getElementById('usvcTagSelect');
+      sel.innerHTML = '<option value="">-- 현재 태그 유지 (재pull만) --</option>';
+      document.getElementById('updateSvcOverlay').style.display = 'flex';
+      loadTagsForImage(image);
+    }
+    function hideUpdateSvcModal() {
+      document.getElementById('updateSvcOverlay').style.display = 'none';
+    }
+    // Parse image reference into { registry, repo, currentTag }
+    function parseImageRef(image) {
+      if (!image) return null;
+      // Strip digest
+      var at = image.indexOf('@');
+      if (at >= 0) image = image.substring(0, at);
+      var lastSlash = image.lastIndexOf('/');
+      var colonInTail = image.lastIndexOf(':') > lastSlash ? image.lastIndexOf(':') : -1;
+      var repoFull = colonInTail >= 0 ? image.substring(0, colonInTail) : image;
+      var tag = colonInTail >= 0 ? image.substring(colonInTail + 1) : 'latest';
+      // If first path segment looks like a host (has . or :, or equals 'localhost'), treat as registry.
+      var firstSlash = repoFull.indexOf('/');
+      var registry = '';
+      var repo = repoFull;
+      if (firstSlash > 0) {
+        var head = repoFull.substring(0, firstSlash);
+        if (head === 'localhost' || head.indexOf('.') >= 0 || head.indexOf(':') >= 0) {
+          registry = head;
+          repo = repoFull.substring(firstSlash + 1);
+        }
+      }
+      return { registry: registry, repo: repo, tag: tag, full: image };
+    }
+    async function loadTagsForImage(image) {
+      var sel = document.getElementById('usvcTagSelect');
+      var info = parseImageRef(image);
+      if (!info) return;
+      // Parallel queries: internal registry + Docker Hub (for non-custom-registry images)
+      var tasks = [];
+      // Internal registry
+      tasks.push((async function() {
+        try {
+          var tr = await fetch(API + '/v1/registry/tags/' + info.repo, { credentials: 'same-origin' });
+          if (!tr.ok) return { source: 'internal', tags: [] };
+          var td = await tr.json();
+          return { source: 'internal', tags: (td && Array.isArray(td.tags)) ? td.tags : [] };
+        } catch (e) { return { source: 'internal', tags: [] }; }
+      })());
+      // Docker Hub (only for images without explicit custom registry)
+      if (!info.registry || info.registry === 'docker.io') {
+        tasks.push((async function() {
+          try {
+            var repo = info.repo;
+            if (repo.indexOf('/') < 0) repo = 'library/' + repo;
+            var hr = await fetch('https://hub.docker.com/v2/repositories/' + repo + '/tags?page_size=100', { credentials: 'omit' });
+            if (!hr.ok) return { source: 'hub', tags: [] };
+            var hd = await hr.json();
+            return { source: 'hub', tags: (hd && Array.isArray(hd.results)) ? hd.results.map(function(t) { return t.name; }) : [] };
+          } catch (e) { return { source: 'hub', tags: [] }; }
+        })());
+      }
+      var results = await Promise.all(tasks);
+      // Merge tag sets; internal first (local, trusted), then Hub
+      var merged = [];
+      var seen = {};
+      var sources = [];
+      results.forEach(function(r) {
+        if (r.tags.length) sources.push(r.source + '(' + r.tags.length + ')');
+        r.tags.forEach(function(t) {
+          if (!seen[t]) { seen[t] = true; merged.push({ tag: t, source: r.source }); }
+        });
+      });
+
+      sel.innerHTML = '<option value="">-- 현재 태그 유지 (재pull만) --</option>';
+      merged.forEach(function(m) {
+        var opt = document.createElement('option');
+        opt.value = m.tag;
+        var label = m.tag;
+        if (m.tag === info.tag) label += ' (현재)';
+        if (m.source === 'internal') label += '  ★'; // available in internal registry
+        opt.textContent = label;
+        sel.appendChild(opt);
+      });
+      var msg = document.getElementById('usvcMsg');
+      msg.style.color = 'var(--text-muted)';
+      if (merged.length) msg.textContent = '태그 ' + merged.length + '개 (' + sources.join(', ') + ')  ★=내장 registry 보유';
+      else msg.textContent = '(태그 자동 조회 실패 — 아래 텍스트박스에 직접 입력)';
+    }
+    async function doUpdateService(e) {
+      if (e) e.preventDefault();
+      var svc = _usvcState.name;
+      var override = document.getElementById('usvcImageOverride').value.trim();
+      var tag = document.getElementById('usvcTagSelect').value.trim();
+      var msg = document.getElementById('usvcMsg');
+      msg.style.color = 'var(--accent)';
+      msg.textContent = '업데이트 중...';
+      var mem = document.getElementById('usvcMemory').value.trim();
+      var cpu = document.getElementById('usvcCpu').value.trim();
+      var body = {};
+      if (override) body.image = override;
+      else if (tag) body.tag = tag;
+      if (mem) body.memory = mem;
+      if (cpu) body.cpu = cpu;
+      if (!override && !tag && !mem && !cpu) { msg.style.color='var(--text-muted)'; msg.textContent='현재 태그 재pull로 진행합니다...'; }
+      try {
+        var r = await fetch(API + '/v1/services/' + encodeURIComponent(svc) + '/update', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+          body: JSON.stringify(body)
+        });
+        var d = await r.json();
+        appendLog('서비스 업데이트: ' + svc, d);
+        if (d.success) {
+          msg.style.color = 'var(--success)';
+          msg.textContent = '✓ ' + (d.message || '업데이트 트리거됨');
+          setTimeout(function() { hideUpdateSvcModal(); refreshGroups(); loadAll(); }, 1500);
+        } else {
+          msg.style.color = 'var(--danger)';
+          msg.textContent = d.message || d.error || '업데이트 실패';
+        }
+      } catch (ex) {
+        msg.style.color = 'var(--danger)';
+        msg.textContent = '오류: ' + ex.message;
+      }
+      return false;
+    }
+    // Bind tag refresh button
+    setTimeout(function() {
+      var b = document.getElementById('usvcTagRefresh');
+      if (b) b.addEventListener('click', function(){ loadTagsForImage(_usvcState.image); });
+    }, 100);
+
+    /* ===== Quick Run (from image list) ===== */
+    var _qrImage = '';
+    function _defaultServiceName(repo) {
+      var parts = (repo || '').split('/');
+      return (parts[parts.length - 1] || '').split(':')[0].replace(/[^a-zA-Z0-9_-]/g, '-') || 'app';
+    }
+    function showQuickRunModal(image, repo) {
+      if (!_currentUser || _currentUser.role !== 'admin') {
+        alert('관리자 로그인이 필요합니다');
+        showLoginOverlay();
+        return;
+      }
+      _qrImage = image;
+      document.getElementById('qrModalImage').textContent = image;
+      document.getElementById('qrServiceName').value = _defaultServiceName(repo || image);
+      document.getElementById('qrReplicas').value = 1;
+      document.getElementById('qrStrategy').value = 'spread';
+      document.getElementById('qrPorts').value = '';
+      document.getElementById('qrMemory').value = '';
+      document.getElementById('qrCpu').value = '';
+      var msg = document.getElementById('qrMsg');
+      msg.textContent = '';
+      msg.style.color = 'var(--danger)';
+      document.getElementById('quickRunOverlay').style.display = 'flex';
+      setTimeout(function() { document.getElementById('qrServiceName').focus(); }, 50);
+    }
+    function hideQuickRunModal() {
+      document.getElementById('quickRunOverlay').style.display = 'none';
+    }
+    async function doQuickRun(e) {
+      if (e) e.preventDefault();
+      var image = _qrImage;
+      var name = document.getElementById('qrServiceName').value.trim();
+      var replicas = parseInt(document.getElementById('qrReplicas').value, 10) || 1;
+      var strategy = document.getElementById('qrStrategy').value;
+      var portsRaw = document.getElementById('qrPorts').value.trim();
+      var memory = document.getElementById('qrMemory').value.trim();
+      var cpu = document.getElementById('qrCpu').value.trim();
+      var msg = document.getElementById('qrMsg');
+      msg.style.color = 'var(--danger)';
+      if (!name) { msg.textContent = '서비스명을 입력하세요'; return false; }
+      if (!/^[a-zA-Z0-9_-]+$/.test(name)) { msg.textContent = '서비스명은 영문/숫자/-/_만 사용하세요'; return false; }
+
+      var body = {
+        image: image,
+        name: name,
+        replicas: replicas,
+        strategy: strategy,
+      };
+      if (portsRaw) body.ports = portsRaw.split(/[,\s]+/).filter(Boolean);
+      if (memory) body.memory = memory;
+      if (cpu) body.cpu = cpu;
+
+      // Parse env vars and volumes (line-separated).
+      var envRaw = (document.getElementById('qrEnv').value || '').trim();
+      if (envRaw) {
+        var env = envRaw.split(/\n/).map(function(s){return s.trim();}).filter(function(s){
+          return s && !s.startsWith('#') && s.indexOf('=') > 0;
+        });
+        if (env.length) body.environment = env;
+      }
+      var volRaw = (document.getElementById('qrVolumes').value || '').trim();
+      if (volRaw) {
+        var vols = volRaw.split(/\n/).map(function(s){return s.trim();}).filter(Boolean);
+        if (vols.length) body.volumes = vols;
+      }
+
+      msg.style.color = 'var(--accent)';
+      msg.textContent = '배포 중...';
+
+      try {
+        var r = await fetch(API + '/v1/cluster/deploy', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+          body: JSON.stringify(body),
+        });
+        var d = await r.json();
+        appendLog('클러스터 이미지 기동: ' + image, d);
+        if (d.success) {
+          msg.style.color = 'var(--success)';
+          msg.textContent = '✓ ' + (d.message || '기동 완료');
+          setTimeout(function() {
+            hideQuickRunModal();
+            loadAll();
+          }, 1000);
+        } else {
+          msg.style.color = 'var(--danger)';
+          msg.textContent = d.message || d.error || '배포 실패';
+        }
+      } catch (ex) {
+        msg.style.color = 'var(--danger)';
+        msg.textContent = '오류: ' + (ex.message || ex);
+      }
+      return false;
     }
 
     /* ===== Change Password ===== */
@@ -899,7 +2012,14 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
       var msg = document.getElementById('cpMsg');
       msg.style.color = 'var(--danger)';
       if (!cur || !nw || !cf) { msg.textContent = '모든 항목을 입력하세요'; return false; }
-      if (nw.length < 4) { msg.textContent = '새 비밀번호는 4자 이상이어야 합니다'; return false; }
+      if (nw.length < 9) { msg.textContent = '새 비밀번호는 9자 이상이어야 합니다'; return false; }
+      // Complexity: need ≥3 of {lower, upper, digit, symbol}.
+      var classes = 0;
+      if (/[a-z]/.test(nw)) classes++;
+      if (/[A-Z]/.test(nw)) classes++;
+      if (/[0-9]/.test(nw)) classes++;
+      if (/[^A-Za-z0-9]/.test(nw)) classes++;
+      if (classes < 3) { msg.textContent = '영문 대/소문자, 숫자, 특수문자 중 3종 이상 포함해야 합니다'; return false; }
       if (nw !== cf) { msg.textContent = '새 비밀번호와 확인이 일치하지 않습니다'; return false; }
       if (nw === cur) { msg.textContent = '새 비밀번호는 현재와 달라야 합니다'; return false; }
       try {
@@ -929,6 +2049,16 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
     function applyUser(user) {
       _currentUser = user;
       setRole(user.role || 'guest', user.username);
+      // Default-password warning banner.
+      var warn = document.getElementById('defaultPwBanner');
+      if (warn) {
+        if (user.default_password) {
+          warn.style.display = '';
+          warn.querySelector('.msg').textContent = user.username + ' 계정이 기본 비밀번호를 사용 중입니다. 지금 변경하세요.';
+        } else {
+          warn.style.display = 'none';
+        }
+      }
     }
     async function checkAuth() {
       try {
@@ -936,14 +2066,17 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
         var d = await r.json();
         if (d && d.authenticated) {
           applyUser(d);
+          // Only close the login modal when we have actually authenticated.
+          // For unauthenticated visitors the modal may be open because the
+          // user explicitly opened it via the "로그인" button — closing it
+          // here would yank the form out from under them on every refresh.
+          hideLoginOverlay();
         } else {
-          // anonymous → guest mode, no overlay
           setRole('guest', null);
         }
       } catch (e) {
         setRole('guest', null);
       }
-      hideLoginOverlay();
     }
     async function doLogin(e) {
       if (e) e.preventDefault();
@@ -1380,7 +2513,9 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
         '<p><strong>' + escapeHtml(containerName) + '</strong> (' + escapeHtml(srcNode) + ')</p>' +
         '<p style="color:var(--text-muted);font-size:0.85rem;">서비스: ' + escapeHtml(serviceName || '—') + '</p>' +
         '<div style="margin-top:0.75rem;">' +
-        '<label style="display:block;cursor:pointer;padding:0.4rem 0;"><input type="radio" name="delType" value="one" checked> <strong>이 컨테이너만 삭제</strong> <span class="text-muted">— ' + escapeHtml(containerName) + ' on ' + escapeHtml(srcNode) + '</span></label>' +
+        '<label style="display:block;cursor:pointer;padding:0.4rem 0;"><input type="radio" name="delType" value="one" checked> <strong>이 컨테이너만 삭제</strong> <span class="text-muted">— ' + escapeHtml(containerName) + ' on ' + escapeHtml(srcNode) + '</span>' +
+        (serviceName ? '<div style="margin-left:1.5rem;font-size:0.78rem;color:var(--warn);">⚠ 서비스 \'' + escapeHtml(serviceName) + '\'의 replica 정의가 남아 있어 reconcile 루프에 의해 즉시 재시작될 수 있습니다. 영구 삭제는 아래 옵션을 사용하세요.</div>' : '') +
+        '</label>' +
         (serviceName ? '<label style="display:block;cursor:pointer;padding:0.4rem 0;"><input type="radio" name="delType" value="all"> <strong style="color:var(--danger);">서비스 전체 삭제</strong> <span class="text-muted">— ' + escapeHtml(serviceName) + ' 서비스의 모든 컨테이너</span></label>' : '') +
         '</div>' +
         '</div>' +
@@ -1403,7 +2538,8 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
           try {
             var r = await fetch(API + '/v1/cluster/stop', {
               method: 'POST',
-              headers: {'Content-Type': 'application/json'},
+              credentials: 'same-origin',
+              headers: {'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken()},
               body: JSON.stringify({service_name: serviceName})
             });
             var data = await r.json();
@@ -1416,7 +2552,8 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
           try {
             var r = await fetch(API + '/v1/cluster/container/stop', {
               method: 'POST',
-              headers: {'Content-Type': 'application/json'},
+              credentials: 'same-origin',
+              headers: {'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken()},
               body: JSON.stringify({container_id: containerId, container_name: containerName, node_name: srcNode})
             });
             var data = await r.json();
@@ -1452,11 +2589,29 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
         return k8sPattern.test(name) || k8sPattern.test(img) || k8sPattern.test(svc);
       }
 
+      // Filter out system containers (orchestrator, traefik, registry, dns, monitoring agents)
+      var systemContainers = {
+        'ai-orchestrator': 1, 'ai-orchestrator-worker': 1,
+        'orch-traefik': 1, 'orch-dns': 1, 'orch-registry': 1,
+        'traefik': 1, 'dns': 1, 'registry': 1,
+        'zbx-agent': 1, 'zabbix-agent': 1, 'zabbix-agent2': 1
+      };
+      function isSystemContainer(p) {
+        var name = (p.container_name || p.name || '').toLowerCase();
+        var svc = (p.service_name || p.service || '').toLowerCase();
+        var img = (p.image || '').toLowerCase();
+        if (systemContainers[name] === 1 || systemContainers[svc] === 1) return true;
+        // Zabbix images regardless of container name
+        if (/zabbix|zbx-agent/.test(img)) return true;
+        return false;
+      }
+
       // Group placements by node
       var byNode = {};
       status.nodes.forEach(function(n) { byNode[n.name] = []; });
       (Array.isArray(placements) ? placements : []).forEach(function(p) {
         if (isK8sContainer(p)) return;
+        if (isSystemContainer(p)) return;
         var node = p.node || p.node_name || 'unknown';
         if (!byNode[node]) byNode[node] = [];
         byNode[node].push(p);
@@ -1720,15 +2875,27 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
         if (rb !== ra) return rb - ra;
         return (a.name || '').localeCompare(b.name || '');
       });
-      var html = '<table><thead><tr><th>서비스</th><th>이미지</th><th>상태</th><th>노드 배치</th><th>Endpoint</th><th>스케일</th><th>동작</th></tr></thead><tbody>';
+      window._svcRecords = {};
+      var html = '<table><thead><tr><th>서비스</th><th>이미지</th><th>상태</th><th>리소스</th><th>노드 배치</th><th>Endpoint</th><th>스케일</th><th>동작</th></tr></thead><tbody>';
       data.forEach(function(s) {
+        window._svcRecords[s.name] = s;
         var running = s.running != null ? s.running : (s.status === 'running' ? s.replicas : 0);
         var total = s.replicas != null ? s.replicas : 0;
         var nodesStr = (s.nodes && s.nodes.length) ? s.nodes.join(', ') : '—';
-        html += '<tr>';
-        html += '<td><strong>' + escapeHtml(s.name) + '</strong></td>';
+        var ownerBadge = s.owner ? ' <span style="font-size:0.7rem;color:var(--text-muted);background:var(--bg);border:1px solid var(--border);padding:0.05rem 0.4rem;border-radius:99px;" title="이 서비스를 등록한 계정">👤 ' + escapeHtml(s.owner) + '</span>' : '';
+        var envCount = (s.env_vars || []).length;
+        var secretCount = (s.env_vars || []).filter(function(e){ return e.is_secret; }).length;
+        var envToggle = envCount > 0
+          ? ' <a href="#" data-svc-env-toggle="' + escapeHtml(s.name) + '" style="font-size:0.72rem;color:var(--accent);text-decoration:none;" title="환경변수 보기">env ' + envCount + (secretCount > 0 ? ' (🔒 ' + secretCount + ')' : '') + '</a>'
+          : '';
+        html += '<tr data-svc-row="' + escapeHtml(s.name) + '">';
+        html += '<td><strong>' + escapeHtml(s.name) + '</strong>' + ownerBadge + envToggle + '</td>';
         html += '<td style="font-family:\'JetBrains Mono\',monospace;font-size:0.8rem;">' + escapeHtml(s.image || '—') + '</td>';
         html += '<td><span class="badge badge-' + (running > 0 ? 'running' : 'stopped') + '">' + running + '/' + total + '</span></td>';
+        html += '<td><span class="svc-res-bars" data-res-svc="' + escapeHtml(s.name) + '" style="display:inline-flex;gap:3px;height:26px;align-items:flex-end;vertical-align:middle;">'
+          + '<span class="rb rb-cpu" title="CPU" style="display:inline-flex;flex-direction:column;justify-content:flex-end;width:6px;height:100%;background:rgba(127,127,127,0.2);border-radius:3px;overflow:hidden;"><b style="display:block;width:100%;height:0%;background:var(--accent);"></b></span>'
+          + '<span class="rb rb-mem" title="MEM" style="display:inline-flex;flex-direction:column;justify-content:flex-end;width:6px;height:100%;background:rgba(127,127,127,0.2);border-radius:3px;overflow:hidden;"><b style="display:block;width:100%;height:0%;background:#388bfd;"></b></span>'
+          + '</span></td>';
         html += '<td style="font-size:0.8rem;">' + escapeHtml(nodesStr) + '</td>';
         html += '<td id="ep-' + escapeHtml(s.name) + '" style="font-size:0.78rem;"><span class="text-muted">확인 중...</span></td>';
         var displayValue = total;
@@ -1738,11 +2905,41 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
         html += '<input type="number" min="0" value="' + displayValue + '" data-csvc-input="' + escapeHtml(s.name) + '" style="width:3.5rem;">';
         html += '<button type="button" class="btn btn-sm" data-csvc-scale="' + escapeHtml(s.name) + '">적용</button>';
         html += '</span></td>';
-        html += '<td><button type="button" class="btn btn-sm btn-danger" data-csvc-stop="' + escapeHtml(s.name) + '">중지</button></td>';
+        html += '<td>';
+        html += '<button type="button" class="btn btn-sm btn-outline" data-csvc-update="' + escapeHtml(s.name) + '" data-csvc-image="' + escapeHtml(s.image || '') + '" title="이미지 버전 업데이트 (태그 변경 + 재pull + 재기동)" style="margin-right:0.25rem;">⬆ 버전</button>';
+        html += '<button type="button" class="btn btn-sm btn-outline" data-csvc-env-edit="' + escapeHtml(s.name) + '" title="환경변수 편집/추가" style="margin-right:0.25rem;">🔧 env</button>';
+        html += '<button type="button" class="btn btn-sm btn-outline" data-csvc-logs="' + escapeHtml(s.name) + '" title="컨테이너 로그 보기" style="margin-right:0.25rem;">📜 로그</button>';
+        html += '<button type="button" class="btn btn-sm btn-danger" data-csvc-stop="' + escapeHtml(s.name) + '" style="margin-right:0.25rem;">중지</button>';
+        html += '<button type="button" class="btn btn-sm btn-danger" data-csvc-delete="' + escapeHtml(s.name) + '" title="컨테이너 제거 + 서비스 정의 삭제">삭제</button>';
+        html += '</td>';
         html += '</tr>';
+        // Hidden env-details row, expanded by the toggle link above.
+        if (envCount > 0) {
+          html += '<tr data-svc-env-row="' + escapeHtml(s.name) + '" style="display:none;background:var(--bg);">';
+          html += '<td colspan="8" style="padding:0.5rem 1rem;">';
+          html += '<div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:0.3rem;">환경변수' + (s.can_edit_secrets ? ' <span style="color:var(--success);">· 본인 소유 (시크릿 평문 조회 가능)</span>' : ' <span style="color:var(--warn);">· 다른 사용자 소유 (시크릿은 *** 마스킹)</span>') + '</div>';
+          html += '<table style="width:auto;font-family:\'JetBrains Mono\',monospace;font-size:0.78rem;"><tbody>';
+          s.env_vars.forEach(function(ev) {
+            var lock = ev.is_secret ? '🔒 ' : '';
+            var valStyle = ev.is_secret ? 'color:var(--warn);' : 'color:var(--text);';
+            html += '<tr><td style="padding:0.15rem 0.6rem;">' + lock + escapeHtml(ev.name) + '</td><td style="padding:0.15rem 0.6rem;' + valStyle + '">' + escapeHtml(ev.value || '') + '</td></tr>';
+          });
+          html += '</tbody></table>';
+          html += '</td></tr>';
+        }
       });
       html += '</tbody></table>';
       panel.innerHTML = html;
+
+      // Wire up env-detail toggle links.
+      panel.querySelectorAll('[data-svc-env-toggle]').forEach(function(a) {
+        a.addEventListener('click', function(e) {
+          e.preventDefault();
+          var svc = this.getAttribute('data-svc-env-toggle');
+          var row = panel.querySelector('[data-svc-env-row="' + svc + '"]');
+          if (row) row.style.display = (row.style.display === 'none') ? '' : 'none';
+        });
+      });
 
       panel.querySelectorAll('[data-csvc-scale]').forEach(function(el) {
         el.addEventListener('click', async function() {
@@ -1778,8 +2975,91 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
           } catch(e) { appendLog('중지 실패', {success:false, message:e.message}); }
         });
       });
-      // After rendering, fetch live endpoints
+      panel.querySelectorAll('[data-csvc-delete]').forEach(function(el) {
+        el.addEventListener('click', async function() {
+          var svc = this.getAttribute('data-csvc-delete');
+          if (!confirm("'" + svc + "' 서비스를 완전히 삭제할까요?\n실행 중인 컨테이너가 모두 제거되고 서비스 정의도 삭제됩니다. (되돌릴 수 없음)")) return;
+          try {
+            var r = await fetch(API + '/v1/cluster/delete', {
+              method: 'POST', credentials: 'same-origin',
+              headers: {'Content-Type':'application/json', 'X-CSRF-Token': getCsrfToken()},
+              body: JSON.stringify({service_name: svc})
+            });
+            var d = await r.json();
+            appendLog('서비스 삭제: ' + svc, d);
+            loadAll();
+          } catch(e) { appendLog('삭제 실패', {success:false, message:e.message}); }
+        });
+      });
+      panel.querySelectorAll('[data-csvc-update]').forEach(function(el) {
+        el.addEventListener('click', function() {
+          var svc = this.getAttribute('data-csvc-update');
+          var img = this.getAttribute('data-csvc-image') || '';
+          // Reuse the existing version-update modal (registry tag picker +
+          // image override → re-pull + recreate via /v1/services/{name}/update).
+          showUpdateSvcModal(svc, img);
+        });
+      });
+      panel.querySelectorAll('[data-csvc-env-edit]').forEach(function(el) {
+        el.addEventListener('click', function() {
+          var svc = this.getAttribute('data-csvc-env-edit');
+          // Look up the service object so the modal can pre-populate.
+          var rec = data.find(function(s) { return s.name === svc; });
+          if (rec) showEnvEditModal(rec);
+        });
+      });
+      panel.querySelectorAll('[data-csvc-logs]').forEach(function(el) {
+        el.addEventListener('click', function() { showSvcLogs(this.getAttribute('data-csvc-logs')); });
+      });
+      // After rendering, fetch live endpoints + resource stats.
       refreshEndpoints();
+      refreshSvcStats();
+    }
+
+    // Per-service resource usage bars (CPU/MEM) via /v1/cluster/stats.
+    var _svcStats = {}, _svcStatsTimer = null;
+    function refreshSvcStats() {
+      fetch(API + '/v1/cluster/stats', { credentials: 'same-origin' })
+        .then(function(r) { return r.json(); })
+        .then(function(d) { _svcStats = (d && d.stats) || {}; applySvcStatBars(); })
+        .catch(function() {});
+      clearTimeout(_svcStatsTimer);
+      _svcStatsTimer = setTimeout(refreshSvcStats, 8000);
+    }
+    function applySvcStatBars() {
+      document.querySelectorAll('.svc-res-bars[data-res-svc]').forEach(function(wrap) {
+        var st = _svcStats[wrap.getAttribute('data-res-svc')];
+        var cpuEl = wrap.querySelector('.rb-cpu > b'), memEl = wrap.querySelector('.rb-mem > b');
+        if (!st) { if(cpuEl) cpuEl.style.height='0%'; if(memEl) memEl.style.height='0%'; wrap.style.opacity='0.4'; return; }
+        wrap.style.opacity='1';
+        var cpu = Math.max(0, Math.min(100, st.cpu_percent || 0));
+        var mem = Math.max(0, Math.min(100, st.memory_percent || 0));
+        if(cpuEl){ cpuEl.style.height = cpu.toFixed(1)+'%'; wrap.querySelector('.rb-cpu').title='CPU '+cpu.toFixed(1)+'%'; }
+        if(memEl){ memEl.style.height = mem.toFixed(1)+'%'; wrap.querySelector('.rb-mem').title='메모리 '+mem.toFixed(1)+'% ('+(st.memory_usage_mb||0).toFixed(0)+'MB)'; }
+      });
+    }
+
+    // Service logs modal.
+    function showSvcLogs(svc) {
+      var ov = document.getElementById('svcLogsOverlay');
+      document.getElementById('svcLogsName').textContent = svc;
+      var pre = document.getElementById('svcLogsBody');
+      pre.textContent = '로그 조회 중...';
+      ov.style.display = 'flex';
+      ov.setAttribute('data-svc', svc);
+      loadSvcLogs();
+    }
+    function hideSvcLogs() { document.getElementById('svcLogsOverlay').style.display = 'none'; }
+    function loadSvcLogs() {
+      var ov = document.getElementById('svcLogsOverlay');
+      var svc = ov.getAttribute('data-svc'); if (!svc) return;
+      var tail = document.getElementById('svcLogsTail').value;
+      var pre = document.getElementById('svcLogsBody');
+      pre.textContent = '로그 조회 중...';
+      fetch(API + '/v1/cluster/logs?service=' + encodeURIComponent(svc) + '&tail=' + encodeURIComponent(tail), { credentials: 'same-origin' })
+        .then(function(r) { return r.json(); })
+        .then(function(d) { pre.textContent = d.success ? (d.logs || '(로그 없음)') : ('조회 실패: ' + (d.message||'')); pre.scrollTop = pre.scrollHeight; })
+        .catch(function(e) { pre.textContent = '오류: ' + e.message; });
     }
 
     // Fetch live endpoint status from /v1/services/endpoints and update cells
@@ -1925,6 +3205,126 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
     // Initial load of thumbnails
     setTimeout(refreshThumbnails, 2000);
 
+    // === Service Groups (compose deployments) ===
+    var _groupsTimer = null;
+    var _lastGroups = [];
+    async function refreshGroups() {
+      try {
+        var r = await fetch(API + '/v1/services/groups', { credentials: 'same-origin' });
+        var d = await r.json();
+        var groups = (d && d.groups) || [];
+        _lastGroups = groups;
+        var panel = document.getElementById('serviceGroupsPanel');
+        var body = document.getElementById('groupsBody');
+        var countEl = document.getElementById('groupsCount');
+        if (!groups.length) {
+          panel.style.display = 'none';
+          clearTimeout(_groupsTimer);
+          _groupsTimer = setTimeout(refreshGroups, 30000);
+          return;
+        }
+        panel.style.display = '';
+        countEl.textContent = '(' + groups.length + '개 그룹)';
+        var html = '';
+        groups.forEach(function(g) {
+          var feUrl = '';
+          if (g.frontend) feUrl = (window.location.origin) + '/' + g.name + '-' + g.frontend + '/';
+          var running = (g.running_count || 0), total = (g.total_count || 0);
+          var statusCls = running === total ? 'var(--success)' : running > 0 ? 'var(--warn)' : 'var(--danger)';
+          html += '<div style="padding:0.5rem 0.6rem;border:1px solid var(--border);border-radius:var(--radius);margin-bottom:0.5rem;background:var(--bg);">';
+          html += '<div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;">';
+          html += '<span style="font-weight:600;font-size:0.95rem;">🗂️ ' + escapeHtml(g.name) + '</span>';
+          html += '<span style="font-size:0.75rem;color:' + statusCls + ';">▸ ' + running + '/' + total + ' running</span>';
+          if (g.frontend) {
+            html += '<span style="font-size:0.75rem;background:rgba(63,185,80,0.15);color:var(--success);padding:0.1rem 0.5rem;border-radius:99px;">frontend: ' + escapeHtml(g.frontend) + '</span>';
+          }
+          html += '<button class="btn btn-sm btn-warn write-only" style="margin-left:auto;" data-group-update="' + escapeHtml(g.name) + '" title="그룹 내 모든 서비스의 이미지를 최신 태그로 다시 pull + 컨테이너 재생성">업데이트</button>';
+          html += '<button class="btn btn-sm btn-danger write-only" data-group-stop="' + escapeHtml(g.name) + '">그룹 종료</button>';
+          html += '</div>';
+          // Members list — each with its own mini update button
+          html += '<div style="margin-top:0.4rem;font-size:0.78rem;color:var(--text-muted);display:flex;flex-wrap:wrap;gap:0.35rem;">';
+          (g.members || []).forEach(function(m) {
+            var badge = m.frontend ? ' ⭐' : '';
+            var sDot = m.status === 'running' ? '🟢' : '🔴';
+            var svc = m.service_name || m.container_name;
+            html += '<span style="padding:0.15rem 0.5rem;background:var(--surface);border-radius:4px;font-family:JetBrains Mono,monospace;display:inline-flex;align-items:center;gap:0.3rem;">' + sDot + ' ' + escapeHtml(svc) + badge + ' <span style="opacity:0.6;">@' + escapeHtml(m.node_name) + '</span>';
+            html += ' <button class="btn btn-sm btn-outline write-only" data-svc-update="' + escapeHtml(svc) + '" title="이미지 재pull + 컨테이너 재생성" style="padding:0 0.35rem;font-size:0.7rem;">⟳</button>';
+            html += '</span>';
+          });
+          html += '</div>';
+          html += '</div>';
+        });
+        body.innerHTML = html;
+
+        body.querySelectorAll('[data-group-stop]').forEach(function(btn) {
+          btn.addEventListener('click', async function() {
+            var name = this.getAttribute('data-group-stop');
+            if (!confirm('서비스 그룹 "' + name + '"의 모든 컨테이너를 종료할까요?')) return;
+            this.disabled = true;
+            this.textContent = '종료 중...';
+            try {
+              var r = await fetch(API + '/v1/services/group/' + encodeURIComponent(name) + '/stop', {
+                method: 'POST', credentials: 'same-origin',
+                headers: { 'X-CSRF-Token': getCsrfToken() }
+              });
+              var d = await r.json();
+              appendLog('그룹 종료: ' + name, d);
+              refreshGroups();
+              loadAll();
+            } catch (e) {
+              appendLog('그룹 종료 실패', { success: false, message: e.message });
+              alert('종료 오류: ' + e.message);
+              this.disabled = false;
+              this.textContent = '그룹 종료';
+            }
+          });
+        });
+
+        body.querySelectorAll('[data-group-update]').forEach(function(btn) {
+          btn.addEventListener('click', async function() {
+            var name = this.getAttribute('data-group-update');
+            if (!confirm('서비스 그룹 "' + name + '"의 모든 이미지를 다시 pull + 컨테이너 재생성할까요?')) return;
+            var orig = this.textContent;
+            this.disabled = true;
+            this.textContent = '업데이트 중...';
+            try {
+              var r = await fetch(API + '/v1/services/group/' + encodeURIComponent(name) + '/update', {
+                method: 'POST', credentials: 'same-origin',
+                headers: { 'X-CSRF-Token': getCsrfToken() }
+              });
+              var d = await r.json();
+              appendLog('그룹 업데이트: ' + name, d);
+              setTimeout(refreshGroups, 3000);
+              setTimeout(loadAll, 3000);
+            } catch (e) {
+              appendLog('그룹 업데이트 실패', { success: false, message: e.message });
+              alert('업데이트 오류: ' + e.message);
+            }
+            this.disabled = false;
+            this.textContent = orig;
+          });
+        });
+
+        body.querySelectorAll('[data-svc-update]').forEach(function(btn) {
+          btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            var svc = this.getAttribute('data-svc-update');
+            // Find current image from the cached group data
+            var image = '';
+            (groups || []).forEach(function(g) {
+              (g.members || []).forEach(function(m) {
+                if (m.service_name === svc) image = m.image;
+              });
+            });
+            showUpdateSvcModal(svc, image);
+          });
+        });
+      } catch (e) { /* silent */ }
+      clearTimeout(_groupsTimer);
+      _groupsTimer = setTimeout(refreshGroups, 15000);
+    }
+    setTimeout(refreshGroups, 2500);
+
     function updateServicesInPlace(data) {
       var panel = document.getElementById('servicesPanel');
       if (!Array.isArray(data) || data.length === 0) return;
@@ -1983,6 +3383,33 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
 
     /* Task 4: Image helpers */
     var _lastImageData = [];
+    // formatImageDate renders an RFC3339 timestamp as a compact "YYYY-MM-DD HH:MM"
+    // local-time string. Empty/invalid input gets a muted em-dash.
+    function formatImageDate(iso) {
+      if (!iso) return '<span class="text-muted">—</span>';
+      var d = new Date(iso);
+      if (isNaN(d.getTime())) return '<span class="text-muted">—</span>';
+      var pad = function(n) { return n < 10 ? '0' + n : '' + n; };
+      return pad(d.getFullYear()) + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+        + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+    }
+    // fillDeployForm drops an image tag into the main deploy form. If the
+    // service-name input is empty, seeds it from the repo basename (strips
+    // registry prefix + tag). Highlights the image input briefly so the
+    // user sees where the value landed.
+    function fillDeployForm(imageTag, repoName) {
+      var deployImageEl = document.getElementById('deployImage');
+      var deployNameEl = document.getElementById('deployName');
+      if (!deployImageEl) return;
+      deployImageEl.value = imageTag || '';
+      if (deployNameEl && !deployNameEl.value.trim()) {
+        var src = (repoName || imageTag || '').split('/').pop();
+        deployNameEl.value = (src.split(':')[0] || '').trim();
+      }
+      deployImageEl.focus();
+      deployImageEl.style.borderColor = 'var(--success)';
+      setTimeout(function() { deployImageEl.style.borderColor = ''; }, 1200);
+    }
     function formatImageSize(sizeMb) {
       if (sizeMb == null) return '<span class="text-muted">—</span>';
       var val, unit, cls;
@@ -1991,14 +3418,42 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
       return '<span class="' + cls + '">' + val + ' ' + unit + '</span>';
     }
 
+    // Two-tab image list state. Registry is the default — it's the source
+    // of truth for deployed images, whereas the cluster view is noisy.
+    var _activeImgTab = 'registry';
+    var _lastRegistryData = null;
+    var _imgSelected = { cluster: new Set(), registry: new Set() };
+
+    function _imgUpdateBulkBtn() {
+      var btn = document.getElementById('btnImageBulkDelete');
+      var countEl = document.getElementById('imgBulkCount');
+      var n = _imgSelected[_activeImgTab].size;
+      if (btn) btn.disabled = n === 0;
+      if (countEl) countEl.textContent = '(' + n + ')';
+    }
+
     function renderImages(data) {
       _lastImageData = data || [];
-      const panel = document.getElementById('imagesPanel');
-      if (!Array.isArray(data) || data.length === 0) {
-        panel.innerHTML = '<p class="text-muted">이미지 없음</p>';
+      _imgSelected.cluster.clear();
+      renderImageClusterTab();
+      _imgUpdateBulkBtn();
+      // Registry tab is loaded on demand (first tab switch or refresh).
+      if (_lastRegistryData !== null) {
+        renderImageRegistryTab();
+      }
+      // Update count badges.
+      var c = document.getElementById('imgTabCountCluster');
+      if (c) c.textContent = '(' + _lastImageData.length + ')';
+    }
+
+    function renderImageClusterTab() {
+      var panel = document.getElementById('imagesPanelCluster');
+      if (!panel) return;
+      var data = _lastImageData || [];
+      if (!data.length) {
+        panel.innerHTML = '<p class="text-muted" style="padding:0.5rem 0;">이미지 없음</p>';
         return;
       }
-      // Filter by search input (Task 4.2)
       var searchEl = document.getElementById('imageSearchInput');
       var filter = searchEl ? searchEl.value.trim().toLowerCase() : '';
       var filtered = filter ? data.filter(function(img) {
@@ -2007,59 +3462,431 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
         return tag.toLowerCase().indexOf(filter) >= 0 || repo.toLowerCase().indexOf(filter) >= 0;
       }) : data;
 
-      if (filtered.length === 0) {
-        panel.innerHTML = '<p class="text-muted">검색 결과 없음 (' + data.length + '개 이미지 중)</p>';
+      if (!filtered.length) {
+        panel.innerHTML = '<p class="text-muted" style="padding:0.5rem 0;">검색 결과 없음 (' + data.length + '개 중)</p>';
         return;
       }
 
-      // Compact image table (Task 4.3: color-coded sizes)
-      var html = '<table><thead><tr><th>이미지</th><th>태그</th><th>크기</th><th style="width:130px;"></th></tr></thead><tbody>';
-      filtered.forEach(function(img, idx) {
+      var html = '<table><thead><tr>'
+        + '<th style="width:28px;"><input type="checkbox" id="imgSelectAllCluster" title="전체 선택"></th>'
+        + '<th>이미지</th><th>태그</th><th>크기</th><th style="width:130px;">업로드</th><th style="width:130px;"></th>'
+        + '</tr></thead><tbody>';
+      filtered.forEach(function(img) {
         var tag = (img.tags && img.tags[0]) ? img.tags[0] : (img.id || '');
         var repo = img.repository || tag.split(':')[0] || '';
         var tags = img.tags && img.tags.length ? img.tags.join(', ') : (img.tag || tag);
         var sizeHtml = formatImageSize(img.size_mb);
+        var dateHtml = formatImageDate(img.created);
         var id = img.id || tag;
-        html += '<tr>';
+        var checked = _imgSelected.cluster.has(id) ? 'checked' : '';
+        html += '<tr data-img-row="' + escapeHtml(id) + '">';
+        html += '<td><input type="checkbox" class="img-chk-cluster" data-img-id="' + escapeHtml(id) + '" ' + checked + '></td>';
         html += '<td style="font-family:JetBrains Mono,monospace;font-size:0.82rem;">' + escapeHtml(repo) + '</td>';
         html += '<td style="font-size:0.82rem;color:var(--text-muted);">' + escapeHtml(tags) + '</td>';
         html += '<td style="font-size:0.82rem;">' + sizeHtml + '</td>';
+        html += '<td style="font-size:0.78rem;color:var(--text-muted);white-space:nowrap;">' + dateHtml + '</td>';
         html += '<td style="white-space:nowrap;">';
-        html += '<button type="button" class="btn btn-sm btn-success" data-img-select="' + escapeHtml(tag) + '" data-img-name="' + escapeHtml(repo) + '" title="배포 입력란에 채우기">선택</button> ';
-        html += '<button type="button" class="btn btn-sm btn-danger" data-img-remove="' + escapeHtml(id) + '" title="이미지 삭제">삭제</button>';
-        html += '</td>';
-        html += '</tr>';
+        html += '<button type="button" class="btn btn-sm btn-success write-only" data-img-run="' + escapeHtml(tag) + '" data-img-name="' + escapeHtml(repo) + '" title="즉시 배포">기동</button> ';
+        html += '<button type="button" class="btn btn-sm btn-outline" data-img-select="' + escapeHtml(tag) + '" data-img-name="' + escapeHtml(repo) + '" title="배포 입력란에 채우기">선택</button> ';
+        html += '<button type="button" class="btn btn-sm btn-danger write-only" data-img-remove="' + escapeHtml(id) + '" title="이미지 삭제">삭제</button>';
+        html += '</td></tr>';
       });
       html += '</tbody></table>';
       panel.innerHTML = html;
 
-      // "선택" buttons fill the deploy image input (Task 3: unified deploy)
-      panel.querySelectorAll('[data-img-select]').forEach(function(btn) {
+      panel.querySelectorAll('[data-img-run]').forEach(function(btn) {
         btn.addEventListener('click', function() {
-          var deployImageEl = document.getElementById('deployImage');
-          var deployNameEl = document.getElementById('deployName');
-          deployImageEl.value = this.getAttribute('data-img-select');
-          // Auto-fill service name from repo if deploy name is empty
-          if (!deployNameEl.value.trim()) {
-            var imgName = this.getAttribute('data-img-name') || '';
-            var parts = imgName.split('/');
-            deployNameEl.value = parts[parts.length - 1].split(':')[0];
-          }
-          deployImageEl.focus();
-          // Flash highlight to indicate selection
-          deployImageEl.style.borderColor = 'var(--success)';
-          setTimeout(function() { deployImageEl.style.borderColor = ''; }, 1200);
+          var img = this.getAttribute('data-img-run');
+          var repo = this.getAttribute('data-img-name') || '';
+          showQuickRunModal(img, repo);
         });
       });
 
-      // "삭제" buttons
+      panel.querySelectorAll('[data-img-select]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          fillDeployForm(this.getAttribute('data-img-select'), this.getAttribute('data-img-name') || '');
+        });
+      });
+
       panel.querySelectorAll('[data-img-remove]').forEach(function(btn) {
         btn.addEventListener('click', function() {
           var id = this.getAttribute('data-img-remove');
-          if (id) removeImage(id);
+          if (id) removeImageOptimistic(id, 'cluster');
         });
       });
+
+      panel.querySelectorAll('.img-chk-cluster').forEach(function(cb) {
+        cb.addEventListener('change', function() {
+          var id = this.getAttribute('data-img-id');
+          if (this.checked) _imgSelected.cluster.add(id);
+          else _imgSelected.cluster.delete(id);
+          _imgUpdateBulkBtn();
+        });
+      });
+      var selAll = panel.querySelector('#imgSelectAllCluster');
+      if (selAll) {
+        selAll.addEventListener('change', function() {
+          panel.querySelectorAll('.img-chk-cluster').forEach(function(cb) {
+            cb.checked = selAll.checked;
+            var id = cb.getAttribute('data-img-id');
+            if (cb.checked) _imgSelected.cluster.add(id);
+            else _imgSelected.cluster.delete(id);
+          });
+          _imgUpdateBulkBtn();
+        });
+      }
     }
+
+    async function loadRegistryImages() {
+      var panel = document.getElementById('imagesPanelRegistry');
+      try {
+        var r = await fetch(API + '/v1/registry/catalog', { credentials: 'same-origin' });
+        if (r.status === 503) {
+          _lastRegistryData = { repositories: [], disabled: true };
+          panel.innerHTML = '<p class="text-muted" style="padding:0.5rem 0;">Registry가 실행 중이 아닙니다. 먼저 활성화하세요.</p>';
+          document.getElementById('imgTabCountRegistry').textContent = '(0)';
+          return;
+        }
+        var d = await r.json();
+        _lastRegistryData = d || { repositories: [] };
+        renderImageRegistryTab();
+      } catch (e) {
+        panel.innerHTML = '<p class="error-msg">Registry 조회 실패: ' + escapeHtml(e.message || String(e)) + '</p>';
+      }
+    }
+
+    function renderImageRegistryTab() {
+      var panel = document.getElementById('imagesPanelRegistry');
+      if (!panel || !_lastRegistryData) return;
+      var repos = _lastRegistryData.repositories || [];
+      // Flatten into (repo, tag, created) rows. Prefer the newer `tag_infos`
+      // array (includes creation time); fall back to string `tags` for
+      // older server responses.
+      var rows = [];
+      repos.forEach(function(r) {
+        if (r.tag_infos && r.tag_infos.length) {
+          r.tag_infos.forEach(function(ti) {
+            rows.push({ repo: r.name, tag: ti.tag, created: ti.created || '', size_mb: ti.size_mb || 0 });
+          });
+        } else {
+          (r.tags || []).forEach(function(t) {
+            rows.push({ repo: r.name, tag: t, created: '', size_mb: 0 });
+          });
+        }
+      });
+      // Sort newest uploads first (empty `created` sinks to the bottom).
+      rows.sort(function(a, b) {
+        if (!a.created && !b.created) return 0;
+        if (!a.created) return 1;
+        if (!b.created) return -1;
+        return a.created < b.created ? 1 : (a.created > b.created ? -1 : 0);
+      });
+      document.getElementById('imgTabCountRegistry').textContent = '(' + rows.length + ')';
+
+      if (!rows.length) {
+        panel.innerHTML = '<p class="text-muted" style="padding:0.5rem 0;">Registry에 이미지 없음</p>';
+        return;
+      }
+
+      var searchEl = document.getElementById('imageSearchInput');
+      var filter = searchEl ? searchEl.value.trim().toLowerCase() : '';
+      var filtered = filter ? rows.filter(function(r) {
+        return (r.repo + ':' + r.tag).toLowerCase().indexOf(filter) >= 0;
+      }) : rows;
+
+      if (!filtered.length) {
+        panel.innerHTML = '<p class="text-muted" style="padding:0.5rem 0;">검색 결과 없음 (' + rows.length + '개 중)</p>';
+        return;
+      }
+
+      var html = '<table><thead><tr>'
+        + '<th style="width:28px;"><input type="checkbox" id="imgSelectAllRegistry" title="전체 선택"></th>'
+        + '<th>Repository</th><th>Tag</th><th style="width:80px;">크기</th><th style="width:130px;">업로드</th><th style="width:190px;"></th>'
+        + '</tr></thead><tbody>';
+      filtered.forEach(function(rr) {
+        var key = rr.repo + ':' + rr.tag;
+        var checked = _imgSelected.registry.has(key) ? 'checked' : '';
+        var dateHtml = formatImageDate(rr.created);
+        var sizeHtml = rr.size_mb ? formatImageSize(rr.size_mb) : '<span class="text-muted">—</span>';
+        html += '<tr data-reg-row="' + escapeHtml(key) + '">';
+        html += '<td><input type="checkbox" class="img-chk-registry" data-reg-key="' + escapeHtml(key) + '" ' + checked + '></td>';
+        html += '<td style="font-family:JetBrains Mono,monospace;font-size:0.82rem;">' + escapeHtml(rr.repo) + '</td>';
+        html += '<td style="font-size:0.82rem;color:var(--text-muted);">' + escapeHtml(rr.tag) + '</td>';
+        html += '<td style="font-size:0.82rem;">' + sizeHtml + '</td>';
+        html += '<td style="font-size:0.78rem;color:var(--text-muted);white-space:nowrap;">' + dateHtml + '</td>';
+        html += '<td style="white-space:nowrap;">';
+        html += '<button type="button" class="btn btn-sm btn-success write-only" data-reg-run="' + escapeHtml(rr.repo) + '|' + escapeHtml(rr.tag) + '" title="Registry 이미지로 즉시 배포">기동</button> ';
+        html += '<button type="button" class="btn btn-sm btn-outline" data-reg-select="' + escapeHtml(rr.repo) + '|' + escapeHtml(rr.tag) + '" title="배포 입력란에 채우기">선택</button> ';
+        html += '<button type="button" class="btn btn-sm btn-danger write-only" data-reg-del="' + escapeHtml(key) + '" title="Registry에서 삭제">삭제</button>';
+        html += '</td></tr>';
+      });
+      html += '</tbody></table>';
+      panel.innerHTML = html;
+
+      panel.querySelectorAll('[data-reg-run]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var parts = this.getAttribute('data-reg-run').split('|');
+          var repo = parts[0];
+          var tag = parts[1];
+          // Build full registry image URL so docker can pull it from the internal registry.
+          fetch(API + '/v1/registry/status', { credentials: 'same-origin' })
+            .then(function(r) { return r.json(); })
+            .then(function(info) {
+              var endpoint = info && info.endpoint ? info.endpoint : (window.location.host.split(':')[0] + ':5000');
+              var fullImage = endpoint + '/' + repo + ':' + tag;
+              showQuickRunModal(fullImage, repo);
+            })
+            .catch(function() {
+              showQuickRunModal(repo + ':' + tag, repo);
+            });
+        });
+      });
+
+      panel.querySelectorAll('[data-reg-select]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var parts = this.getAttribute('data-reg-select').split('|');
+          var repo = parts[0];
+          var tag = parts[1];
+          // Resolve the external registry endpoint so the deploy form gets a
+          // docker-pullable tag (same logic as the Run button above).
+          fetch(API + '/v1/registry/status', { credentials: 'same-origin' })
+            .then(function(r) { return r.json(); })
+            .then(function(info) {
+              var endpoint = info && info.endpoint ? info.endpoint : (window.location.host.split(':')[0] + ':5000');
+              fillDeployForm(endpoint + '/' + repo + ':' + tag, repo);
+            })
+            .catch(function() {
+              fillDeployForm(repo + ':' + tag, repo);
+            });
+        });
+      });
+
+      panel.querySelectorAll('[data-reg-del]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var key = this.getAttribute('data-reg-del');
+          if (key) removeRegistryTagOptimistic(key);
+        });
+      });
+      panel.querySelectorAll('.img-chk-registry').forEach(function(cb) {
+        cb.addEventListener('change', function() {
+          var key = this.getAttribute('data-reg-key');
+          if (this.checked) _imgSelected.registry.add(key);
+          else _imgSelected.registry.delete(key);
+          _imgUpdateBulkBtn();
+        });
+      });
+      var selAll = panel.querySelector('#imgSelectAllRegistry');
+      if (selAll) {
+        selAll.addEventListener('change', function() {
+          panel.querySelectorAll('.img-chk-registry').forEach(function(cb) {
+            cb.checked = selAll.checked;
+            var key = cb.getAttribute('data-reg-key');
+            if (cb.checked) _imgSelected.registry.add(key);
+            else _imgSelected.registry.delete(key);
+          });
+          _imgUpdateBulkBtn();
+        });
+      }
+    }
+
+    // Remove a row from DOM immediately; fire DELETE in background; revert on failure.
+    async function removeImageOptimistic(id, tab) {
+      var row = document.querySelector('[data-img-row="' + CSS.escape(id) + '"]');
+      if (row) row.style.opacity = '0.4';
+      _imgSelected[tab].delete(id);
+      try {
+        const r = await apiFetch('/v1/images/' + encodeURIComponent(id), { method: 'DELETE' });
+        const data = await r.json();
+        if (data.success) {
+          if (row) row.remove();
+          _lastImageData = (_lastImageData || []).filter(function(img) {
+            var iid = img.id || (img.tags && img.tags[0]);
+            return iid !== id;
+          });
+          var c = document.getElementById('imgTabCountCluster');
+          if (c) c.textContent = '(' + _lastImageData.length + ')';
+        } else {
+          if (row) row.style.opacity = '';
+          alert('삭제 실패: ' + (data.message || ''));
+        }
+        appendLog('이미지 삭제: ' + id, data);
+      } catch (e) {
+        if (row) row.style.opacity = '';
+        appendLog('이미지 삭제 실패', { success: false, message: e.message });
+      }
+      _imgUpdateBulkBtn();
+    }
+
+    async function removeRegistryTagOptimistic(key) {
+      // key = "repo:tag"
+      var idx = key.lastIndexOf(':');
+      if (idx < 0) return;
+      var repo = key.substring(0, idx);
+      var tag = key.substring(idx + 1);
+      var row = document.querySelector('[data-reg-row="' + CSS.escape(key) + '"]');
+      if (row) row.style.opacity = '0.4';
+      _imgSelected.registry.delete(key);
+      try {
+        const r = await apiFetch('/v1/registry/repo/' + encodeURIComponent(repo) + '?tag=' + encodeURIComponent(tag), { method: 'DELETE' });
+        const data = await r.json();
+        if (data.success) {
+          if (row) row.remove();
+          if (_lastRegistryData && _lastRegistryData.repositories) {
+            _lastRegistryData.repositories.forEach(function(rr) {
+              if (rr.name === repo) {
+                rr.tags = (rr.tags || []).filter(function(t) { return t !== tag; });
+                rr.tag_infos = (rr.tag_infos || []).filter(function(ti) { return ti.tag !== tag; });
+              }
+            });
+            _lastRegistryData.repositories = _lastRegistryData.repositories.filter(function(rr) {
+              return (rr.tags || []).length > 0;
+            });
+          }
+          var c = document.getElementById('imgTabCountRegistry');
+          if (c) {
+            var total = (_lastRegistryData.repositories || []).reduce(function(s, rr) { return s + (rr.tags || []).length; }, 0);
+            c.textContent = '(' + total + ')';
+          }
+        } else {
+          if (row) row.style.opacity = '';
+          alert('Registry 삭제 실패: ' + (data.message || ''));
+        }
+        appendLog('Registry 삭제: ' + key, data);
+      } catch (e) {
+        if (row) row.style.opacity = '';
+        appendLog('Registry 삭제 실패', { success: false, message: e.message });
+      }
+      _imgUpdateBulkBtn();
+    }
+
+    async function bulkDeleteSelected() {
+      var tab = _activeImgTab;
+      var selected = Array.from(_imgSelected[tab]);
+      if (!selected.length) return;
+      if (!confirm(selected.length + '개 이미지를 삭제하시겠습니까?')) return;
+      var btn = document.getElementById('btnImageBulkDelete');
+      if (btn) btn.disabled = true;
+      var fn = tab === 'cluster' ? function(id) { return removeImageOptimistic(id, 'cluster'); }
+                                 : function(k) { return removeRegistryTagOptimistic(k); };
+      // Parallel, but capped to avoid overwhelming the server.
+      var chunks = [];
+      for (var i = 0; i < selected.length; i += 4) chunks.push(selected.slice(i, i + 4));
+      for (var i = 0; i < chunks.length; i++) {
+        await Promise.all(chunks[i].map(fn));
+      }
+      if (btn) btn.disabled = false;
+    }
+
+    // Top-level tab switching (이미지/배포 vs 서비스 관리). Only one big
+    // section is visible at a time; the deploy form and service list are no
+    // longer stacked.
+    (function initMainTabs() {
+      function apply() {
+        var tabs = document.querySelectorAll('.main-tab');
+        if (!tabs.length) return;
+        var panes = document.querySelectorAll('.main-tab-pane');
+        function activate(which) {
+          tabs.forEach(function(t) {
+            var active = t.getAttribute('data-main-tab') === which;
+            t.style.borderBottomColor = active ? 'var(--accent)' : 'transparent';
+            t.style.color = active ? 'var(--accent)' : 'var(--text-muted)';
+            t.style.fontWeight = active ? '600' : '';
+            if (active) t.classList.add('main-tab-active'); else t.classList.remove('main-tab-active');
+          });
+          panes.forEach(function(p) {
+            p.style.display = (p.getAttribute('data-main-pane') === which) ? '' : 'none';
+          });
+        }
+        tabs.forEach(function(t) {
+          t.addEventListener('click', function() {
+            activate(this.getAttribute('data-main-tab'));
+          });
+        });
+        // Default: deploy pane visible.
+        activate('deploy');
+      }
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', apply);
+      } else {
+        apply();
+      }
+    })();
+
+    // Deploy-mode tab switching (preset / source / git / compose)
+    (function initDeployTabs() {
+      function apply() {
+        var tabs = document.querySelectorAll('.deploy-tab');
+        if (!tabs.length) return;
+        var panes = document.querySelectorAll('.deploy-tab-pane');
+        function activate(which) {
+          tabs.forEach(function(t) {
+            var active = t.getAttribute('data-deploy-tab') === which;
+            t.style.borderBottomColor = active ? 'var(--accent)' : 'transparent';
+            t.style.color = active ? 'var(--accent)' : 'var(--text-muted)';
+            t.style.fontWeight = active ? '600' : '';
+            if (active) t.classList.add('deploy-tab-active'); else t.classList.remove('deploy-tab-active');
+          });
+          panes.forEach(function(p) {
+            p.style.display = (p.getAttribute('data-deploy-pane') === which) ? '' : 'none';
+          });
+        }
+        tabs.forEach(function(t) {
+          t.addEventListener('click', function() {
+            activate(this.getAttribute('data-deploy-tab'));
+          });
+        });
+        // Default: preset pane visible.
+        activate('preset');
+      }
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', apply);
+      } else {
+        apply();
+      }
+    })();
+
+    // Tab switching + controls
+    document.addEventListener('DOMContentLoaded', function initImageTabs() {
+      var tabs = document.querySelectorAll('.img-tab');
+      tabs.forEach(function(t) {
+        t.addEventListener('click', function() {
+          var which = this.getAttribute('data-img-tab');
+          _activeImgTab = which;
+          tabs.forEach(function(x) {
+            var active = x.getAttribute('data-img-tab') === which;
+            x.style.borderBottomColor = active ? 'var(--accent)' : 'transparent';
+            x.style.color = active ? 'var(--accent)' : 'var(--text-muted)';
+          });
+          document.getElementById('imagesPanelCluster').style.display = (which === 'cluster' ? '' : 'none');
+          document.getElementById('imagesPanelRegistry').style.display = (which === 'registry' ? '' : 'none');
+          _imgUpdateBulkBtn();
+          if (which === 'registry' && _lastRegistryData === null) loadRegistryImages();
+        });
+      });
+      var bulkBtn = document.getElementById('btnImageBulkDelete');
+      if (bulkBtn) bulkBtn.addEventListener('click', bulkDeleteSelected);
+      var refreshBtn = document.getElementById('btnImageRefresh');
+      if (refreshBtn) refreshBtn.addEventListener('click', function() {
+        if (_activeImgTab === 'cluster') loadAll();
+        else { _lastRegistryData = null; loadRegistryImages(); }
+      });
+      var searchEl = document.getElementById('imageSearchInput');
+      if (searchEl) searchEl.addEventListener('input', function() {
+        if (_activeImgTab === 'cluster') renderImageClusterTab();
+        else renderImageRegistryTab();
+      });
+
+      // Registry is the default tab — load it once when the <details> first
+      // opens (no point hammering the registry before the user expands it).
+      var det = document.getElementById('imageListDetails');
+      if (det) {
+        det.addEventListener('toggle', function() {
+          if (this.open && _activeImgTab === 'registry' && _lastRegistryData === null) {
+            loadRegistryImages();
+          }
+        });
+      }
+    });
 
     let expandedNodes = new Set(['__all__']); // 기본 펼침
 
@@ -2310,9 +4137,11 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
         var intentEl = document.getElementById('previewIntent');
         var cliEl = document.getElementById('previewCli');
         try {
-          var preRes = await apiFetch('/v1/command', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+          // AI orchestration lives on the master — never route the command
+          // through a selected target node's proxy (the worker has no AI key).
+          var preRes = await fetch(API + '/v1/command', {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
             body: JSON.stringify({ command: cmd, dry_run: true })
           });
           var preData = await preRes.json();
@@ -2338,12 +4167,16 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
       document.getElementById('commandPreview').classList.remove('active');
       pendingPreviewCmd = '';
       try {
-        var res = await apiFetch('/v1/command', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+        // Always target the master for AI commands (see runCommand note).
+        var res = await fetch(API + '/v1/command', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
           body: JSON.stringify({ command: cmd, dry_run: !!dryRun })
         });
-        var data = await res.json();
+        var raw = await res.text();
+        var data;
+        try { data = JSON.parse(raw); }
+        catch (pe) { data = { success: false, message: '서버 응답을 해석할 수 없습니다 (HTTP ' + res.status + '): ' + raw.slice(0, 200) }; }
         appendLog(cmd, data);
         if (!dryRun) loadAll();
       } catch (e) {
@@ -2692,7 +4525,19 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
       function lines(id) { var v = (document.getElementById(id).value || '').trim(); return v ? v.split(/\n/).map(function(s){ return s.trim(); }).filter(Boolean) : []; }
       var body = { image: image, replicas: replicas, strategy: strategy };
       if (name) body.name = name;
+      var subdomainEl = document.getElementById('deploySubdomain');
+      if (subdomainEl && subdomainEl.checked) body.subdomain = true;
       var env = lines('deployEnv'); if (env.length) body.environment = env;
+      var secrets = lines('deploySecrets'); if (secrets.length) body.secrets = secrets;
+      // Collect any user-secret references selected via checkbox above.
+      var refs = [];
+      document.querySelectorAll('#deploySecretRefList [data-secret-ref-id]:checked').forEach(function(cb) {
+        var id = cb.getAttribute('data-secret-ref-id');
+        var nameInput = document.querySelector('#deploySecretRefList [data-secret-ref-envname="' + id + '"]');
+        var envName = (nameInput && nameInput.value || '').trim();
+        refs.push({ secret_id: id, env_name: envName });
+      });
+      if (refs.length) body.secret_refs = refs;
       var ports = lines('deployPorts'); if (ports.length) body.ports = ports;
       var vols = lines('deployVolumes'); if (vols.length) body.volumes = vols;
       var mem = (document.getElementById('deployMemory').value || '').trim(); if (mem) body.memory = mem;
@@ -2845,40 +4690,430 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
       this.textContent = 'Pull';
     });
 
-    // Source Upload & Auto Deploy
+    // === Compose template management ===
+    async function refreshComposeTemplates() {
+      var sel = document.getElementById('composeTemplateSelect');
+      if (!sel) return;
+      try {
+        var r = await fetch(API + '/v1/compose-templates', { credentials: 'same-origin' });
+        var d = await r.json();
+        var current = sel.value;
+        var templates = (d && d.templates) || [];
+        sel.innerHTML = '<option value="">-- 선택 (' + templates.length + '개) --</option>';
+        templates.forEach(function(t) {
+          var opt = document.createElement('option');
+          opt.value = t.name;
+          var when = new Date(t.updated_at).toLocaleString('ko-KR');
+          opt.textContent = t.name + (t.deploy_count ? ' ×' + t.deploy_count : '') + ' · ' + when;
+          sel.appendChild(opt);
+        });
+        if (current) sel.value = current;
+      } catch (e) { /* silent */ }
+    }
+
+    async function loadSelectedComposeTemplate() {
+      var sel = document.getElementById('composeTemplateSelect');
+      var name = sel.value;
+      if (!name) { alert('템플릿을 선택하세요'); return; }
+      try {
+        var r = await fetch(API + '/v1/compose-templates/' + encodeURIComponent(name), { credentials: 'same-origin' });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        var t = await r.json();
+        document.getElementById('composeText').value = t.content || '';
+        document.getElementById('composeTextDetails').open = true;
+        var pnEl = document.getElementById('composeProjectName');
+        if (!pnEl.value.trim()) pnEl.value = t.project_name || t.name;
+        document.getElementById('composeFile').value = '';
+        var logEl = document.getElementById('composeDeployLog');
+        logEl.innerHTML = '<span style="color:var(--accent);">✓ \'' + escapeHtml(t.name) + '\' 템플릿 로드됨 (' + (t.content ? t.content.length : 0) + ' bytes). 편집 후 [기동] 가능.</span>';
+      } catch (e) {
+        alert('템플릿 로드 실패: ' + e.message);
+      }
+    }
+
+    async function deleteSelectedComposeTemplate() {
+      var sel = document.getElementById('composeTemplateSelect');
+      var name = sel.value;
+      if (!name) { alert('삭제할 템플릿을 선택하세요'); return; }
+      if (!confirm('템플릿 "' + name + '" 을(를) 삭제할까요?')) return;
+      try {
+        var r = await fetch(API + '/v1/compose-templates/' + encodeURIComponent(name), {
+          method: 'DELETE', credentials: 'same-origin'
+        });
+        var d = await r.json();
+        if (d.success) {
+          await refreshComposeTemplates();
+        } else {
+          alert('삭제 실패: ' + (d.message || ''));
+        }
+      } catch (e) { alert('삭제 오류: ' + e.message); }
+    }
+
+    async function runSelectedComposeTemplate() {
+      var sel = document.getElementById('composeTemplateSelect');
+      var name = sel.value;
+      if (!name) { alert('템플릿을 선택하세요'); return; }
+      var btn = document.getElementById('btnComposeTemplateRun');
+      btn.disabled = true; btn.textContent = '기동 중...';
+      var logEl = document.getElementById('composeDeployLog');
+      logEl.innerHTML = '<span class="deploy-spinner"></span><span style="color:var(--accent);">\'' + escapeHtml(name) + '\' 기동 중... (템플릿 로드 → 서비스 순차 생성)</span>';
+      try {
+        var tr = await fetch(API + '/v1/compose-templates/' + encodeURIComponent(name), { credentials: 'same-origin' });
+        var tdata = await tr.json();
+        if (!tdata || !tdata.content) {
+          logEl.innerHTML = '<span style="color:var(--danger);">템플릿 내용이 비어 있습니다</span>';
+          return;
+        }
+        // Reflect into form fields too so user sees what was sent
+        document.getElementById('composeText').value = tdata.content;
+        document.getElementById('composeTextDetails').open = true;
+        document.getElementById('composeProjectName').value = tdata.project_name || tdata.name;
+
+        var r = await fetch(API + '/v1/services/deploy-compose', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+          body: JSON.stringify({ compose: tdata.content, project_name: tdata.project_name || tdata.name })
+        });
+        var d = await r.json();
+        if (d.success) {
+          var deployedList = '';
+          (d.deployed || []).forEach(function(s) {
+            var portLink = s.url ? ' <a href="' + escapeHtml(s.url) + '" target="_blank" style="color:var(--accent);">' + escapeHtml(s.url) + '</a>' : '';
+            deployedList += '<div style="margin-top:0.2rem;">✓ <strong>' + escapeHtml(s.name) + '</strong>' + portLink + '</div>';
+          });
+          var errList = '';
+          (d.errors || []).forEach(function(e) {
+            errList += '<div style="margin-top:0.2rem;color:var(--danger);">✗ ' + escapeHtml(e.service || '') + ': ' + escapeHtml(e.error || e.message || '') + '</div>';
+          });
+          logEl.innerHTML = '<span style="color:var(--success);">' + escapeHtml(d.message || '기동 완료') + '</span>' + deployedList + errList;
+          appendLog('compose 기동: ' + name, d);
+          refreshComposeTemplates();
+          if (typeof refreshGroups === 'function') refreshGroups();
+          loadAll();
+        } else {
+          logEl.innerHTML = '<span style="color:var(--danger);">실패: ' + escapeHtml(d.message || d.error || '') + '</span>';
+          appendLog('compose 기동 실패', d);
+        }
+      } catch (e) {
+        logEl.innerHTML = '<span style="color:var(--danger);">오류: ' + escapeHtml(e.message) + '</span>';
+      }
+      btn.disabled = false; btn.textContent = '기동';
+    }
+
+    document.getElementById('btnComposeTemplateLoad').addEventListener('click', loadSelectedComposeTemplate);
+    document.getElementById('btnComposeTemplateRun').addEventListener('click', runSelectedComposeTemplate);
+    document.getElementById('btnComposeTemplateDelete').addEventListener('click', deleteSelectedComposeTemplate);
+    document.getElementById('btnComposeTemplateRefresh').addEventListener('click', refreshComposeTemplates);
+    // Initial load
+    refreshComposeTemplates();
+
+    // docker-compose.yml 기동
+    document.getElementById('btnDeployCompose').addEventListener('click', async function() {
+      var fileEl = document.getElementById('composeFile');
+      var textEl = document.getElementById('composeText');
+      var nameEl = document.getElementById('composeProjectName');
+      var logEl = document.getElementById('composeDeployLog');
+      var btn = this;
+      var body, contentType;
+
+      if (fileEl.files && fileEl.files[0]) {
+        var fd = new FormData();
+        fd.append('file', fileEl.files[0]);
+        if (nameEl.value.trim()) fd.append('name', nameEl.value.trim());
+        body = fd;
+      } else if (textEl.value.trim()) {
+        body = JSON.stringify({ compose: textEl.value, project_name: nameEl.value.trim() });
+        contentType = 'application/json';
+      } else {
+        alert('docker-compose 파일 선택 또는 YAML을 입력하세요');
+        return;
+      }
+
+      btn.disabled = true;
+      logEl.innerHTML = '<span class="deploy-spinner"></span><span style="color:var(--accent);">기동 중... (compose 파싱 → 이미지 pull → 컨테이너 순차 생성)</span>';
+
+      try {
+        var opts = { method: 'POST', credentials: 'same-origin', body: body };
+        if (contentType) opts.headers = { 'Content-Type': contentType };
+        var r = await fetch(API + '/v1/services/deploy-compose', opts);
+        var d = await r.json();
+        if (d.success) {
+          var deployedList = '';
+          (d.deployed || []).forEach(function(s) {
+            var portLink = s.url ? ' <a href="' + escapeHtml(s.url) + '" target="_blank" style="color:var(--accent);">' + escapeHtml(s.url) + '</a>' : '';
+            deployedList += '<div style="margin-top:0.2rem;">✓ <strong>' + escapeHtml(s.name) + '</strong>' + portLink + '</div>';
+          });
+          var errList = '';
+          (d.errors || []).forEach(function(e) {
+            errList += '<div style="margin-top:0.2rem;color:var(--danger);">✗ ' + escapeHtml(e.service || '') + ': ' + escapeHtml(e.error || e.message || '') + '</div>';
+          });
+          logEl.innerHTML = '<span style="color:var(--success);">' + escapeHtml(d.message || '기동 완료') + '</span>' + deployedList + errList;
+          appendLog('compose 기동: ' + (d.project_name || nameEl.value || 'compose'), d);
+          fileEl.value = '';
+          // Keep textarea + name so user can re-deploy without re-entering.
+          refreshComposeTemplates();
+          loadAll();
+        } else {
+          logEl.innerHTML = '<span style="color:var(--danger);">실패: ' + escapeHtml(d.message || d.error || '') + '</span>';
+          appendLog('compose 기동 실패', d);
+        }
+      } catch (e) {
+        logEl.innerHTML = '<span style="color:var(--danger);">오류: ' + escapeHtml(e.message) + '</span>';
+      }
+      btn.disabled = false;
+    });
+
+    // ─── Robust JSON fetch: proxies (Traefik/Cloudflare) may return HTML
+    // error pages on 502/504/413/timeouts. Raw `await r.json()` would throw
+    // "Unexpected token '<'" and kill the handler. This wraps fetch and
+    // always returns a {success, status, data?, message} shape.
+    async function safeJsonFetch(url, opts) {
+      var resp;
+      try {
+        resp = await fetch(url, opts);
+      } catch (e) {
+        return { success: false, status: 0, message: '네트워크 오류: ' + (e && e.message || e) };
+      }
+      var text = '';
+      try { text = await resp.text(); } catch (e) {
+        return { success: false, status: resp.status, message: '응답 본문 읽기 실패' };
+      }
+      var ct = (resp.headers.get('content-type') || '').toLowerCase();
+      if (ct.indexOf('application/json') >= 0 || (text.length && (text[0] === '{' || text[0] === '['))) {
+        try {
+          var data = JSON.parse(text);
+          if (!resp.ok) {
+            return { success: false, status: resp.status, data: data, message: (data && data.message) || ('HTTP ' + resp.status) };
+          }
+          return { success: (data && data.success !== false), status: resp.status, data: data, message: (data && data.message) || '' };
+        } catch (e) {
+          // Fall through to the non-JSON handler.
+        }
+      }
+      // Non-JSON body — usually an upstream HTML error page from a proxy.
+      var sniff = text.replace(/\s+/g, ' ').slice(0, 120);
+      var hint = '';
+      if (resp.status === 0) hint = '서버 연결 실패 (프록시 또는 네트워크)';
+      else if (resp.status === 413) hint = '파일이 너무 큽니다 (프록시 제한)';
+      else if (resp.status === 502 || resp.status === 504) hint = '게이트웨이 오류 (서버가 응답을 못 함)';
+      else if (resp.status === 401) hint = '인증이 만료되었거나 필요합니다';
+      else if (resp.status === 403) hint = '권한이 없습니다';
+      else if (resp.status >= 500) hint = '서버 오류';
+      else hint = '예상치 못한 응답 (HTTP ' + resp.status + ')';
+      return {
+        success: false,
+        status: resp.status,
+        message: hint + (sniff ? ' — ' + sniff : ''),
+      };
+    }
+
+    // ─── Live deploy progress panel helpers (shared by source-async + git) ───
+    var deployEventSource = null;
+    function openDeployProgressPanel(title) {
+      var panel = document.getElementById('deployProgressPanel');
+      var timeline = document.getElementById('deployProgressTimeline');
+      var phaseEl = document.getElementById('deployProgressPhase');
+      var spinEl = document.getElementById('deployProgressSpinner');
+      document.getElementById('deployProgressTitle').textContent = title || '배포 진행 상황';
+      timeline.innerHTML = '';
+      phaseEl.textContent = '';
+      spinEl.textContent = '⏳';
+      panel.style.display = 'block';
+    }
+    function appendDeployEvent(evt) {
+      var timeline = document.getElementById('deployProgressTimeline');
+      var phaseEl = document.getElementById('deployProgressPhase');
+      var ts = evt.ts ? new Date(evt.ts).toLocaleTimeString('ko-KR') : '';
+      var color = 'var(--text)';
+      var icon = '·';
+      if (evt.type === 'phase') { icon = '▶'; color = 'var(--accent)'; phaseEl.textContent = '[' + (evt.phase||'') + '] ' + (evt.message||''); }
+      else if (evt.type === 'error') { icon = '✖'; color = 'var(--danger)'; }
+      else if (evt.type === 'log') { icon = '›'; color = 'var(--text-muted)'; }
+      else if (evt.type === 'done') { icon = '✓'; color = 'var(--success)'; }
+      var msg = evt.message || evt.line || '';
+      if (evt.type === 'done' && evt.result) {
+        msg = evt.result.message || msg;
+      }
+      var row = document.createElement('div');
+      row.style.color = color;
+      row.style.whiteSpace = 'pre-wrap';
+      row.textContent = '[' + ts + '] ' + icon + ' ' + msg;
+      timeline.appendChild(row);
+      timeline.scrollTop = timeline.scrollHeight;
+    }
+    function subscribeDeployEvents(deployId, onDone) {
+      if (deployEventSource) { try { deployEventSource.close(); } catch(e){} deployEventSource = null; }
+      var retries = 0;
+      var maxRetries = 10;             // up to ~30s of reconnects
+      var doneFired = false;
+      var es = new EventSource(API + '/v1/services/deploy/' + deployId + '/events');
+      deployEventSource = es;
+
+      // Defensive polling fallback — if SSE stalls (proxy dropped the
+      // connection, etc.), poll the status endpoint every 10s and wrap up
+      // when the job is marked done. Cleaner than leaving the button stuck.
+      var pollTimer = setInterval(async function() {
+        if (doneFired) { clearInterval(pollTimer); return; }
+        var res = await safeJsonFetch(API + '/v1/services/deploy/' + deployId, { method: 'GET' });
+        if (res.success && res.data && res.data.done) {
+          doneFired = true;
+          clearInterval(pollTimer);
+          try { es.close(); } catch(e){}
+          deployEventSource = null;
+          var spinner = document.getElementById('deployProgressSpinner');
+          var result = res.data.result || {};
+          spinner.textContent = result.success ? '✓' : '✖';
+          appendDeployEvent({ type: 'log', message: '(폴링으로 최종 상태 확인 — SSE 연결이 닫혀 있습니다)', ts: new Date().toISOString() });
+          if (onDone) onDone(result);
+        }
+      }, 10000);
+
+      es.onmessage = function(m) {
+        retries = 0; // any successful message resets the counter
+        var evt;
+        try { evt = JSON.parse(m.data); } catch (e) { return; }
+        if (!evt || typeof evt !== 'object') return;
+        appendDeployEvent(evt);
+        if (evt.type === 'done' && !doneFired) {
+          doneFired = true;
+          clearInterval(pollTimer);
+          document.getElementById('deployProgressSpinner').textContent = (evt.result && evt.result.success) ? '✓' : '✖';
+          try { es.close(); } catch(e){}
+          deployEventSource = null;
+          if (onDone) onDone(evt.result || {});
+        }
+      };
+      es.onerror = function() {
+        // Browser auto-retries SSE; give up after N consecutive failures.
+        retries++;
+        if (retries === 1) {
+          appendDeployEvent({ type: 'log', message: '(스트림 재연결 중…)', ts: new Date().toISOString() });
+        }
+        if (retries >= maxRetries) {
+          appendDeployEvent({ type: 'error', message: '스트림 재연결 실패. 폴링으로 전환합니다.', ts: new Date().toISOString() });
+          try { es.close(); } catch(e){}
+          deployEventSource = null;
+          // pollTimer already running — it will detect completion.
+        }
+      };
+    }
+
+    // Source Upload & Auto Deploy (sync or async w/ live progress)
     document.getElementById('btnDeploySource').addEventListener('click', async function() {
       var fileEl = document.getElementById('sourceFile');
       var nameEl = document.getElementById('sourceServiceName');
       var logEl = document.getElementById('sourceDeployLog');
+      var liveEl = document.getElementById('sourceLiveProgress');
       if (!fileEl.files || !fileEl.files[0]) { alert('소스 파일을 선택하세요.'); return; }
       var file = fileEl.files[0];
       var formData = new FormData();
       formData.append('file', file);
       if (nameEl.value.trim()) formData.append('name', nameEl.value.trim());
       this.disabled = true;
-      logEl.innerHTML = '<span class="deploy-spinner"></span><span style="color:var(--accent);">빌드 & 배포 중... (소스 업로드 → 이미지 빌드 → 컨테이너 기동)</span>';
-      try {
-        var r = await fetch(API + '/v1/services/deploy-source', { method: 'POST', body: formData });
-        var data = await r.json();
-        if (data.success) {
-          logEl.innerHTML = '<span style="color:var(--success);">배포 완료!</span>' +
-            '<div style="margin-top:0.3rem;font-size:0.85rem;">' +
-            '<div>서비스: <strong>' + escapeHtml(data.service_name) + '</strong></div>' +
-            '<div>이미지: ' + escapeHtml(data.image) + '</div>' +
-            '<div>포트: <a href="http://localhost:' + data.host_port + '" target="_blank" style="color:var(--accent);">localhost:' + data.host_port + '</a></div>' +
-            '</div>';
-          appendLog('소스 배포: ' + data.service_name, data);
-          fileEl.value = '';
-          nameEl.value = '';
-          loadAll();
-        } else {
-          logEl.innerHTML = '<span style="color:var(--danger);">배포 실패: ' + escapeHtml(data.message || '') + '</span>';
-          appendLog('소스 배포 실패', data);
-        }
-      } catch (e) {
-        logEl.innerHTML = '<span style="color:var(--danger);">오류: ' + escapeHtml(e.message) + '</span>';
+      var useLive = liveEl && liveEl.checked;
+      var endpoint = useLive ? '/v1/services/deploy-source/async' : '/v1/services/deploy-source';
+      logEl.innerHTML = '<span class="deploy-spinner"></span><span style="color:var(--accent);">' + (useLive ? '업로드 중...' : '빌드 & 배포 중...') + '</span>';
+      if (useLive) openDeployProgressPanel('소스 업로드 배포');
+
+      var res = await safeJsonFetch(API + endpoint, { method: 'POST', body: formData });
+      if (!res.success) {
+        logEl.innerHTML = '<span style="color:var(--danger);">요청 실패: ' + escapeHtml(res.message || '') + '</span>';
+        appendLog('소스 배포 요청 실패', { status: res.status, message: res.message });
+        if (useLive) appendDeployEvent({ type: 'error', message: res.message, ts: new Date().toISOString() });
+        this.disabled = false;
+        return;
+      }
+      var data = res.data || {};
+
+      if (useLive && data.deploy_id) {
+        logEl.innerHTML = '<span style="color:var(--accent);">스트리밍 중... deploy_id=' + escapeHtml(data.deploy_id) + '</span>';
+        var btn = this;
+        subscribeDeployEvents(data.deploy_id, function(result) {
+          if (result && result.success) {
+            logEl.innerHTML = '<span style="color:var(--success);">배포 완료! (' + escapeHtml(result.service_name || '') + ')</span>';
+            fileEl.value = ''; nameEl.value = '';
+            loadAll();
+          } else {
+            logEl.innerHTML = '<span style="color:var(--danger);">배포 실패: ' + escapeHtml((result && result.message) || '') + '</span>';
+          }
+          appendLog('소스 배포(async)', result);
+          btn.disabled = false;
+        });
+        return; // button re-enabled in onDone
+      }
+
+      if (data.success) {
+        logEl.innerHTML = '<span style="color:var(--success);">배포 완료!</span>' +
+          '<div style="margin-top:0.3rem;font-size:0.85rem;">' +
+          '<div>서비스: <strong>' + escapeHtml(data.service_name) + '</strong></div>' +
+          '<div>이미지: ' + escapeHtml(data.image) + '</div>' +
+          '<div>포트: <a href="http://localhost:' + data.host_port + '" target="_blank" style="color:var(--accent);">localhost:' + data.host_port + '</a></div>' +
+          '</div>';
+        appendLog('소스 배포: ' + data.service_name, data);
+        fileEl.value = '';
+        nameEl.value = '';
+        loadAll();
+      } else {
+        logEl.innerHTML = '<span style="color:var(--danger);">배포 실패: ' + escapeHtml(data.message || '') + '</span>';
+        appendLog('소스 배포 실패', data);
       }
       this.disabled = false;
+    });
+
+    // Git URL Deploy
+    document.getElementById('btnDeployGit').addEventListener('click', async function() {
+      var urlEl = document.getElementById('gitUrl');
+      var brEl = document.getElementById('gitBranch');
+      var spEl = document.getElementById('gitSubpath');
+      var nmEl = document.getElementById('gitServiceName');
+      var logEl = document.getElementById('gitDeployLog');
+      var url = (urlEl.value || '').trim();
+      if (!url) { alert('Git URL을 입력하세요.'); return; }
+      var body = { git_url: url };
+      if (brEl.value.trim()) body.branch = brEl.value.trim();
+      if (spEl.value.trim()) body.subpath = spEl.value.trim();
+      if (nmEl.value.trim()) body.name = nmEl.value.trim();
+      var tokEl = document.getElementById('gitToken');
+      var tokSecEl = document.getElementById('gitTokenSecret');
+      if (tokEl && tokEl.value.trim()) body.token = tokEl.value.trim();
+      else if (tokSecEl && tokSecEl.value) body.secret_id = tokSecEl.value;
+      this.disabled = true;
+      logEl.innerHTML = '<span class="deploy-spinner"></span><span style="color:var(--accent);">요청 중...</span>';
+      openDeployProgressPanel('Git URL 배포: ' + url);
+
+      var res = await safeJsonFetch(API + '/v1/services/deploy-git', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (!res.success) {
+        logEl.innerHTML = '<span style="color:var(--danger);">요청 실패: ' + escapeHtml(res.message || '') + '</span>';
+        appendDeployEvent({ type: 'error', message: res.message, ts: new Date().toISOString() });
+        appendLog('git 배포 요청 실패', { status: res.status, message: res.message });
+        this.disabled = false;
+        return;
+      }
+      var data = res.data || {};
+      if (!data.deploy_id) {
+        logEl.innerHTML = '<span style="color:var(--danger);">실패: ' + escapeHtml(data.message || '서버가 deploy_id를 반환하지 않았습니다') + '</span>';
+        this.disabled = false;
+        return;
+      }
+      logEl.innerHTML = '<span style="color:var(--accent);">Cloning & 배포 중... deploy_id=' + escapeHtml(data.deploy_id) + '</span>';
+      var btn = this;
+      subscribeDeployEvents(data.deploy_id, function(result) {
+        if (result && result.success) {
+          logEl.innerHTML = '<span style="color:var(--success);">배포 완료! (' + escapeHtml(result.service_name || '') + ')</span>';
+          urlEl.value = ''; brEl.value = ''; spEl.value = ''; nmEl.value = '';
+          if (tokEl) tokEl.value = '';
+          loadAll();
+        } else {
+          logEl.innerHTML = '<span style="color:var(--danger);">실패: ' + escapeHtml((result && result.message) || '') + '</span>';
+        }
+        appendLog('git 배포', result);
+        btn.disabled = false;
+      });
     });
 
     // Task 4.1: Deploy history (localStorage)
@@ -3474,11 +5709,68 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
       } catch(e) {}
     })();
 
+    // Google login: reveal the button only when configured + surface errors.
+    (async function initGoogleLogin() {
+      try {
+        var r = await fetch(API + '/v1/auth/google/status', { credentials: 'same-origin' });
+        var d = await r.json();
+        if (d && d.enabled) {
+          var wrap = document.getElementById('googleLoginWrap');
+          if (wrap) wrap.style.display = '';
+        }
+      } catch (e) {}
+      var m = location.search.match(/[?&]login_error=([^&]+)/);
+      if (m) {
+        var err = document.getElementById('loginError');
+        if (err) err.textContent = decodeURIComponent(m[1].replace(/\+/g, ' '));
+        showLoginOverlay();
+        history.replaceState(null, '', location.pathname);
+      }
+    })();
+
     // Load dashboard for everyone. Anonymous visitors see guest-mode (read-only).
     (async function bootstrap() {
-      await checkAuth();  // resolves current role (admin/guest/anonymous)
+      await checkAuth();
       loadAll();
       connectSSE();
+    })();
+
+    // Async form handlers must use addEventListener + preventDefault rather
+    // than inline onsubmit="return asyncFn(event)" — async functions return
+    // a Promise which browsers treat as truthy and submit the form anyway,
+    // causing a full page reload.
+    (function wireFormHandlers() {
+      var bind = function(id, handler) {
+        var f = document.getElementById(id);
+        if (f) f.addEventListener('submit', function(e) { e.preventDefault(); handler(e); });
+      };
+      bind('loginForm', doLogin);
+      bind('changePwForm', doChangePassword);
+      bind('quickRunForm', doQuickRun);
+      bind('updateSvcForm', doUpdateService);
+    })();
+
+    /* ===== Theme switching (system / light / dark) ===== */
+    // "system" removes the data-theme attribute so the CSS prefers-color-scheme
+    // media query takes over; light/dark force an explicit palette. The choice
+    // persists in localStorage and is pre-applied in <head> to avoid a flash.
+    function setTheme(mode) {
+      try {
+        if (mode === 'light' || mode === 'dark') {
+          document.documentElement.setAttribute('data-theme', mode);
+          localStorage.setItem('dashboardTheme', mode);
+        } else {
+          document.documentElement.removeAttribute('data-theme');
+          localStorage.removeItem('dashboardTheme');
+        }
+      } catch (e) {}
+    }
+    (function initThemeSelect() {
+      var sel = document.getElementById('themeSelect');
+      if (!sel) return;
+      var saved = 'system';
+      try { saved = localStorage.getItem('dashboardTheme') || 'system'; } catch (e) {}
+      sel.value = saved;
     })();
 
     // ===== AI Chat Widget =====

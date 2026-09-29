@@ -24,6 +24,8 @@ services:
       - ORCHESTRATOR_HEARTBEAT_INTERVAL=10
       - ORCHESTRATOR_STATE_DIR=/data
       - ORCHESTRATOR_API_TOKEN=${ORCHESTRATOR_API_TOKEN:-}
+      - ORCHESTRATOR_BASE_DOMAIN=${ORCHESTRATOR_BASE_DOMAIN:-}
+      - ORCHESTRATOR_PATH_HOST=${ORCHESTRATOR_PATH_HOST:-}
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8000/health"]
       interval: 10s

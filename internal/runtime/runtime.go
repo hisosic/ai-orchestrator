@@ -32,8 +32,13 @@ import (
 const (
 	LabelOrchestrator = "ai.orchestrator.managed"
 	LabelService      = "ai.orchestrator.service"
-	OrchNetwork       = "orch-internal"
-	TraefikHTTPPort   = 80
+	// LabelSubdomain marks a service that opted into subdomain routing
+	// (svc.<base-domain>) instead of the default path routing
+	// (<path-host>/svc/). Persisted as a container label + service extra_label
+	// so reconcile preserves the routing mode.
+	LabelSubdomain  = "ai.orchestrator.subdomain"
+	OrchNetwork     = "orch-internal"
+	TraefikHTTPPort = 80
 )
 
 // Cached Docker client.
@@ -81,6 +86,17 @@ type RunContainerOpts struct {
 	User               string
 	VolumeMode         string
 	AutoPull           bool
+	// ExtraAliases are additional Docker network aliases that should resolve
+	// to this container on the internal network. Used by multi-service
+	// compose deploys so the short service name (e.g. "db") works alongside
+	// the full project-prefixed name (e.g. "ai-rfp-db").
+	ExtraAliases []string
+	// ExtraLabels are additional Docker labels applied to the container,
+	// merged with the orchestrator's built-in labels (ai.orchestrator.*).
+	ExtraLabels map[string]string
+	// Subdomain opts this service into subdomain routing (svc.<base-domain>)
+	// instead of the default path routing (<path-host>/svc/).
+	Subdomain bool
 }
 
 // DockerClient returns a cached Docker client using environment configuration.
@@ -124,26 +140,75 @@ func EnsureNetwork(ctx context.Context, cli *client.Client) string {
 	return resp.ID
 }
 
-// TraefikLabels returns Traefik ingress labels for a service. Same router/service name groups replicas for LB.
-func TraefikLabels(serviceName string, port int) map[string]string {
+// BaseDomain returns the base domain used for subdomain routing
+// (svc.<base-domain>) when a service opts into subdomain mode.
+func BaseDomain() string {
+	return strings.TrimSpace(os.Getenv("ORCHESTRATOR_BASE_DOMAIN"))
+}
+
+// PathHost returns the host used for the DEFAULT path-based routing
+// (<path-host>/svc/). Defaults to "<base-domain>" prefixed with "itda." when
+// only the base domain is set, else falls back to the base domain itself.
+func PathHost() string {
+	if v := strings.TrimSpace(os.Getenv("ORCHESTRATOR_PATH_HOST")); v != "" {
+		return v
+	}
+	if bd := BaseDomain(); bd != "" {
+		return "itda." + bd
+	}
+	return ""
+}
+
+// TraefikLabels returns Traefik ingress labels for a service.
+//
+// Default = PATH routing: Host(<path-host>) && PathPrefix(/svc/) with a
+// strip-prefix middleware (plus svc.local + Referer fallbacks). When
+// subdomain==true and a base domain is configured, uses Host(svc.<base-domain>)
+// instead. Same router/service name groups replicas for load balancing.
+func TraefikLabels(serviceName string, port int, subdomain bool) map[string]string {
 	re := regexp.MustCompile(`[^a-z0-9-]`)
 	safe := strings.Trim(re.ReplaceAllString(strings.ToLower(serviceName), "-"), "-")
 	if safe == "" {
 		safe = "svc"
 	}
+
+	labels := map[string]string{
+		"traefik.enable": "true",
+		fmt.Sprintf("traefik.http.services.%s.loadbalancer.server.port", safe): strconv.Itoa(port),
+	}
+
+	// Subdomain routing (opt-in): svc.<base-domain>
+	if subdomain {
+		if bd := BaseDomain(); bd != "" {
+			labels[fmt.Sprintf("traefik.http.routers.%s.rule", safe)] = fmt.Sprintf("Host(`%s.%s`)", serviceName, bd)
+			return labels
+		}
+	}
+
+	// Default: path-based routing.
 	pathPrefix := strings.Trim(serviceName, "/")
 	if pathPrefix == "" {
 		pathPrefix = "svc"
 	}
-	return map[string]string{
-		"traefik.enable": "true",
-		fmt.Sprintf("traefik.http.routers.%s.rule", safe):                              fmt.Sprintf("Host(`%s.local`)", serviceName),
-		fmt.Sprintf("traefik.http.routers.%s-path.rule", safe):                         fmt.Sprintf("PathPrefix(`/%s/`)", pathPrefix),
-		fmt.Sprintf("traefik.http.routers.%s-path.service", safe):                      safe,
-		fmt.Sprintf("traefik.http.routers.%s-path.middlewares", safe):                   fmt.Sprintf("%s-strip", safe),
-		fmt.Sprintf("traefik.http.middlewares.%s-strip.stripprefix.prefixes", safe):     fmt.Sprintf("/%s", pathPrefix),
-		fmt.Sprintf("traefik.http.services.%s.loadbalancer.server.port", safe):          strconv.Itoa(port),
+	// Bind the path route to the public path host when configured so
+	// <path-host>/svc/ works; the svc.local host route is kept for internal
+	// name-based access.
+	if ph := PathHost(); ph != "" {
+		labels[fmt.Sprintf("traefik.http.routers.%s-host.rule", safe)] = fmt.Sprintf("Host(`%s`) && PathPrefix(`/%s/`)", ph, pathPrefix)
+		labels[fmt.Sprintf("traefik.http.routers.%s-host.service", safe)] = safe
+		labels[fmt.Sprintf("traefik.http.routers.%s-host.middlewares", safe)] = fmt.Sprintf("%s-strip", safe)
+		labels[fmt.Sprintf("traefik.http.routers.%s-host.priority", safe)] = "120"
 	}
+	labels[fmt.Sprintf("traefik.http.routers.%s.rule", safe)] = fmt.Sprintf("Host(`%s.local`)", serviceName)
+	labels[fmt.Sprintf("traefik.http.routers.%s-path.rule", safe)] = fmt.Sprintf("PathPrefix(`/%s/`)", pathPrefix)
+	labels[fmt.Sprintf("traefik.http.routers.%s-path.service", safe)] = safe
+	labels[fmt.Sprintf("traefik.http.routers.%s-path.middlewares", safe)] = fmt.Sprintf("%s-strip", safe)
+	labels[fmt.Sprintf("traefik.http.routers.%s-path.priority", safe)] = "100"
+	labels[fmt.Sprintf("traefik.http.middlewares.%s-strip.stripprefix.prefixes", safe)] = fmt.Sprintf("/%s", pathPrefix)
+	labels[fmt.Sprintf("traefik.http.routers.%s-referer.rule", safe)] = fmt.Sprintf("HeadersRegexp(`Referer`, `^https?://[^/]+/%s(/|\\?|$)`)", pathPrefix)
+	labels[fmt.Sprintf("traefik.http.routers.%s-referer.service", safe)] = safe
+	labels[fmt.Sprintf("traefik.http.routers.%s-referer.priority", safe)] = "50"
+	return labels
 }
 
 // ParseMemory converts memory strings like "512m" or "1g" to bytes.
@@ -231,12 +296,16 @@ func getContainersByName(ctx context.Context, cli *client.Client, name string) [
 }
 
 // buildLabels creates the standard label set for a managed container.
-func buildLabels(serviceName string) map[string]string {
+// subdomain selects subdomain vs the default path routing.
+func buildLabels(serviceName string, subdomain bool) map[string]string {
 	labels := map[string]string{
 		LabelOrchestrator: "true",
 		LabelService:      serviceName,
 	}
-	for k, v := range TraefikLabels(serviceName, TraefikHTTPPort) {
+	if subdomain {
+		labels[LabelSubdomain] = "true"
+	}
+	for k, v := range TraefikLabels(serviceName, TraefikHTTPPort, subdomain) {
 		labels[k] = v
 	}
 	return labels
@@ -395,6 +464,7 @@ func createAndStartContainer(
 	user string,
 	networkID string,
 	serviceName string,
+	extraAliases ...string,
 ) (string, error) {
 	config := &container.Config{
 		Image:        imageName,
@@ -421,11 +491,19 @@ func createAndStartContainer(
 
 	var networkConfig *network.NetworkingConfig
 	if networkID != "" && serviceName != "" {
+		aliases := []string{serviceName}
+		for _, a := range extraAliases {
+			a = strings.TrimSpace(a)
+			if a == "" || a == serviceName {
+				continue
+			}
+			aliases = append(aliases, a)
+		}
 		networkConfig = &network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{
 				OrchNetwork: {
 					NetworkID: networkID,
-					Aliases:   []string{serviceName},
+					Aliases:   aliases,
 				},
 			},
 		}
@@ -570,7 +648,23 @@ func ExecuteScale(ctx context.Context, cli *client.Client, serviceName string, r
 	// Create new containers to reach target
 	memBytes := ParseMemory(memory)
 	nanoCPUs := parseCPU(cpu)
-	labels := buildLabels(serviceName)
+	// Determine routing mode from the persisted extra_labels so reconcile
+	// recreates the container with the same path/subdomain routing.
+	subdomain := false
+	if rawLabels, ok := info["extra_labels"].(map[string]any); ok {
+		if v, ok := rawLabels[LabelSubdomain].(string); ok && v == "true" {
+			subdomain = true
+		}
+	}
+	labels := buildLabels(serviceName, subdomain)
+	// Re-apply persisted compose-group labels so reconcile doesn't lose them.
+	if rawLabels, ok := info["extra_labels"].(map[string]any); ok {
+		for k, v := range rawLabels {
+			if s, ok := v.(string); ok {
+				labels[k] = s
+			}
+		}
+	}
 
 	var cleanEnv []string
 	for _, e := range env {
@@ -773,8 +867,40 @@ func PullImage(ctx context.Context, cli *client.Client, imageName string) (bool,
 		return false, fmt.Sprintf("Image pull failed: %v", err)
 	}
 	defer reader.Close()
-	// Consume the pull output
-	io.Copy(io.Discard, reader)
+
+	// The pull stream is newline-delimited JSON. Errors can appear mid-stream
+	// (e.g. "no matching manifest for linux/amd64 in the manifest list entries")
+	// without the ImagePull call itself returning an error. Scan for them.
+	dec := json.NewDecoder(reader)
+	var lastErr string
+	for {
+		var msg struct {
+			Error       string `json:"error"`
+			ErrorDetail struct {
+				Message string `json:"message"`
+			} `json:"errorDetail"`
+		}
+		if derr := dec.Decode(&msg); derr != nil {
+			if derr == io.EOF {
+				break
+			}
+			break
+		}
+		if msg.Error != "" {
+			lastErr = msg.Error
+		} else if msg.ErrorDetail.Message != "" {
+			lastErr = msg.ErrorDetail.Message
+		}
+	}
+
+	// Verify the image actually landed on disk. This catches both mid-stream
+	// errors and cases where Docker silently skipped everything.
+	if _, _, ierr := cli.ImageInspectWithRaw(ctx, imageName); ierr != nil {
+		if lastErr != "" {
+			return false, fmt.Sprintf("Image pull failed: %s", lastErr)
+		}
+		return false, fmt.Sprintf("Image pull failed: 이미지를 로컬에 저장하지 못했습니다 (%v)", ierr)
+	}
 	return true, fmt.Sprintf("Image pulled: %s", imageName)
 }
 
@@ -814,7 +940,17 @@ func RunContainer(ctx context.Context, cli *client.Client, imageName string, opt
 		networkID = EnsureNetwork(ctx, cli)
 	}
 
-	labels := buildLabels(groupName)
+	subdomain := opts.Subdomain || opts.ExtraLabels[LabelSubdomain] == "true"
+	labels := buildLabels(groupName, subdomain)
+	for k, v := range opts.ExtraLabels {
+		k = strings.TrimSpace(k)
+		if k != "" {
+			labels[k] = v
+		}
+	}
+	if subdomain {
+		labels[LabelSubdomain] = "true" // ensure it persists for reconcile
+	}
 	memBytes := ParseMemory(opts.Memory)
 	nanoCPUs := parseCPU(opts.CPU)
 	exposedPorts, portBindings := buildPortBindings(opts.Ports)
@@ -843,6 +979,7 @@ func RunContainer(ctx context.Context, cli *client.Client, imageName string, opt
 			memBytes, nanoCPUs, cleanEnv, mnts,
 			exposedPorts, portBindings, user,
 			networkID, groupName,
+			opts.ExtraAliases...,
 		)
 		if err != nil {
 			errMsg := err.Error()
@@ -876,6 +1013,9 @@ func RunContainer(ctx context.Context, cli *client.Client, imageName string, opt
 		upsertOpts = append(upsertOpts, state.WithUser(user))
 	}
 	upsertOpts = append(upsertOpts, state.WithVolumeMode(mode))
+	if len(opts.ExtraLabels) > 0 {
+		upsertOpts = append(upsertOpts, state.WithExtraLabels(opts.ExtraLabels))
+	}
 	state.UpsertService(groupName, imageName, len(ids), upsertOpts...)
 
 	var msg string

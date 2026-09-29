@@ -26,10 +26,20 @@ type Role string
 const (
 	RoleAdmin Role = "admin"
 	RoleGuest Role = "guest"
+	// RoleUser is a self-service account: can upload sources, build/deploy and
+	// manage ONLY the services it owns (enforced by per-service owner checks).
+	RoleUser Role = "user"
 
 	CookieName        = "orch_session"
 	sessionTTL        = 24 * time.Hour
 	sessionIdleMargin = 1 * time.Hour
+
+	// Bcrypt cost (CSAP recommends >= 12 for admin credentials).
+	passwordHashCost = 12
+
+	// Password policy: minimum length + required character class count.
+	passwordMinLen = 9
+	passwordMinClasses = 3 // out of {lower, upper, digit, symbol}
 )
 
 type User struct {
@@ -140,7 +150,7 @@ func saveToDisk() error {
 // resetPassword overwrites the password hash for an existing user.
 // Used at startup when an explicit ORCHESTRATOR_*_PASSWORD env is provided.
 func resetPassword(username, password string) error {
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), passwordHashCost)
 	if err != nil {
 		return err
 	}
@@ -156,7 +166,7 @@ func resetPassword(username, password string) error {
 }
 
 func createUser(username, password string, role Role) error {
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), passwordHashCost)
 	if err != nil {
 		return err
 	}
@@ -169,6 +179,24 @@ func createUser(username, password string, role Role) error {
 	}
 	mu.Unlock()
 	return saveToDisk()
+}
+
+// IsDefaultPassword reports whether the given user is still using the
+// well-known default password ("admin" for admin, "guest" for guest).
+// Used to surface a warning banner on the dashboard.
+func IsDefaultPassword(username string) bool {
+	mu.RLock()
+	user := users[username]
+	mu.RUnlock()
+	if user == nil {
+		return false
+	}
+	defaults := map[string]string{"admin": "admin", "guest": "guest"}
+	def, ok := defaults[username]
+	if !ok {
+		return false
+	}
+	return bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(def)) == nil
 }
 
 // Login verifies credentials and returns a new session token.
@@ -199,12 +227,94 @@ func Login(username, password string) (*Session, error) {
 	return s, nil
 }
 
+// EnsureUserSession find-or-creates a user identified by an external identity
+// provider (e.g. Google OAuth) and returns a fresh session. No password is
+// required — the account is provider-managed; a random unusable password hash
+// is set so local password login can't be used for it. If the user already
+// exists its existing role is preserved (the supplied role applies only on
+// first creation).
+func EnsureUserSession(username string, role Role) (*Session, error) {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return nil, errors.New("username required")
+	}
+	if role != RoleAdmin && role != RoleUser && role != RoleGuest {
+		role = RoleUser
+	}
+	mu.RLock()
+	u := users[username]
+	mu.RUnlock()
+	if u == nil {
+		// Random unusable password so local password login can't be used.
+		rnd, _ := randomToken(24)
+		hash, err := bcrypt.GenerateFromPassword([]byte("oauth:"+rnd), passwordHashCost)
+		if err != nil {
+			return nil, err
+		}
+		mu.Lock()
+		u = users[username] // re-check after acquiring write lock
+		if u == nil {
+			u = &User{Username: username, PasswordHash: string(hash), Role: role, CreatedAt: time.Now().UTC()}
+			users[username] = u
+		}
+		mu.Unlock()
+		_ = saveToDisk()
+	}
+	token, err := randomToken(32)
+	if err != nil {
+		return nil, err
+	}
+	s := &Session{Token: token, Username: u.Username, Role: u.Role, ExpiresAt: time.Now().Add(sessionTTL)}
+	mu.Lock()
+	sessions[token] = s
+	mu.Unlock()
+	return s, nil
+}
+
+// ValidatePasswordPolicy returns an error if the password does not meet
+// CSAP-like complexity requirements (9+ chars, 3 character classes).
+// Callers should use this for user-initiated password changes; seed
+// defaults set via env bypass this check so admins can reset quickly.
+func ValidatePasswordPolicy(pw string) error {
+	if len(pw) < passwordMinLen {
+		return fmt.Errorf("비밀번호는 %d자 이상이어야 합니다", passwordMinLen)
+	}
+	if len(pw) > 128 {
+		return errors.New("비밀번호가 너무 깁니다 (최대 128자)")
+	}
+	var hasLower, hasUpper, hasDigit, hasSymbol bool
+	for _, c := range pw {
+		switch {
+		case c >= 'a' && c <= 'z':
+			hasLower = true
+		case c >= 'A' && c <= 'Z':
+			hasUpper = true
+		case c >= '0' && c <= '9':
+			hasDigit = true
+		default:
+			hasSymbol = true
+		}
+	}
+	classes := 0
+	for _, b := range []bool{hasLower, hasUpper, hasDigit, hasSymbol} {
+		if b {
+			classes++
+		}
+	}
+	if classes < passwordMinClasses {
+		return fmt.Errorf("비밀번호는 영문 대/소문자, 숫자, 특수문자 중 %d종 이상 포함해야 합니다", passwordMinClasses)
+	}
+	return nil
+}
+
 // ChangePassword updates the password for the given user after verifying
-// the current password. Returns an error if the user doesn't exist, the
-// current password is wrong, or the new password is empty/too short.
+// the current password and enforcing the password policy.
 func ChangePassword(username, currentPw, newPw string) error {
-	if len(newPw) < 4 {
-		return errors.New("새 비밀번호는 4자 이상이어야 합니다")
+	if err := ValidatePasswordPolicy(newPw); err != nil {
+		return err
+	}
+	if currentPw == newPw {
+		return errors.New("새 비밀번호는 현재 비밀번호와 달라야 합니다")
 	}
 	mu.RLock()
 	user := users[username]
@@ -215,7 +325,7 @@ func ChangePassword(username, currentPw, newPw string) error {
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(currentPw)); err != nil {
 		return errors.New("현재 비밀번호가 올바르지 않습니다")
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(newPw), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(newPw), passwordHashCost)
 	if err != nil {
 		return err
 	}
@@ -284,7 +394,8 @@ func SessionFromRequest(r *http.Request) *Session {
 	return nil
 }
 
-// SetSessionCookie writes the session cookie on the response.
+// SetSessionCookie writes the session cookie with relaxed SameSite.
+// Kept for backward compat; prefer SetSessionCookieStrict.
 func SetSessionCookie(w http.ResponseWriter, token string, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
@@ -293,6 +404,21 @@ func SetSessionCookie(w http.ResponseWriter, token string, secure bool) {
 		HttpOnly: true,
 		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
+		Expires:  time.Now().Add(sessionTTL),
+	})
+}
+
+// SetSessionCookieStrict writes the session cookie with SameSite=Strict.
+// Use for new logins / password resets; blocks cross-site cookie delivery
+// to reduce CSRF surface further.
+func SetSessionCookieStrict(w http.ResponseWriter, token string, secure bool) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     CookieName,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteStrictMode,
 		Expires:  time.Now().Add(sessionTTL),
 	})
 }
@@ -321,6 +447,51 @@ func ListUsers() []map[string]any {
 		})
 	}
 	return out
+}
+
+// CreateUser registers a new user (admin-only operation). Returns an error
+// if the username already exists.
+func CreateUser(username, password string, role Role) error {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return errors.New("username is required")
+	}
+	if len(password) < 4 {
+		return errors.New("password must be at least 4 characters")
+	}
+	if role != RoleAdmin && role != RoleGuest && role != RoleUser {
+		return errors.New("role must be 'admin', 'user', or 'guest'")
+	}
+	mu.RLock()
+	_, exists := users[username]
+	mu.RUnlock()
+	if exists {
+		return errors.New("user already exists")
+	}
+	return createUser(username, password, role)
+}
+
+// DeleteUser removes a user (admin-only). The last admin cannot be deleted.
+func DeleteUser(username string) error {
+	mu.Lock()
+	defer mu.Unlock()
+	u, ok := users[username]
+	if !ok {
+		return errors.New("user not found")
+	}
+	if u.Role == RoleAdmin {
+		adminCount := 0
+		for _, x := range users {
+			if x.Role == RoleAdmin {
+				adminCount++
+			}
+		}
+		if adminCount <= 1 {
+			return errors.New("cannot delete the last admin user")
+		}
+	}
+	delete(users, username)
+	return saveToDisk()
 }
 
 func randomToken(n int) (string, error) {

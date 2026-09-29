@@ -1,6 +1,6 @@
 module ai-container-go
 
-go 1.25.0
+go 1.25.9
 
 require (
 	github.com/docker/docker v27.5.1+incompatible

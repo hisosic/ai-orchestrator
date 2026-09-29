@@ -7,8 +7,12 @@ package server
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -43,8 +47,210 @@ import (
 	"ai-container-go/internal/nlengine"
 	"ai-container-go/internal/runtime"
 	"ai-container-go/internal/scheduler"
+	"ai-container-go/internal/secrets"
 	"ai-container-go/internal/state"
+	"ai-container-go/internal/usersecrets"
 )
+
+// ---------------------------------------------------------------------------
+// Owner-aware env-var helpers (Phase-1 secret encryption + per-owner masking)
+// ---------------------------------------------------------------------------
+
+const maskedSecretPlaceholder = "***"
+
+// requesterUsername extracts the calling user's name from the session cookie.
+// Returns "" for unauthenticated/inter-node calls.
+func requesterUsername(r *http.Request) string {
+	if sess := auth.SessionFromRequest(r); sess != nil {
+		return sess.Username
+	}
+	return ""
+}
+
+// userMutatingAllowed reports whether a RoleUser session may issue a mutating
+// request to the given path. These are the owner-scoped self-service endpoints
+// the portal needs; each handler still verifies the caller owns the target.
+func userMutatingAllowed(path string) bool {
+	switch {
+	case strings.HasPrefix(path, "/v1/user/"): // own secrets
+		return true
+	case path == "/v1/services/deploy-source",
+		path == "/v1/services/deploy-source/async",
+		path == "/v1/services/generate-dockerfile",
+		path == "/v1/services/deploy-git",
+		path == "/v1/cluster/deploy", // deploy from a registry image (owner recorded)
+		path == "/v1/cluster/stop",
+		path == "/v1/cluster/delete",
+		path == "/v1/cluster/scale",
+		path == "/v1/cluster/container/stop":
+		return true
+	case strings.HasPrefix(path, "/v1/services/") &&
+		(strings.HasSuffix(path, "/update") || strings.HasSuffix(path, "/env")):
+		return true
+	}
+	return false
+}
+
+// canManageService reports whether the request's caller may manage svcInfo.
+// Rules: inter-node token (caller == "") → yes; admin → yes (all services);
+// other authenticated user → only services they own (owner == caller). An
+// empty/missing owner is NOT manageable by a non-admin user.
+func canManageService(r *http.Request, svcInfo map[string]any) (bool, string) {
+	caller := requesterUsername(r)
+	if caller == "" {
+		return true, "" // inter-node / token path
+	}
+	if sess := auth.SessionFromRequest(r); sess != nil && sess.Role == auth.RoleAdmin {
+		return true, ""
+	}
+	owner, _ := svcInfo["owner"].(string)
+	if owner != "" && owner == caller {
+		return true, owner
+	}
+	return false, owner
+}
+
+// buildEnvVars converts the legacy `Environment []string` + `Secrets []string`
+// request fields into the persisted `[]models.EnvVar` shape: each entry is
+// flagged is_secret if its name appears in `secretNames`, and secret values
+// are stored encrypted. Plaintext values pass through unchanged.
+func buildEnvVars(env []string, secretNames []string) []models.EnvVar {
+	if len(env) == 0 {
+		return nil
+	}
+	secretSet := make(map[string]bool, len(secretNames))
+	for _, n := range secretNames {
+		secretSet[strings.TrimSpace(n)] = true
+	}
+	out := make([]models.EnvVar, 0, len(env))
+	for _, kv := range env {
+		eq := strings.IndexByte(kv, '=')
+		if eq <= 0 {
+			continue
+		}
+		name, val := kv[:eq], kv[eq+1:]
+		ev := models.EnvVar{Name: name, Value: val}
+		if secretSet[name] {
+			ev.IsSecret = true
+			if ct, err := secrets.Encrypt(val); err == nil {
+				ev.Value = ct
+			}
+		}
+		out = append(out, ev)
+	}
+	return out
+}
+
+// envVarsFromState reads back the stored env_vars field from a service map,
+// tolerating both []models.EnvVar and the JSON-decoded []map[string]any form
+// that loadServicesLocked produces.
+func envVarsFromState(svc map[string]any) []models.EnvVar {
+	if svc == nil {
+		return nil
+	}
+	raw, ok := svc["env_vars"]
+	if !ok {
+		return nil
+	}
+	switch v := raw.(type) {
+	case []models.EnvVar:
+		return v
+	case []any:
+		out := make([]models.EnvVar, 0, len(v))
+		for _, item := range v {
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			ev := models.EnvVar{}
+			if s, _ := m["name"].(string); s != "" {
+				ev.Name = s
+			}
+			if s, _ := m["value"].(string); s != "" {
+				ev.Value = s
+			}
+			if b, _ := m["is_secret"].(bool); b {
+				ev.IsSecret = true
+			}
+			out = append(out, ev)
+		}
+		return out
+	}
+	return nil
+}
+
+// decryptedEnvironment returns the env-var slice in Docker's "KEY=value"
+// format with all secret values decrypted. Used when (re)creating containers.
+func decryptedEnvironment(svc map[string]any) []string {
+	evs := envVarsFromState(svc)
+	if len(evs) == 0 {
+		// Fall back to the legacy plaintext field.
+		if raw, ok := svc["environment"]; ok {
+			if list, ok := raw.([]any); ok {
+				out := make([]string, 0, len(list))
+				for _, x := range list {
+					if s, ok := x.(string); ok {
+						out = append(out, s)
+					}
+				}
+				return out
+			}
+			if list, ok := raw.([]string); ok {
+				return list
+			}
+			// Cluster state stores environment as a JSON-encoded string.
+			if s, ok := raw.(string); ok && s != "" && s != "[]" {
+				var list []string
+				if err := json.Unmarshal([]byte(s), &list); err == nil {
+					return list
+				}
+			}
+		}
+		return nil
+	}
+	out := make([]string, 0, len(evs))
+	for _, ev := range evs {
+		val := ev.Value
+		if ev.IsSecret {
+			if pt, err := secrets.Decrypt(ev.Value); err == nil {
+				val = pt
+			}
+		}
+		out = append(out, ev.Name+"="+val)
+	}
+	return out
+}
+
+// maskedEnvVarsForViewer returns the env-vars shaped for API responses:
+// non-secrets always show plaintext; secrets show their value only when
+// `viewer` matches the service owner, otherwise the placeholder "***".
+// An empty viewer (unauthenticated) sees the same as a non-owner admin.
+func maskedEnvVarsForViewer(svc map[string]any, viewer string) []models.EnvVar {
+	evs := envVarsFromState(svc)
+	if len(evs) == 0 {
+		return nil
+	}
+	owner, _ := svc["owner"].(string)
+	isOwner := viewer != "" && viewer == owner
+	out := make([]models.EnvVar, len(evs))
+	for i, ev := range evs {
+		out[i] = models.EnvVar{Name: ev.Name, IsSecret: ev.IsSecret}
+		if !ev.IsSecret {
+			out[i].Value = ev.Value
+			continue
+		}
+		if isOwner {
+			if pt, err := secrets.Decrypt(ev.Value); err == nil {
+				out[i].Value = pt
+			} else {
+				out[i].Value = maskedSecretPlaceholder
+			}
+		} else {
+			out[i].Value = maskedSecretPlaceholder
+		}
+	}
+	return out
+}
 
 // ---------------------------------------------------------------------------
 // Package-level variables
@@ -103,6 +309,9 @@ var (
 // DashboardHTML holds the embedded dashboard page. Set from main.go.
 var DashboardHTML string
 
+// PortalHTML holds the self-service user portal page. Set from main.go.
+var PortalHTML string
+
 // httpClient is used for proxying requests to worker nodes.
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 
@@ -117,20 +326,44 @@ var longHTTPClient = &http.Client{Timeout: 120 * time.Second}
 // optional bearer-token auth middleware.
 func NewRouter() http.Handler {
 	r := chi.NewRouter()
+	r.Use(gzipMiddleware)
+	r.Use(securityHeadersMiddleware)
 	r.Use(corsMiddleware)
 	r.Use(ipAllowlistMiddleware)
+	r.Use(loginRateLimitMiddleware)
 	r.Use(bearerTokenAuth)
 	r.Use(sessionAuthMiddleware)
+	r.Use(csrfMiddleware)
 
-	// Dashboard
-	r.Get("/", handleDashboard)
+	// Root serves the self-service portal; the cluster-management dashboard
+	// lives at /admin (with /dashboard kept as a legacy alias).
+	r.Get("/", handlePortal)
+	r.Get("/portal", handlePortal)
+	r.Get("/admin", handleDashboard)
 	r.Get("/dashboard", handleDashboard)
 
 	// Auth
 	r.Post("/v1/auth/login", handleLogin)
 	r.Post("/v1/auth/logout", handleLogout)
 	r.Get("/v1/auth/me", handleAuthMe)
+	r.Get("/v1/auth/google/status", handleGoogleStatus)
+	r.Get("/v1/auth/google/login", handleGoogleLogin)
+	r.Get("/v1/auth/google/callback", handleGoogleCallback)
 	r.Post("/v1/auth/change-password", handleChangePassword)
+	r.Get("/v1/auth/users", handleListUsers)
+	r.Post("/v1/auth/users", handleCreateUser)
+	r.Delete("/v1/auth/users/{username}", handleDeleteUser)
+	r.Get("/v1/public/services", handlePublicServices)
+	r.Get("/v1/user/services", handleListUserServices)
+	r.Post("/v1/user/service-share", handleUserServiceShare)
+	r.Post("/v1/user/deploy-database", handleUserDeployDatabase)
+	r.Post("/v1/user/image-import", handleUserImageImport)
+	r.Get("/v1/user/registry-images", handleUserRegistryImages)
+	r.Get("/v1/user/secrets", handleListUserSecrets)
+	r.Post("/v1/user/secrets", handleCreateUserSecret)
+	r.Get("/v1/user/secrets/{id}", handleGetUserSecret)
+	r.Put("/v1/user/secrets/{id}", handleUpdateUserSecret)
+	r.Delete("/v1/user/secrets/{id}", handleDeleteUserSecret)
 
 	// Health & info
 	r.Get("/health", handleHealth)
@@ -152,6 +385,21 @@ func NewRouter() http.Handler {
 	r.Post("/v1/services/scale", handleScaleService)
 	r.Get("/v1/services/endpoints", handleServiceEndpoints)
 	r.Post("/v1/services/deploy-source", handleDeploySource)
+	r.Post("/v1/services/deploy-source/async", handleDeploySourceAsync)
+	r.Post("/v1/services/generate-dockerfile", handleGenerateDockerfile)
+	r.Post("/v1/services/deploy-git", handleDeployGit)
+	r.Get("/v1/services/deploy/{id}", handleDeployJobStatus)
+	r.Get("/v1/services/deploy/{id}/events", handleDeployJobEvents)
+	r.Post("/v1/services/deploy-compose", handleDeployCompose)
+	r.Get("/v1/services/groups", handleGroupsList)
+	r.Post("/v1/services/group/{name}/stop", handleGroupStop)
+	r.Post("/v1/services/group/{name}/update", handleGroupUpdate)
+	r.Post("/v1/services/{name}/update", handleServiceUpdate)
+	r.Put("/v1/services/{name}/env", handleServiceEnvUpdate)
+	r.Get("/v1/compose-templates", handleComposeTemplateList)
+	r.Post("/v1/compose-templates", handleComposeTemplateSave)
+	r.Get("/v1/compose-templates/{name}", handleComposeTemplateGet)
+	r.Delete("/v1/compose-templates/{name}", handleComposeTemplateDelete)
 	r.Post("/v1/images/pull", handlePullImage)
 
 	// Cluster API (master)
@@ -175,10 +423,18 @@ func NewRouter() http.Handler {
 	r.Get("/v1/cluster/discovery", handleClusterDiscovery)
 	r.Get("/v1/cluster/discovery/{service}", handleClusterDiscoveryService)
 	r.Post("/v1/cluster/scale", handleClusterScale)
+	r.Get("/v1/cluster/logs", handleClusterLogs)
+	r.Get("/v1/cluster/stats", handleClusterStats)
 	r.Post("/v1/cluster/stop", handleClusterStop)
+	r.Post("/v1/cluster/delete", handleClusterDeleteService)
 	r.Post("/v1/cluster/container/stop", handleClusterContainerStop)
 	r.Delete("/v1/cluster/container/{id}", handleClusterContainerDelete)
 	r.Post("/v1/cluster/deploy", handleClusterDeploy)
+
+	// Per-node proxy: forwards a request to a specific node's local API.
+	// The dashboard uses this when a target node is selected (apiUrl →
+	// /v1/cluster/{node}/proxy?path=...). All HTTP methods are forwarded.
+	r.HandleFunc("/v1/cluster/{node}/proxy", handleClusterNodeProxy)
 
 	// Auto-heal API
 	r.Get("/v1/cluster/autoheal", handleAutoHealStatus)
@@ -190,9 +446,13 @@ func NewRouter() http.Handler {
 	r.Get("/v1/agent/resources", handleAgentResources)
 	r.Post("/v1/agent/adjust-replicas", handleAgentAdjustReplicas)
 	r.Post("/v1/agent/run-one", handleAgentRunOne)
+	r.Post("/v1/agent/logs", handleAgentLogs)
 	r.Post("/v1/agent/reconcile-skip", handleAgentReconcileSkip)
 	r.Post("/v1/agent/blockchain/deploy", handleAgentBlockchainDeploy)
 	r.Post("/v1/agent/exec", handleAgentExec)
+	r.Post("/v1/agent/update-image", handleAgentUpdateImage)
+	r.Post("/v1/agent/upsert-env", handleAgentUpsertEnv)
+	r.Post("/v1/agent/delete-service", handleAgentDeleteService)
 
 	// SSE streaming
 	r.Get("/v1/stream", handleSSEStream)
@@ -217,6 +477,7 @@ func NewRouter() http.Handler {
 	r.Post("/v1/registry/disable", handleRegistryDisable)
 	r.Get("/v1/registry/catalog", handleRegistryCatalog)
 	r.Get("/v1/registry/tags/*", handleRegistryTags)
+	r.Delete("/v1/registry/repo/*", handleRegistryDeleteTag)
 	r.Post("/v1/registry/push", handleRegistryPush)
 	r.Post("/v1/registry/pull", handleRegistryPull)
 	r.Handle("/v1/registry/v2/*", registryProxy())
@@ -247,6 +508,14 @@ func InitCluster() {
 			log.Printf("auth init failed: %v", err)
 		} else {
 			log.Printf("Auth initialized (users file: %s/users.json)", stateDir)
+		}
+		auth.InitAudit(stateDir)
+		// Warn if default passwords are still in use (CSAP non-compliance).
+		if auth.IsDefaultPassword("admin") {
+			log.Printf("[SECURITY WARNING] admin 계정이 기본 비밀번호를 사용 중입니다. 즉시 변경하세요.")
+		}
+		if auth.IsDefaultPassword("guest") {
+			log.Printf("[SECURITY WARNING] guest 계정이 기본 비밀번호를 사용 중입니다. 즉시 변경하세요.")
 		}
 	}
 
@@ -307,6 +576,8 @@ func StartBackgroundTasks() {
 
 	hub = newSSEHub()
 	go ssePublishLoop()
+
+	go deployJobJanitor(context.Background())
 }
 
 // writeDashboardTraefikRoute writes a Traefik file-provider config that
@@ -385,28 +656,34 @@ var cloudflareCIDRs = []string{
 
 var (
 	ipAllowOnce    sync.Once
+	ipAllowEnabled bool
 	ipAllowCIDRs   []*net.IPNet
 	ipAllowSingles []net.IP
-	cfCIDRs        []*net.IPNet // for CF-Connecting-IP trust decisions
+	cfCIDRs        []*net.IPNet // for CF-Connecting-IP trust decisions (always parsed)
 )
 
 // parseAllowlist reads ORCHESTRATOR_ALLOWED_IPS (comma-separated IPs/CIDRs)
-// once and caches the parsed result. Cloudflare proxy ranges are always
-// included so requests routed through CF pass through.
+// once and caches the parsed result. Cloudflare proxy ranges are *always*
+// parsed into cfCIDRs so CF-Connecting-IP trust logic works; they are
+// added to the enforcement allowlist only when the env var is set.
 func parseAllowlist() {
-	// Always include Cloudflare proxy ranges so CF-proxied traffic is accepted
-	// even when CF-Connecting-IP isn't propagated for some reason.
+	// Parse CF ranges for trust decisions regardless of enforcement state.
 	for _, s := range cloudflareCIDRs {
 		if _, cidr, err := net.ParseCIDR(s); err == nil {
-			ipAllowCIDRs = append(ipAllowCIDRs, cidr)
 			cfCIDRs = append(cfCIDRs, cidr)
 		}
 	}
 
 	raw := strings.TrimSpace(os.Getenv("ORCHESTRATOR_ALLOWED_IPS"))
 	if raw == "" {
+		// No allowlist configured → middleware is a no-op.
 		return
 	}
+	ipAllowEnabled = true
+
+	// When enforcing, also accept all Cloudflare edges (CF-proxied traffic).
+	ipAllowCIDRs = append(ipAllowCIDRs, cfCIDRs...)
+
 	for _, item := range strings.Split(raw, ",") {
 		item = strings.TrimSpace(item)
 		if item == "" {
@@ -491,7 +768,7 @@ func isPrivateIP(ip net.IP) bool {
 func ipAllowlistMiddleware(next http.Handler) http.Handler {
 	ipAllowOnce.Do(parseAllowlist)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if len(ipAllowCIDRs) == 0 && len(ipAllowSingles) == 0 {
+		if !ipAllowEnabled {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -539,19 +816,355 @@ func ipAllowlistMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// ---------------------------------------------------------------------------
+// gzip middleware
+// ---------------------------------------------------------------------------
+
+var gzipWriterPool = sync.Pool{
+	New: func() any {
+		// Compression level 5 is a good tradeoff for responsiveness vs ratio.
+		w, _ := gzip.NewWriterLevel(io.Discard, 5)
+		return w
+	},
+}
+
+type gzipResponseWriter struct {
+	http.ResponseWriter
+	gz          *gzip.Writer
+	wroteHeader bool
+	compress    bool // decided on first Write based on Content-Type
+	flusher     http.Flusher
+}
+
+func (g *gzipResponseWriter) WriteHeader(code int) {
+	// Defer actual header write so we can strip Content-Length if we compress.
+	g.ResponseWriter.Header().Del("Content-Length")
+	g.ResponseWriter.Header().Set("Content-Encoding", "gzip")
+	g.ResponseWriter.Header().Add("Vary", "Accept-Encoding")
+	g.ResponseWriter.WriteHeader(code)
+	g.wroteHeader = true
+}
+
+func (g *gzipResponseWriter) Write(b []byte) (int, error) {
+	if !g.wroteHeader {
+		g.WriteHeader(http.StatusOK)
+	}
+	return g.gz.Write(b)
+}
+
+// Flush passes through to the underlying flusher (needed for SSE).
+func (g *gzipResponseWriter) Flush() {
+	_ = g.gz.Flush()
+	if g.flusher != nil {
+		g.flusher.Flush()
+	}
+}
+
+// gzipMiddleware compresses responses when the client sends
+// "Accept-Encoding: gzip". Skips:
+//   - Requests that already have Content-Encoding set by the handler
+//   - /v1/registry/v2/* (Docker registry protocol — already compressed blobs)
+//   - /v1/stream (SSE — we want immediate flushing; we still compress but
+//     rely on gz.Flush() per message)
+func gzipMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/v1/registry/v2/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		gz := gzipWriterPool.Get().(*gzip.Writer)
+		gz.Reset(w)
+		defer func() {
+			_ = gz.Close()
+			gzipWriterPool.Put(gz)
+		}()
+		fl, _ := w.(http.Flusher)
+		grw := &gzipResponseWriter{ResponseWriter: w, gz: gz, flusher: fl}
+		next.ServeHTTP(grw, r)
+	})
+}
+
+// securityHeadersMiddleware applies defense-in-depth HTTP response headers
+// (HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy).
+// CSAP 기준의 관리형 클라우드 보안 표준에 맞춘 기본값.
+func securityHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		// Force HTTPS on any future request for 1 year.
+		h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "same-origin")
+		h.Set("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+		// CSP only for dashboard HTML. APIs return JSON and don't need it.
+		if r.URL.Path == "/" || r.URL.Path == "/dashboard" || r.URL.Path == "/portal" {
+			h.Set("Content-Security-Policy",
+				"default-src 'self'; "+
+					"script-src 'self' 'unsafe-inline'; "+ // inline scripts in dashboard.html
+					"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "+
+					"font-src 'self' https://fonts.gstatic.com data:; "+
+					"img-src 'self' data: http: https:; "+
+					// Allow http: too so service-preview thumbnails work when the
+					// dashboard itself is served over plain HTTP (direct-IP access);
+					// endpoint URLs are http://svc.<domain>/ in that case.
+					"frame-src 'self' http: https:; "+
+					"connect-src 'self'; "+
+					"frame-ancestors 'none'")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// corsAllowedOrigin returns true if the given origin is allowed.
+// Sources: ORCHESTRATOR_CORS_ORIGINS env (comma-separated) and the current
+// request host (same-origin requests are always permitted).
+func corsAllowedOrigin(origin string, r *http.Request) bool {
+	origin = strings.TrimSpace(origin)
+	if origin == "" {
+		return false
+	}
+	// Same-origin: if Origin's host equals Request's host (via X-Forwarded-Host),
+	// allow. Covers the dashboard fetching its own API.
+	reqHost := r.Header.Get("X-Forwarded-Host")
+	if reqHost == "" {
+		reqHost = r.Host
+	}
+	if strings.HasSuffix(origin, "://"+reqHost) {
+		return true
+	}
+	// Env allowlist.
+	raw := strings.TrimSpace(os.Getenv("ORCHESTRATOR_CORS_ORIGINS"))
+	if raw == "" {
+		return false
+	}
+	for _, item := range strings.Split(raw, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if item == "*" {
+			return true // explicit opt-in to wildcard
+		}
+		if item == origin {
+			return true
+		}
+	}
+	return false
+}
+
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
-
+		origin := r.Header.Get("Origin")
+		if origin != "" && corsAllowedOrigin(origin, r) {
+			// Echo the exact Origin and allow credentials — required for cookies.
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-CSRF-Token")
+		}
 		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusOK)
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Login rate limiting (per IP and per username)
+// ---------------------------------------------------------------------------
+
+type rateLimitEntry struct {
+	fails     int
+	firstFail time.Time
+	lockUntil time.Time
+}
+
+var (
+	rateLimitMu sync.Mutex
+	rlByIP      = map[string]*rateLimitEntry{}
+	rlByUser    = map[string]*rateLimitEntry{}
+)
+
+const (
+	rlWindow     = 10 * time.Minute
+	rlMaxFails   = 5
+	rlLockoutFor = 15 * time.Minute
+)
+
+// loginRateLimitMiddleware blocks login attempts when rate limit exceeded.
+// Per-IP enforcement; per-user enforcement is applied inside handleLogin
+// after the username is known.
+func loginRateLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !(r.URL.Path == "/v1/auth/login" && r.Method == http.MethodPost) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		ip := clientIP(r)
+		if ip != nil {
+			if isRateLimited(rlByIP, ip.String()) {
+				writeJSON(w, http.StatusTooManyRequests, map[string]any{
+					"success": false,
+					"message": "로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요.",
+				})
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// isRateLimited reports whether the identified key is currently locked out.
+// The caller must not hold rateLimitMu.
+func isRateLimited(store map[string]*rateLimitEntry, key string) bool {
+	rateLimitMu.Lock()
+	defer rateLimitMu.Unlock()
+	e := store[key]
+	if e == nil {
+		return false
+	}
+	now := time.Now()
+	if now.Before(e.lockUntil) {
+		return true
+	}
+	// Stale window — reset.
+	if now.Sub(e.firstFail) > rlWindow {
+		delete(store, key)
+	}
+	return false
+}
+
+// recordLoginFail increments failure count for the given key; locks out if
+// it crosses the threshold.
+func recordLoginFail(store map[string]*rateLimitEntry, key string) {
+	rateLimitMu.Lock()
+	defer rateLimitMu.Unlock()
+	e := store[key]
+	now := time.Now()
+	if e == nil || now.Sub(e.firstFail) > rlWindow {
+		store[key] = &rateLimitEntry{fails: 1, firstFail: now}
+		return
+	}
+	e.fails++
+	if e.fails >= rlMaxFails {
+		e.lockUntil = now.Add(rlLockoutFor)
+	}
+}
+
+func clearLoginFail(store map[string]*rateLimitEntry, key string) {
+	rateLimitMu.Lock()
+	delete(store, key)
+	rateLimitMu.Unlock()
+}
+
+// ---------------------------------------------------------------------------
+// CSRF protection (double-submit cookie)
+// ---------------------------------------------------------------------------
+
+const csrfCookie = "orch_csrf"
+const csrfHeader = "X-CSRF-Token"
+
+// csrfMiddleware enforces double-submit CSRF check on state-changing requests.
+//
+// Rules:
+//   - GET/HEAD/OPTIONS: always pass (no state change).
+//   - /v1/auth/login, /v1/auth/logout: no CSRF required (no prior session).
+//   - Inter-node calls with ORCHESTRATOR_API_TOKEN Bearer: bypass.
+//   - /v1/cluster/heartbeat, /v1/agent/*: bypass (inter-node).
+//   - Other mutating requests: header X-CSRF-Token must equal cookie orch_csrf.
+//
+// The csrf cookie is (re)issued on every login and rotated at logout.
+func csrfMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method := r.Method
+		path := r.URL.Path
+		if method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if strings.HasPrefix(path, "/v1/auth/login") ||
+			strings.HasPrefix(path, "/v1/auth/logout") ||
+			strings.HasPrefix(path, "/v1/cluster/heartbeat") ||
+			strings.HasPrefix(path, "/v1/agent/") ||
+			strings.HasPrefix(path, "/v1/registry/v2/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// Inter-node shared-token requests bypass.
+		if tok := strings.TrimSpace(os.Getenv("ORCHESTRATOR_API_TOKEN")); tok != "" {
+			if r.Header.Get("Authorization") == "Bearer "+tok {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+		// Only enforce if a session exists — anonymous writes are already
+		// blocked by sessionAuthMiddleware (401).
+		if sess := auth.SessionFromRequest(r); sess != nil {
+			c, _ := r.Cookie(csrfCookie)
+			hdr := r.Header.Get(csrfHeader)
+			if c == nil || hdr == "" || c.Value != hdr {
+				writeJSON(w, http.StatusForbidden, map[string]any{
+					"success": false,
+					"message": "CSRF 검증 실패",
+					"code":    "csrf",
+				})
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func setCSRFCookie(w http.ResponseWriter, r *http.Request) string {
+	b := make([]byte, 24)
+	_, _ = rand.Read(b)
+	tok := hex.EncodeToString(b)
+	http.SetCookie(w, &http.Cookie{
+		Name:     csrfCookie,
+		Value:    tok,
+		Path:     "/",
+		HttpOnly: false, // must be readable by JS so dashboard can echo in X-CSRF-Token
+		Secure:   cookieSecure(r),
+		SameSite: http.SameSiteStrictMode,
+		Expires:  time.Now().Add(24 * time.Hour),
+	})
+	return tok
+}
+
+func clearCSRFCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name: csrfCookie, Value: "", Path: "/", MaxAge: -1,
+	})
+}
+
+// cookieSecure reports whether the Secure cookie flag should be set.
+// Production default: always true. Set ORCHESTRATOR_COOKIE_INSECURE=true
+// only for local dev over plain HTTP.
+func cookieSecure(r *http.Request) bool {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("ORCHESTRATOR_COOKIE_INSECURE")), "true") {
+		return false
+	}
+	// If the request clearly arrived over HTTPS (direct TLS or a trusted
+	// proxy said so), keep Secure. Otherwise fall back to not-Secure so
+	// direct HTTP access (e.g. http://<master-ip>:8000 from an admin on
+	// the LAN) can still hold a session cookie. Secure cookies are
+	// silently dropped by browsers on plain HTTP.
+	if r.TLS != nil {
+		return true
+	}
+	if proto := r.Header.Get("X-Forwarded-Proto"); strings.EqualFold(proto, "https") {
+		return true
+	}
+	if cfv := r.Header.Get("Cf-Visitor"); strings.Contains(strings.ToLower(cfv), `"scheme":"https"`) {
+		return true
+	}
+	return false
 }
 
 func bearerTokenAuth(next http.Handler) http.Handler {
@@ -564,7 +1177,12 @@ func bearerTokenAuth(next http.Handler) http.Handler {
 			strings.HasPrefix(path, "/v1/cluster/") ||
 			strings.HasPrefix(path, "/v1/agent/") ||
 			strings.HasPrefix(path, "/v1/quickstart/") ||
-			strings.HasPrefix(path, "/v1/auth/") {
+			strings.HasPrefix(path, "/v1/auth/") ||
+			strings.HasPrefix(path, "/v1/public/") ||
+			strings.HasPrefix(path, "/v1/user/") {
+			// /v1/public/* is intentionally unauthenticated (shared services).
+			// /v1/user/* is access-controlled by sessionAuthMiddleware + the
+			// per-handler owner check, so the inter-node bearer guard skips it.
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -575,16 +1193,25 @@ func bearerTokenAuth(next http.Handler) http.Handler {
 				path == "/v1/containers" || path == "/v1/images" ||
 				path == "/v1/stream" ||
 				strings.HasPrefix(path, "/v1/containers") ||
-				strings.HasPrefix(path, "/v1/ai/")) {
+				strings.HasPrefix(path, "/v1/ai/") ||
+				strings.HasPrefix(path, "/v1/registry/catalog") ||
+				strings.HasPrefix(path, "/v1/registry/tags/") ||
+				strings.HasPrefix(path, "/v1/registry/status") ||
+				strings.HasPrefix(path, "/v1/compose-templates") ||
+				path == "/v1/services/endpoints" ||
+				path == "/v1/services/groups") {
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		// Allow POST/DELETE from dashboard on management endpoints without token.
 		if strings.HasPrefix(path, "/v1/services/") ||
+			strings.HasPrefix(path, "/v1/services/group/") ||
 			strings.HasPrefix(path, "/v1/containers/") ||
 			strings.HasPrefix(path, "/v1/images/") ||
 			strings.HasPrefix(path, "/v1/ai/") ||
+			strings.HasPrefix(path, "/v1/registry/") ||
+			strings.HasPrefix(path, "/v1/compose-templates") ||
 			path == "/v1/command" || path == "/v1/action" {
 			auth := r.Header.Get("Authorization")
 			if auth == "" {
@@ -609,6 +1236,25 @@ func bearerTokenAuth(next http.Handler) http.Handler {
 	})
 }
 
+// auditLog appends a privileged-action audit entry.
+func auditLog(user, role, ip, action, target, result string) {
+	auth.WriteAudit(user, role, ip, action, target, result)
+}
+
+// auditRequest extracts user/role/ip from the request and emits an audit entry.
+func auditRequest(r *http.Request, action, target, result string) {
+	user, role := "anonymous", "guest"
+	if sess := auth.SessionFromRequest(r); sess != nil {
+		user = sess.Username
+		role = string(sess.Role)
+	}
+	ip := "unknown"
+	if c := clientIP(r); c != nil {
+		ip = c.String()
+	}
+	auditLog(user, role, ip, action, target, result)
+}
+
 // ---------------------------------------------------------------------------
 // Session auth: account-based auth with role gating
 // ---------------------------------------------------------------------------
@@ -629,7 +1275,7 @@ func sessionAuthMiddleware(next http.Handler) http.Handler {
 
 		// Unauthenticated endpoints (health, dashboard HTML, login, inter-node).
 		if method == http.MethodOptions ||
-			path == "/" || path == "/dashboard" || path == "/health" ||
+			path == "/" || path == "/dashboard" || path == "/admin" || path == "/portal" || path == "/health" ||
 			strings.HasPrefix(path, "/v1/auth/") ||
 			strings.HasPrefix(path, "/v1/cluster/heartbeat") ||
 			strings.HasPrefix(path, "/v1/agent/") ||
@@ -662,7 +1308,7 @@ func sessionAuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Mutating methods: must have admin session.
+		// Mutating methods: must have a session.
 		if sess == nil {
 			writeJSON(w, http.StatusUnauthorized, map[string]any{
 				"success": false,
@@ -671,7 +1317,22 @@ func sessionAuthMiddleware(next http.Handler) http.Handler {
 			})
 			return
 		}
-		if sess.Role != auth.RoleAdmin {
+		// RoleUser (self-service portal accounts) may call a whitelist of
+		// owner-scoped endpoints; the handlers enforce that the caller owns
+		// the target service. Everything else stays admin-only.
+		if sess.Role == auth.RoleUser {
+			if !userMutatingAllowed(path) {
+				auditRequest(r, method+" "+path, path, "forbidden:user")
+				writeJSON(w, http.StatusForbidden, map[string]any{
+					"success": false,
+					"message": "이 작업은 관리자만 가능합니다",
+					"code":    "forbidden",
+					"role":    string(sess.Role),
+				})
+				return
+			}
+		} else if sess.Role != auth.RoleAdmin {
+			auditRequest(r, method+" "+path, path, "forbidden:guest")
 			writeJSON(w, http.StatusForbidden, map[string]any{
 				"success": false,
 				"message": "게스트 계정은 조회만 가능합니다",
@@ -681,6 +1342,11 @@ func sessionAuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		// Audit all admin-level write operations (excluding auth endpoints
+		// which have their own richer logging).
+		if !strings.HasPrefix(path, "/v1/auth/") {
+			auditRequest(r, method+" "+path, path, "permitted")
+		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -699,26 +1365,59 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "아이디와 비밀번호를 입력하세요"})
 		return
 	}
+
+	ipStr := "unknown"
+	if ip := clientIP(r); ip != nil {
+		ipStr = ip.String()
+	}
+	// Per-user rate limit check BEFORE bcrypt to avoid timing-based user
+	// enumeration via lockout speed; combined with per-IP check in middleware.
+	if isRateLimited(rlByUser, body.Username) {
+		auditLog(body.Username, "guest", ipStr, "login", body.Username, "rate_limited")
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{
+			"success": false,
+			"message": "로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요.",
+		})
+		return
+	}
+
 	sess, err := auth.Login(body.Username, body.Password)
 	if err != nil {
+		recordLoginFail(rlByIP, ipStr)
+		recordLoginFail(rlByUser, body.Username)
+		auditLog(body.Username, "guest", ipStr, "login", body.Username, "failure")
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"success": false, "message": err.Error()})
 		return
 	}
-	secure := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
-	auth.SetSessionCookie(w, sess.Token, secure)
+	clearLoginFail(rlByIP, ipStr)
+	clearLoginFail(rlByUser, body.Username)
+
+	auth.SetSessionCookieStrict(w, sess.Token, cookieSecure(r))
+	csrf := setCSRFCookie(w, r)
+	auditLog(sess.Username, string(sess.Role), ipStr, "login", sess.Username, "success")
 	writeJSON(w, http.StatusOK, map[string]any{
-		"success":  true,
-		"username": sess.Username,
-		"role":     string(sess.Role),
-		"token":    sess.Token,
+		"success":    true,
+		"username":   sess.Username,
+		"role":       string(sess.Role),
+		"token":      sess.Token,
+		"csrf_token": csrf,
 	})
 }
 
 func handleLogout(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromRequest(r)
 	if c, err := r.Cookie(auth.CookieName); err == nil {
 		auth.Logout(c.Value)
 	}
 	auth.ClearSessionCookie(w)
+	clearCSRFCookie(w)
+	if sess != nil {
+		ipStr := "unknown"
+		if ip := clientIP(r); ip != nil {
+			ipStr = ip.String()
+		}
+		auditLog(sess.Username, string(sess.Role), ipStr, "logout", sess.Username, "success")
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"success": true})
 }
 
@@ -742,7 +1441,12 @@ func handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "현재/새 비밀번호를 입력하세요"})
 		return
 	}
+	ipStr := "unknown"
+	if ip := clientIP(r); ip != nil {
+		ipStr = ip.String()
+	}
 	if err := auth.ChangePassword(sess.Username, body.CurrentPassword, body.NewPassword); err != nil {
+		auditLog(sess.Username, string(sess.Role), ipStr, "change_password", sess.Username, "failure:"+err.Error())
 		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": err.Error()})
 		return
 	}
@@ -751,23 +1455,25 @@ func handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	// Re-create a fresh session for the current request.
 	newSess, err := auth.Login(sess.Username, body.NewPassword)
 	if err != nil {
+		auditLog(sess.Username, string(sess.Role), ipStr, "change_password", sess.Username, "success_but_relogin_required")
 		writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "비밀번호가 변경되었습니다. 다시 로그인해주세요"})
 		return
 	}
-	secure := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
-	auth.SetSessionCookie(w, newSess.Token, secure)
+	auth.SetSessionCookieStrict(w, newSess.Token, cookieSecure(r))
+	csrf := setCSRFCookie(w, r)
+	auditLog(newSess.Username, string(newSess.Role), ipStr, "change_password", newSess.Username, "success")
 	writeJSON(w, http.StatusOK, map[string]any{
-		"success":  true,
-		"message":  "비밀번호가 변경되었습니다",
-		"username": newSess.Username,
-		"role":     string(newSess.Role),
+		"success":    true,
+		"message":    "비밀번호가 변경되었습니다",
+		"username":   newSess.Username,
+		"role":       string(newSess.Role),
+		"csrf_token": csrf,
 	})
 }
 
 func handleAuthMe(w http.ResponseWriter, r *http.Request) {
 	sess := auth.SessionFromRequest(r)
 	if sess == nil {
-		// Anonymous visitor — treated as guest (read-only).
 		writeJSON(w, http.StatusOK, map[string]any{
 			"authenticated": false,
 			"role":          string(auth.RoleGuest),
@@ -775,11 +1481,877 @@ func handleAuthMe(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"authenticated": true,
-		"username":      sess.Username,
-		"role":          string(sess.Role),
+	resp := map[string]any{
+		"authenticated":    true,
+		"username":         sess.Username,
+		"role":             string(sess.Role),
+		"default_password": auth.IsDefaultPassword(sess.Username),
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleListUsers: GET /v1/auth/users. Admin-only.
+func handleListUsers(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromRequest(r)
+	if sess == nil || sess.Role != auth.RoleAdmin {
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"success": false, "message": "관리자 권한이 필요합니다", "code": "forbidden",
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"users": auth.ListUsers()})
+}
+
+// handleCreateUser: POST /v1/auth/users. Admin-only.
+func handleCreateUser(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromRequest(r)
+	if sess == nil || sess.Role != auth.RoleAdmin {
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"success": false, "message": "관리자 권한이 필요합니다", "code": "forbidden",
+		})
+		return
+	}
+	var body struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+		Role     string `json:"role"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "Invalid request"})
+		return
+	}
+	role := auth.Role(strings.TrimSpace(body.Role))
+	if role == "" {
+		role = auth.RoleGuest
+	}
+	if err := auth.CreateUser(strings.TrimSpace(body.Username), body.Password, role); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": err.Error()})
+		return
+	}
+	auditRequest(r, "POST /v1/auth/users", body.Username, "created:"+string(role))
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "username": body.Username, "role": string(role)})
+}
+
+// handleAgentUpsertEnv: POST /v1/agent/upsert-env — worker-side endpoint that
+// rewrites a service's environment in the local services.json so the next
+// ReconcileReplicas / ExecuteScale cycle uses the new values. Called by the
+// master immediately after PUT /v1/services/{name}/env so worker state does
+// not lag behind cluster state.
+func handleAgentUpsertEnv(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ServiceName string          `json:"service_name"`
+		Environment []string        `json:"environment"`
+		EnvVars     []models.EnvVar `json:"env_vars"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "Invalid request"})
+		return
+	}
+	body.ServiceName = strings.TrimSpace(body.ServiceName)
+	if body.ServiceName == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "service_name required"})
+		return
+	}
+	existing := state.GetService(body.ServiceName)
+	if existing == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "service not found"})
+		return
+	}
+	image, _ := existing["image"].(string)
+	replicas := 0
+	switch v := existing["replicas"].(type) {
+	case int:
+		replicas = v
+	case int64:
+		replicas = int(v)
+	case float64:
+		replicas = int(v)
+	}
+	opts := []state.UpsertOption{state.WithEnvironment(body.Environment)}
+	if len(body.EnvVars) > 0 {
+		opts = append(opts, state.WithEnvVars(body.EnvVars))
+	}
+	state.UpsertService(body.ServiceName, image, replicas, opts...)
+	writeJSON(w, http.StatusOK, map[string]any{"success": true})
+}
+
+// handleServiceEnvUpdate: PUT /v1/services/{name}/env
+//
+// Replaces the environment variables of an existing service with the supplied
+// list. Each entry may flag is_secret; secret values are stored encrypted at
+// rest and access-restricted to the service owner. After the update the
+// service's running containers are stopped+removed so the reconcile loop
+// recreates them with the new env on the next pass.
+//
+// Permission: caller's username must match the service's owner (cluster
+// state). Services with no owner (legacy) are editable by anyone with an
+// authenticated session.
+func handleServiceEnvUpdate(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(chi.URLParam(r, "name"))
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "service name required"})
+		return
+	}
+	if clusterState == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"success": false, "message": "클러스터 모드가 아닙니다"})
+		return
+	}
+
+	var body struct {
+		EnvVars []models.EnvVar `json:"env_vars"`
+		// SecretRefs lets the caller attach pre-saved user secrets to the
+		// service without re-typing their values. Each ref expands into one
+		// is_secret EnvVar (env_name → decrypted secret value, re-encrypted
+		// for storage). Refs override any same-named entry in EnvVars.
+		SecretRefs []usersecrets.SecretRef `json:"secret_refs"`
+		// Optional: when true, automatically remove the running containers so
+		// reconcile rebuilds them with the new env (matches what users expect
+		// from "save and apply"). Defaults to true.
+		Restart *bool `json:"restart"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "Invalid request"})
+		return
+	}
+
+	svcInfo := clusterState.GetService(name)
+	if svcInfo == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "서비스를 찾을 수 없습니다"})
+		return
+	}
+
+	// Owner check (admin manages all; user only own services).
+	caller := requesterUsername(r)
+	if ok, owner := canManageService(r, svcInfo); !ok {
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"success": false,
+			"message": fmt.Sprintf("'%s' 서비스는 소유자(%s)만 환경변수를 수정할 수 있습니다", name, owner),
+			"code":    "forbidden_owner",
+		})
+		return
+	}
+
+	// Expand user-secret refs into the EnvVars list. The caller must own the
+	// referenced secret (ResolveRefs enforces this). Refs supersede any
+	// same-named entry already in EnvVars.
+	if len(body.SecretRefs) > 0 && caller != "" {
+		resolved, err := usersecrets.ResolveRefs(caller, body.SecretRefs)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"success": false,
+				"message": "시크릿 변수 적용 실패: " + err.Error(),
+			})
+			return
+		}
+		// Build a fast lookup of names already in EnvVars so we can replace
+		// in place instead of duplicating entries.
+		idx := map[string]int{}
+		for i, ev := range body.EnvVars {
+			idx[ev.Name] = i
+		}
+		for envName, val := range resolved {
+			ev := models.EnvVar{Name: envName, Value: val, IsSecret: true}
+			if i, ok := idx[envName]; ok {
+				body.EnvVars[i] = ev
+			} else {
+				body.EnvVars = append(body.EnvVars, ev)
+			}
+		}
+	}
+
+	// Encrypt secrets + build the plaintext slice that Docker needs.
+	persisted := make([]models.EnvVar, 0, len(body.EnvVars))
+	plaintextEnv := make([]string, 0, len(body.EnvVars))
+	for _, ev := range body.EnvVars {
+		nm := strings.TrimSpace(ev.Name)
+		if nm == "" {
+			continue
+		}
+		val := ev.Value
+		stored := val
+		if ev.IsSecret {
+			// If the client returned the "***" placeholder, preserve the
+			// existing ciphertext instead of overwriting it with "***".
+			if val == maskedSecretPlaceholder {
+				for _, prev := range envVarsFromState(svcInfo) {
+					if prev.Name == nm && prev.IsSecret {
+						stored = prev.Value
+						break
+					}
+				}
+				// Plaintext for the container is also preserved.
+				if pt, err := secrets.Decrypt(stored); err == nil {
+					val = pt
+				}
+			} else if ct, err := secrets.Encrypt(val); err == nil {
+				stored = ct
+			}
+		}
+		persisted = append(persisted, models.EnvVar{Name: nm, Value: stored, IsSecret: ev.IsSecret})
+		plaintextEnv = append(plaintextEnv, nm+"="+val)
+	}
+
+	image, _ := svcInfo["image"].(string)
+	desired := 0
+	switch v := svcInfo["desired_replicas"].(type) {
+	case int:
+		desired = v
+	case int64:
+		desired = int(v)
+	case float64:
+		desired = int(v)
+	}
+
+	clusterState.SaveService(name, image, desired, map[string]any{
+		"environment": plaintextEnv,
+		"env_vars":    persisted,
+		"owner":       svcInfo["owner"],
 	})
+
+	restart := true
+	if body.Restart != nil {
+		restart = *body.Restart
+	}
+	var restarted []string
+	if restart {
+		// Determine which nodes host this service.
+		seenNodes := map[string]bool{}
+		var placements []models.ContainerPlacement
+		for _, p := range clusterState.GetPlacements(name, "") {
+			placements = append(placements, p)
+			seenNodes[p.NodeName] = true
+		}
+
+		// 1) Sync worker-local services.json BEFORE removing the container.
+		//    Without this, the worker's reconcile loop respawns from its
+		//    stale state and the old env values come back.
+		upsertBody, _ := json.Marshal(map[string]any{
+			"service_name": name,
+			"environment":  plaintextEnv,
+			"env_vars":     persisted,
+		})
+		for nodeName := range seenNodes {
+			node := clusterState.GetNode(nodeName)
+			if node == nil {
+				continue
+			}
+			req, _ := http.NewRequest("POST", nodeBaseURL(node)+"/v1/agent/upsert-env", bytes.NewReader(upsertBody))
+			setNodeHeaders(req, node)
+			if resp, err := httpClient.Do(req); err == nil {
+				resp.Body.Close()
+			}
+		}
+
+		// 2) Stop + remove existing containers. Reconcile (now reading the
+		//    fresh services.json on each worker) will respawn with the new
+		//    environment.
+		for _, p := range placements {
+			node := clusterState.GetNode(p.NodeName)
+			if node == nil {
+				continue
+			}
+			baseURL := nodeBaseURL(node)
+			stopReq, _ := http.NewRequest("POST", fmt.Sprintf("%s/v1/containers/%s/stop", baseURL, p.ContainerID), nil)
+			setNodeHeaders(stopReq, node)
+			if resp, err := httpClient.Do(stopReq); err == nil {
+				resp.Body.Close()
+			}
+			delReq, _ := http.NewRequest("DELETE", fmt.Sprintf("%s/v1/containers/%s", baseURL, p.ContainerID), nil)
+			setNodeHeaders(delReq, node)
+			if resp, err := httpClient.Do(delReq); err == nil {
+				resp.Body.Close()
+			}
+			restarted = append(restarted, p.ContainerName)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":   true,
+		"message":   fmt.Sprintf("'%s' 환경변수 갱신 완료 (%d개 변수)", name, len(persisted)),
+		"restarted": restarted,
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Per-user secret store (used by deploy forms to inject pre-saved values)
+// ---------------------------------------------------------------------------
+
+// userSecretCaller returns the authenticated session, or writes a 401 and
+// returns nil. Both admin and guest sessions may manage their own secrets.
+func userSecretCaller(w http.ResponseWriter, r *http.Request) *auth.Session {
+	sess := auth.SessionFromRequest(r)
+	if sess == nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{
+			"success": false, "message": "로그인이 필요합니다", "code": "unauthenticated",
+		})
+		return nil
+	}
+	return sess
+}
+
+// handleUserDeployDatabase: POST /v1/user/deploy-database
+//
+// Deploys a PostgreSQL or MySQL container for the caller with the given
+// credentials. The DB is TCP (not HTTP) so Traefik routing is disabled; other
+// services on the same internal network connect via "<name>:<port>". Returns
+// the connection endpoint. The password is stored encrypted (env secret).
+//
+// body: {engine:"postgres"|"mysql", name, db_name, username, password, node?}
+func handleUserDeployDatabase(w http.ResponseWriter, r *http.Request) {
+	sess := userSecretCaller(w, r)
+	if sess == nil {
+		return
+	}
+	var body struct {
+		Engine   string `json:"engine"`
+		Name     string `json:"name"`
+		DBName   string `json:"db_name"`
+		Username string `json:"username"`
+		Password string `json:"password"`
+		Node     string `json:"node"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "Invalid request"})
+		return
+	}
+	name := sanitizeServiceName(body.Name)
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "서비스명을 입력하세요"})
+		return
+	}
+	engine := strings.ToLower(strings.TrimSpace(body.Engine))
+	dbName := strings.TrimSpace(body.DBName)
+	user := strings.TrimSpace(body.Username)
+	pass := body.Password
+	if dbName == "" {
+		dbName = "appdb"
+	}
+	if user == "" {
+		user = "appuser"
+	}
+	if pass == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "비밀번호를 입력하세요"})
+		return
+	}
+
+	var image string
+	var port int
+	var env []string
+	var secretNames []string
+	switch engine {
+	case "postgres", "postgresql":
+		engine = "postgres"
+		image = "postgres:16-alpine"
+		port = 5432
+		env = []string{
+			"POSTGRES_DB=" + dbName,
+			"POSTGRES_USER=" + user,
+			"POSTGRES_PASSWORD=" + pass,
+		}
+		secretNames = []string{"POSTGRES_PASSWORD"}
+	case "mysql", "mariadb":
+		engine = "mysql"
+		image = "mysql:8.0"
+		port = 3306
+		env = []string{
+			"MYSQL_DATABASE=" + dbName,
+			"MYSQL_USER=" + user,
+			"MYSQL_PASSWORD=" + pass,
+			"MYSQL_ROOT_PASSWORD=" + pass,
+		}
+		secretNames = []string{"MYSQL_PASSWORD", "MYSQL_ROOT_PASSWORD"}
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "engine은 postgres 또는 mysql 이어야 합니다"})
+		return
+	}
+
+	if clusterState == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"success": false, "message": "클러스터 모드가 아닙니다"})
+		return
+	}
+
+	// Pick a node: explicit > scheduler > local master.
+	nodeName := strings.TrimSpace(body.Node)
+	if nodeName == "" && sched != nil {
+		if decisions, err := sched.Schedule(name, image, 1, nil, "least-loaded"); err == nil && len(decisions) > 0 {
+			nodeName = decisions[0].NodeName
+		}
+	}
+	if nodeName == "" {
+		nodeName = os.Getenv("ORCHESTRATOR_NODE_NAME")
+		if nodeName == "" {
+			nodeName = "master"
+		}
+	}
+	node := clusterState.GetNode(nodeName)
+	if node == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "노드를 찾을 수 없습니다: " + nodeName})
+		return
+	}
+	baseURL := nodeBaseURL(node)
+
+	// DB extra-labels: disable Traefik (TCP, not HTTP) + tag as database.
+	extraLabels := map[string]string{
+		"traefik.enable":            "false",
+		"ai.orchestrator.kind":      "database",
+		"ai.orchestrator.db.engine": engine,
+		"ai.orchestrator.db.port":   strconv.Itoa(port),
+	}
+
+	// Pull image on the node.
+	pullBody, _ := json.Marshal(map[string]any{"image": image})
+	pullReq, _ := http.NewRequest(http.MethodPost, baseURL+"/v1/images/pull", bytes.NewReader(pullBody))
+	setNodeHeaders(pullReq, node)
+	if resp, err := longHTTPClient.Do(pullReq); err == nil {
+		resp.Body.Close()
+	}
+
+	// Run the DB container (internal network, no HTTP routing).
+	runBody, _ := json.Marshal(map[string]any{
+		"image":                image,
+		"name":                 name,
+		"replicas":             1,
+		"use_internal_network": true,
+		"environment":          env,
+		"extra_labels":         extraLabels,
+	})
+	runReq, _ := http.NewRequest(http.MethodPost, baseURL+"/v1/containers/run", bytes.NewReader(runBody))
+	setNodeHeaders(runReq, node)
+	runResp, err := longHTTPClient.Do(runReq)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"success": false, "message": "DB 컨테이너 기동 실패: " + err.Error()})
+		return
+	}
+	var runData map[string]any
+	json.NewDecoder(runResp.Body).Decode(&runData)
+	runResp.Body.Close()
+	if s, _ := runData["success"].(bool); !s {
+		writeJSON(w, http.StatusOK, map[string]any{"success": false, "message": "DB 기동 실패: " + fmt.Sprint(runData["message"])})
+		return
+	}
+
+	// Persist service with owner + encrypted password env + the DB labels so
+	// reconcile recreates it identically.
+	envVars := buildEnvVars(env, secretNames)
+	clusterState.SaveService(name, image, 1, map[string]any{
+		"owner":        sess.Username,
+		"environment":  env,
+		"env_vars":     envVars,
+		"extra_labels": extraLabels,
+	})
+
+	connStr := ""
+	if engine == "postgres" {
+		connStr = fmt.Sprintf("postgresql://%s:%s@%s:%d/%s", user, "<password>", name, port, dbName)
+	} else {
+		connStr = fmt.Sprintf("mysql://%s:%s@%s:%d/%s", user, "<password>", name, port, dbName)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":      true,
+		"message":      fmt.Sprintf("%s 데이터베이스 '%s' 기동 완료 (노드: %s)", engine, name, nodeName),
+		"engine":       engine,
+		"service_name": name,
+		"node":         nodeName,
+		"db_host":      name, // other containers connect via this host on orch-internal
+		"db_port":      port,
+		"db_name":      dbName,
+		"db_user":      user,
+		"connection":   connStr, // password masked; the owner set it
+		"note":         "같은 내부 네트워크(orch-internal)의 서비스가 위 호스트:포트로 접속합니다. (DB와 소비 서비스는 동일 노드 권장)",
+	})
+}
+
+// handleUserImageImport: POST /v1/user/image-import {image, name?}
+//
+// Pulls an external/public image into local Docker and pushes it to the
+// built-in registry so it can be used to start services. This is the
+// web-driven equivalent of `docker pull X && docker tag X registry/... &&
+// docker push`. Available to any authenticated session (admin or user).
+func handleUserImageImport(w http.ResponseWriter, r *http.Request) {
+	sess := userSecretCaller(w, r)
+	if sess == nil {
+		return
+	}
+	var body struct {
+		Image string `json:"image"`
+		Name  string `json:"name"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "Invalid request"})
+		return
+	}
+	src := strings.TrimSpace(body.Image)
+	if src == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "image 필드가 필요합니다"})
+		return
+	}
+	cli := runtime.DockerClient()
+	if cli == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "message": "Docker 연결 실패"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Minute)
+	defer cancel()
+
+	// 1) Pull the external image locally.
+	if ok, msg := runtime.PullImage(ctx, cli, src); !ok {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"success": false, "message": "이미지 pull 실패: " + msg})
+		return
+	}
+	// 2) Derive a registry repo name (sanitised), then push.
+	repo := strings.TrimSpace(body.Name)
+	if repo == "" {
+		base := src
+		if i := strings.LastIndex(base, "/"); i >= 0 {
+			base = base[i+1:]
+		}
+		if i := strings.IndexByte(base, ':'); i >= 0 {
+			base = base[:i]
+		}
+		repo = base
+	}
+	repo = strings.Trim(regexp.MustCompile(`[^a-zA-Z0-9_.-]`).ReplaceAllString(strings.ToLower(repo), "-"), "-")
+	if repo == "" {
+		repo = "imported"
+	}
+	if !isRegistryRunning(ctx) {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"success": false, "message": "내장 registry가 실행 중이 아닙니다"})
+		return
+	}
+	repoTag := repo + ":latest"
+	regImage, pushErr := pushImageToRegistry(ctx, src, repoTag)
+	if pushErr != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "message": "registry push 실패: " + pushErr.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":      true,
+		"message":      fmt.Sprintf("이미지 '%s' → 내장 registry 저장 완료", src),
+		"registry_tag": regImage,                     // localhost:5000/repo:latest (deploy uses this)
+		"external_tag": registryExternalTag(repoTag), // host:5000/repo:latest (docker pull from outside)
+		"repo":         repo,
+	})
+}
+
+// handleUserRegistryImages: GET /v1/user/registry-images — list images stored
+// in the built-in registry (repo:tag), for the portal's "이미지로 기동" picker.
+func handleUserRegistryImages(w http.ResponseWriter, r *http.Request) {
+	sess := userSecretCaller(w, r)
+	if sess == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	images := []string{}
+	// Use the registry URL reachable from inside this container (the registry
+	// runs as a separate container, so "localhost:5000" would hit ourselves).
+	regURL := getRegistryInternalURL(ctx)
+	if regURL != "" {
+		for repoTag := range buildRegistryCatalogSet(regURL) {
+			// Return the external (master-IP) reference so any node can pull it
+			// during a cluster deploy — "localhost:5000" only resolves on master.
+			images = append(images, registryExternalTag(repoTag))
+		}
+	}
+	sort.Strings(images)
+	writeJSON(w, http.StatusOK, map[string]any{"images": images})
+}
+
+// dbEngineFromImage detects a database service from its image reference,
+// returning the engine name and default port (or "",0 if not a DB image).
+func dbEngineFromImage(img any) (string, int) {
+	s, _ := img.(string)
+	s = strings.ToLower(s)
+	switch {
+	case strings.Contains(s, "postgres"):
+		return "postgres", 5432
+	case strings.Contains(s, "mysql"), strings.Contains(s, "mariadb"):
+		return "mysql", 3306
+	}
+	return "", 0
+}
+
+// applyDBFields enriches a service entry with database connection info when the
+// image is a known DB engine (shared by user + public service listings).
+func applyDBFields(s map[string]any) {
+	name, _ := s["name"].(string)
+	if engine, port := dbEngineFromImage(s["image"]); engine != "" && name != "" {
+		s["kind"] = "database"
+		s["db_engine"] = engine
+		s["db_port"] = port
+		s["db_host"] = name
+		userKey, dbKey := "POSTGRES_USER", "POSTGRES_DB"
+		if engine == "mysql" {
+			userKey, dbKey = "MYSQL_USER", "MYSQL_DATABASE"
+		}
+		if evs, ok := s["env_vars"].([]models.EnvVar); ok {
+			for _, ev := range evs {
+				switch ev.Name {
+				case userKey:
+					s["db_user"] = ev.Value
+				case dbKey:
+					s["db_name"] = ev.Value
+				}
+			}
+		}
+	}
+}
+
+// handlePublicServices: GET /v1/public/services — services that owners marked
+// as shared, visible without authentication. Secrets/env are never included.
+func handlePublicServices(w http.ResponseWriter, r *http.Request) {
+	all := getServicesDataForViewer(false, "") // viewer "" → secrets masked anyway
+	base := runtime.BaseDomain()
+	pathHost := runtime.PathHost()
+	endpointFor := func(name string) string {
+		if serviceUsesSubdomain(name) && base != "" {
+			return "http://" + name + "." + base + "/"
+		}
+		if pathHost != "" {
+			return "http://" + pathHost + "/" + name + "/"
+		}
+		return ""
+	}
+	out := []map[string]any{}
+	for _, s := range all {
+		if sh, _ := s["shared"].(bool); !sh {
+			continue
+		}
+		name, _ := s["name"].(string)
+		// DB enrichment needs env_vars; run it before stripping them.
+		applyDBFields(s)
+		if s["kind"] != "database" && name != "" {
+			if ep := endpointFor(name); ep != "" {
+				s["endpoint"] = ep
+			}
+		}
+		// Never expose environment/secrets publicly.
+		delete(s, "env_vars")
+		delete(s, "can_edit_secrets")
+		out = append(out, s)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"services": out})
+}
+
+// handleUserServiceShare: POST /v1/user/service-share {name, shared}. Owner-only
+// toggle of a service's public-share flag.
+func handleUserServiceShare(w http.ResponseWriter, r *http.Request) {
+	sess := userSecretCaller(w, r)
+	if sess == nil {
+		return
+	}
+	var body struct {
+		Name   string `json:"name"`
+		Shared bool   `json:"shared"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "Invalid request"})
+		return
+	}
+	name := strings.TrimSpace(body.Name)
+	if name == "" || clusterState == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "서비스명이 필요합니다"})
+		return
+	}
+	info := clusterState.GetService(name)
+	if info == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "서비스를 찾을 수 없습니다"})
+		return
+	}
+	if ok, owner := canManageService(r, info); !ok {
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"success": false,
+			"message": fmt.Sprintf("'%s' 서비스는 소유자(%s)만 공유 설정을 변경할 수 있습니다", name, owner),
+			"code":    "forbidden_owner",
+		})
+		return
+	}
+	clusterState.SetServiceShared(name, body.Shared)
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "name": name, "shared": body.Shared})
+}
+
+// handleListUserServices: GET /v1/user/services — only the services owned by
+// the caller, each enriched with its primary public endpoint URL so the portal
+// can render thumbnails. Admins get every service (owner filter relaxed).
+func handleListUserServices(w http.ResponseWriter, r *http.Request) {
+	sess := userSecretCaller(w, r)
+	if sess == nil {
+		return
+	}
+	all := getServicesDataForViewer(false, sess.Username)
+	isAdmin := sess.Role == auth.RoleAdmin
+	// scope=all returns every service (read-only for non-owned); admin-only.
+	// Regular users only ever see their own services here (plus the separate
+	// public /v1/public/services shared list). Default "mine".
+	scopeAll := r.URL.Query().Get("scope") == "all" && isAdmin
+
+	// Map service → primary public URL honoring its routing mode: default
+	// path routing (<path-host>/svc/), or subdomain (svc.<base-domain>) when
+	// the service opted in. Matches ensurePublicEndpoints / what actually works.
+	base := runtime.BaseDomain()
+	pathHost := runtime.PathHost()
+	endpointFor := func(name string) string {
+		if serviceUsesSubdomain(name) && base != "" {
+			return "http://" + name + "." + base + "/"
+		}
+		if pathHost != "" {
+			return "http://" + pathHost + "/" + name + "/"
+		}
+		return ""
+	}
+
+	out := []map[string]any{}
+	for _, s := range all {
+		owner, _ := s["owner"].(string)
+		owned := isAdmin || owner == sess.Username
+		if !scopeAll && !owned {
+			continue
+		}
+		// "owned" tells the UI whether to show manage (delete) controls.
+		s["owned"] = owned
+		name, _ := s["name"].(string)
+		// Database services are TCP, not HTTP: expose an internal connection
+		// endpoint (<name>:<port>) instead of a public web URL.
+		applyDBFields(s)
+		if s["kind"] != "database" && name != "" {
+			if ep := endpointFor(name); ep != "" {
+				s["endpoint"] = ep
+			}
+		}
+		out = append(out, s)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"services": out, "username": sess.Username, "role": string(sess.Role)})
+}
+
+// handleListUserSecrets: GET /v1/user/secrets — caller's secrets, masked.
+func handleListUserSecrets(w http.ResponseWriter, r *http.Request) {
+	sess := userSecretCaller(w, r)
+	if sess == nil {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"secrets": usersecrets.List(sess.Username)})
+}
+
+// handleCreateUserSecret: POST /v1/user/secrets {name, value}.
+func handleCreateUserSecret(w http.ResponseWriter, r *http.Request) {
+	sess := userSecretCaller(w, r)
+	if sess == nil {
+		return
+	}
+	var body struct {
+		Name  string `json:"name"`
+		Value string `json:"value"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "Invalid request"})
+		return
+	}
+	id, err := usersecrets.Save(sess.Username, body.Name, body.Value)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "id": id, "name": body.Name})
+}
+
+// handleGetUserSecret: GET /v1/user/secrets/{id} — reveals plaintext for the
+// owner only. Other callers receive 403 even if the session is admin.
+func handleGetUserSecret(w http.ResponseWriter, r *http.Request) {
+	sess := userSecretCaller(w, r)
+	if sess == nil {
+		return
+	}
+	id := strings.TrimSpace(chi.URLParam(r, "id"))
+	meta, plaintext, err := usersecrets.GetPlaintext(sess.Username, id)
+	if err != nil {
+		status := http.StatusBadRequest
+		if err.Error() == "forbidden" {
+			status = http.StatusForbidden
+		} else if err.Error() == "not found" {
+			status = http.StatusNotFound
+		}
+		writeJSON(w, status, map[string]any{"success": false, "message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"id":      meta.ID, "name": meta.Name, "value": plaintext,
+		"updated_at": meta.UpdatedAt.Format(time.RFC3339),
+	})
+}
+
+// handleUpdateUserSecret: PUT /v1/user/secrets/{id} {name?, value?}.
+func handleUpdateUserSecret(w http.ResponseWriter, r *http.Request) {
+	sess := userSecretCaller(w, r)
+	if sess == nil {
+		return
+	}
+	id := strings.TrimSpace(chi.URLParam(r, "id"))
+	var body struct {
+		Name  *string `json:"name"`
+		Value *string `json:"value"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "Invalid request"})
+		return
+	}
+	if err := usersecrets.Update(sess.Username, id, body.Name, body.Value); err != nil {
+		status := http.StatusBadRequest
+		if err.Error() == "forbidden" {
+			status = http.StatusForbidden
+		} else if err.Error() == "not found" {
+			status = http.StatusNotFound
+		}
+		writeJSON(w, status, map[string]any{"success": false, "message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true})
+}
+
+// handleDeleteUserSecret: DELETE /v1/user/secrets/{id}.
+func handleDeleteUserSecret(w http.ResponseWriter, r *http.Request) {
+	sess := userSecretCaller(w, r)
+	if sess == nil {
+		return
+	}
+	id := strings.TrimSpace(chi.URLParam(r, "id"))
+	if err := usersecrets.Delete(sess.Username, id); err != nil {
+		status := http.StatusBadRequest
+		if err.Error() == "forbidden" {
+			status = http.StatusForbidden
+		} else if err.Error() == "not found" {
+			status = http.StatusNotFound
+		}
+		writeJSON(w, status, map[string]any{"success": false, "message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true})
+}
+
+// handleDeleteUser: DELETE /v1/auth/users/{username}. Admin-only.
+func handleDeleteUser(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromRequest(r)
+	if sess == nil || sess.Role != auth.RoleAdmin {
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"success": false, "message": "관리자 권한이 필요합니다", "code": "forbidden",
+		})
+		return
+	}
+	username := strings.TrimSpace(chi.URLParam(r, "username"))
+	if username == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "username required"})
+		return
+	}
+	if username == sess.Username {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "자신의 계정은 삭제할 수 없습니다"})
+		return
+	}
+	if err := auth.DeleteUser(username); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": err.Error()})
+		return
+	}
+	auditRequest(r, "DELETE /v1/auth/users/"+username, username, "deleted")
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "username": username})
 }
 
 // ---------------------------------------------------------------------------
@@ -957,10 +2529,45 @@ func ssePublishLoop() {
 // Dashboard
 // ---------------------------------------------------------------------------
 
+// dashboardETag is computed once at first request from DashboardHTML content.
+var (
+	dashboardETagOnce sync.Once
+	dashboardETagVal  string
+)
+
+func dashboardETag() string {
+	dashboardETagOnce.Do(func() {
+		h := sha256.Sum256([]byte(DashboardHTML))
+		dashboardETagVal = `"` + hex.EncodeToString(h[:8]) + `"`
+	})
+	return dashboardETagVal
+}
+
 func handleDashboard(w http.ResponseWriter, r *http.Request) {
+	etag := dashboardETag()
+	w.Header().Set("ETag", etag)
+	// Force revalidation on every reload but allow 304 to skip body.
+	w.Header().Set("Cache-Control", "no-cache")
+	if inm := r.Header.Get("If-None-Match"); inm != "" && inm == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	io.WriteString(w, DashboardHTML)
+}
+
+// handlePortal serves the self-service user portal page.
+func handlePortal(w http.ResponseWriter, r *http.Request) {
+	if PortalHTML == "" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		io.WriteString(w, "<!doctype html><meta charset=utf-8><h1>Portal not available</h1>")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	io.WriteString(w, PortalHTML)
 }
 
 // ---------------------------------------------------------------------------
@@ -1213,12 +2820,31 @@ func handleProvisionNode(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"success": false, "message": "node_ip는 필수입니다."})
 		return
 	}
+	// Strict input validation — these values are passed to bash as argv.
+	// Rejecting shell metachars / non-IP / non-identifier inputs eliminates
+	// the command-injection attack surface flagged by gosec G702.
+	if net.ParseIP(body.NodeIP) == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "node_ip가 유효한 IP가 아닙니다."})
+		return
+	}
 	if body.SSHUser == "" {
 		body.SSHUser = "root"
+	}
+	if !isSafeIdent(body.SSHUser, 32) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "ssh_user에 허용되지 않은 문자가 포함되어 있습니다."})
+		return
 	}
 	if body.NodeName == "" {
 		parts := strings.Split(body.NodeIP, ".")
 		body.NodeName = "worker-" + parts[len(parts)-1]
+	}
+	if !isSafeIdent(body.NodeName, 64) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "node_name에 허용되지 않은 문자가 포함되어 있습니다."})
+		return
+	}
+	if body.SSHKeyPath != "" && !isSafePath(body.SSHKeyPath) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "ssh_key_path에 허용되지 않은 문자가 포함되어 있습니다."})
+		return
 	}
 
 	masterAddr := os.Getenv("ORCHESTRATOR_ADVERTISE_ADDR")
@@ -1260,11 +2886,17 @@ func handleProvisionNode(w http.ResponseWriter, r *http.Request) {
 			sshPassword = "" // don't use password when key auth
 		}
 
+		// Pass secrets via env (SSHPASS / ORCH_API_TOKEN) not argv when possible.
+		// Still provide positional args for backward-compat with older scripts,
+		// but the provisionLog output will be scrubbed of any password/token leaks.
 		cmd := exec.Command("bash", scriptPath,
 			body.NodeIP, body.NodeName, body.SSHUser, sshPassword,
 			masterAddr, apiToken, "", sshKeyPath,
 		)
-		cmd.Env = append(os.Environ(), "SSHPASS="+sshPassword)
+		cmd.Env = append(os.Environ(),
+			"SSHPASS="+sshPassword,
+			"ORCH_API_TOKEN="+apiToken,
+		)
 
 		stdout, _ := cmd.StdoutPipe()
 		cmd.Stderr = cmd.Stdout
@@ -1276,12 +2908,25 @@ func handleProvisionNode(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Build a sanitizer that scrubs known secrets from stdout before
+		// it lands in the HTTP-exposed provisionLog.
+		sanitize := func(data []byte) []byte {
+			s := string(data)
+			if sshPassword != "" {
+				s = strings.ReplaceAll(s, sshPassword, "****")
+			}
+			if apiToken != "" {
+				s = strings.ReplaceAll(s, apiToken, "****")
+			}
+			return []byte(s)
+		}
+
 		buf := make([]byte, 4096)
 		for {
 			n, err := stdout.Read(buf)
 			if n > 0 {
 				provisionMu.Lock()
-				provisionLog.Write(buf[:n])
+				provisionLog.Write(sanitize(buf[:n]))
 				provisionMu.Unlock()
 			}
 			if err != nil {
@@ -1338,13 +2983,20 @@ func handleSystem(w http.ResponseWriter, r *http.Request) {
 
 func handleListServices(w http.ResponseWriter, r *http.Request) {
 	showSystem := r.URL.Query().Get("show_system") == "true"
-	result := getServicesData(showSystem)
+	result := getServicesDataForViewer(showSystem, requesterUsername(r))
 	writeJSON(w, http.StatusOK, result)
 }
 
-// getServicesData builds the services listing data. It is used by both the
-// handleListServices handler and the SSE payload builder.
+// getServicesData is the legacy entry kept for non-HTTP callers (SSE builder).
+// It produces the same shape as handleListServices for an unauthenticated
+// viewer, i.e. secret values are masked.
 func getServicesData(showSystem bool) []map[string]any {
+	return getServicesDataForViewer(showSystem, "")
+}
+
+// getServicesDataForViewer builds the services listing data, applying
+// per-owner secret masking based on the supplied viewer username.
+func getServicesDataForViewer(showSystem bool, viewer string) []map[string]any {
 	localServices := state.ListServices()
 
 	if clusterState == nil {
@@ -1353,7 +3005,7 @@ func getServicesData(showSystem bool) []map[string]any {
 			if !showSystem && systemServices[s.Name] {
 				continue
 			}
-			result = append(result, serviceInfoToMap(s))
+			result = append(result, serviceInfoToMapForViewer(s, viewer))
 		}
 		if result == nil {
 			result = []map[string]any{}
@@ -1458,7 +3110,7 @@ func getServicesData(showSystem bool) []map[string]any {
 			status = "running"
 		}
 
-		result = append(result, map[string]any{
+		entry := map[string]any{
 			"name":          svcName,
 			"image":         image,
 			"replicas":      totalRaw,
@@ -1469,7 +3121,30 @@ func getServicesData(showSystem bool) []map[string]any {
 			"container_ids": []string{},
 			"nodes":         nodeList,
 			"endpoint":      endpoint,
-		})
+		}
+		// Attach owner + masked env_vars from cluster state (handleClusterDeploy
+		// writes here) with a fallback to local services state for master-only
+		// flows that bypass the scheduler.
+		var svcMeta map[string]any
+		if clusterSvc != nil {
+			svcMeta = clusterSvc
+		}
+		if svcMeta == nil {
+			svcMeta = state.GetService(svcName)
+		}
+		if svcMeta != nil {
+			if owner, ok := svcMeta["owner"].(string); ok {
+				entry["owner"] = owner
+			}
+			if sh, ok := svcMeta["shared"].(bool); ok {
+				entry["shared"] = sh
+			}
+			if evs := maskedEnvVarsForViewer(svcMeta, viewer); len(evs) > 0 {
+				entry["env_vars"] = evs
+				entry["can_edit_secrets"] = viewer != "" && viewer == entry["owner"]
+			}
+		}
+		result = append(result, entry)
 	}
 
 	// Add local-only services not in cluster placements.
@@ -1483,7 +3158,57 @@ func getServicesData(showSystem bool) []map[string]any {
 		if s.Replicas == 0 && len(s.ContainerIDs) == 0 {
 			continue
 		}
-		result = append(result, serviceInfoToMap(s))
+		result = append(result, serviceInfoToMapForViewer(s, viewer))
+	}
+
+	// Add defined-but-stopped services (desired_replicas set, no live
+	// placements). Without this, stopping a service makes it vanish from the
+	// portal so it can't be restarted from the UI.
+	for _, svc := range clusterState.ListServices() {
+		svcName, _ := svc["name"].(string)
+		if svcName == "" || seen[svcName] {
+			continue
+		}
+		if !showSystem && systemServices[svcName] {
+			continue
+		}
+		image, _ := svc["image"].(string)
+		desired := 0
+		switch v := svc["desired_replicas"].(type) {
+		case int:
+			desired = v
+		case int64:
+			desired = int(v)
+		case float64:
+			desired = int(v)
+		}
+		entry := map[string]any{
+			"name":          svcName,
+			"image":         image,
+			"replicas":      desired,
+			"running":       0,
+			"status":        "stopped",
+			"container_ids": []string{},
+			"nodes":         []string{},
+			"endpoint":      "",
+			"memory_limit":  svc["memory_limit"],
+			"cpu_limit":     svc["cpu_limit"],
+		}
+		// Owner + masked env from full service record.
+		if full := clusterState.GetService(svcName); full != nil {
+			if owner, ok := full["owner"].(string); ok {
+				entry["owner"] = owner
+			}
+			if sh, ok := full["shared"].(bool); ok {
+				entry["shared"] = sh
+			}
+			if evs := maskedEnvVarsForViewer(full, viewer); len(evs) > 0 {
+				entry["env_vars"] = evs
+				entry["can_edit_secrets"] = viewer != "" && viewer == entry["owner"]
+			}
+		}
+		seen[svcName] = true
+		result = append(result, entry)
 	}
 
 	if result == nil {
@@ -1890,6 +3615,9 @@ func handleRunContainer(w http.ResponseWriter, r *http.Request) {
 		Ports:              req.Ports,
 		User:               req.User,
 		VolumeMode:         req.VolumeMode,
+		ExtraAliases:       req.ExtraAliases,
+		ExtraLabels:        req.ExtraLabels,
+		Subdomain:          req.Subdomain,
 		AutoPull:           true,
 	})
 	if ok {
@@ -2048,7 +3776,8 @@ func handleScaleService(w http.ResponseWriter, r *http.Request) {
 
 func handlePullImage(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Image string `json:"image"`
+		Image    string `json:"image"`
+		SkipPush bool   `json:"skip_push"` // opt-out from auto-push to internal registry
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "Invalid request"})
@@ -2066,14 +3795,72 @@ func handlePullImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
 	ok, msg := runtime.PullImage(ctx, cli, image)
-	if ok {
-		monitoring.InvalidateCache("images")
+	if !ok {
+		writeJSON(w, http.StatusOK, map[string]any{"success": false, "message": msg})
+		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"success": ok, "message": msg})
+	monitoring.InvalidateCache("images")
+
+	resp := map[string]any{"success": true, "message": msg, "image": image}
+
+	// Auto-push to internal registry (best-effort).
+	if !body.SkipPush && isRegistryRunning(ctx) {
+		repoTag := stripRegistryPrefix(image)
+		regImg, pushErr := pushImageToRegistry(ctx, image, repoTag)
+		if pushErr != nil {
+			resp["registry_pushed"] = false
+			resp["registry_error"] = pushErr.Error()
+			resp["message"] = msg + " (내장 registry push 실패: " + pushErr.Error() + ")"
+		} else {
+			resp["registry_pushed"] = true
+			resp["registry_image"] = regImg
+			resp["registry_external"] = registryExternalTag(repoTag)
+			resp["message"] = msg + " · 내장 registry에 push됨 → " + registryExternalTag(repoTag)
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// stripRegistryPrefix turns a fully qualified image reference into a repo:tag
+// suitable for tagging against the local registry. Examples:
+//
+//	nginx:latest                                    -> nginx:latest
+//	docker.io/library/nginx:latest                  -> library/nginx:latest
+//	20.20.0.13:80/iconloop/goloop:v1.2.5            -> iconloop/goloop:v1.2.5
+//	ghcr.io/owner/app@sha256:...                    -> owner/app:sha-<first12>
+func stripRegistryPrefix(image string) string {
+	// If image has "@sha256:..." (digest), replace with a tag name derived from the digest.
+	if at := strings.Index(image, "@sha256:"); at >= 0 {
+		name := image[:at]
+		digest := image[at+len("@sha256:"):]
+		if len(digest) > 12 {
+			digest = digest[:12]
+		}
+		image = name + ":sha-" + digest
+	}
+
+	// Ensure there's an explicit :tag — default to latest.
+	lastSlash := strings.LastIndex(image, "/")
+	lastColon := strings.LastIndex(image, ":")
+	if lastColon < lastSlash {
+		// The colon was part of a host:port, not a tag.
+		image = image + ":latest"
+	}
+
+	// Strip registry host prefix. Identified as first path segment containing
+	// '.', ':', or equal to "localhost".
+	firstSlash := strings.Index(image, "/")
+	if firstSlash > 0 {
+		head := image[:firstSlash]
+		if head == "localhost" || strings.Contains(head, ".") || strings.Contains(head, ":") {
+			image = image[firstSlash+1:]
+		}
+	}
+	return image
 }
 
 // ---------------------------------------------------------------------------
@@ -2248,10 +4035,10 @@ func handleClusterHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		NodeName   string                    `json:"node_name"`
-		Resources  models.NodeResources      `json:"resources"`
+		NodeName   string                      `json:"node_name"`
+		Resources  models.NodeResources        `json:"resources"`
 		Containers []models.ContainerPlacement `json:"containers"`
-		Address    string                    `json:"address"`
+		Address    string                      `json:"address"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ack": false, "error": "Invalid payload"})
@@ -2281,15 +4068,15 @@ func handleClusterSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		ServiceName string                     `json:"service_name"`
-		Image       string                     `json:"image"`
-		Replicas    int                        `json:"replicas"`
-		Strategy    string                     `json:"strategy"`
-		MemoryLimit string                     `json:"memory_limit"`
-		CPULimit    string                     `json:"cpu_limit"`
-		Environment []string                   `json:"environment"`
-		Volumes     []string                   `json:"volumes"`
-		Ports       []string                   `json:"ports"`
+		ServiceName string                      `json:"service_name"`
+		Image       string                      `json:"image"`
+		Replicas    int                         `json:"replicas"`
+		Strategy    string                      `json:"strategy"`
+		MemoryLimit string                      `json:"memory_limit"`
+		CPULimit    string                      `json:"cpu_limit"`
+		Environment []string                    `json:"environment"`
+		Volumes     []string                    `json:"volumes"`
+		Ports       []string                    `json:"ports"`
 		Constraints *models.ScheduleConstraints `json:"constraints"`
 	}
 	if err := readJSON(r, &body); err != nil {
@@ -2653,6 +4440,20 @@ func handleClusterScale(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Enforce ownership: non-admin users may only scale their own services.
+	if clusterState != nil {
+		if info := clusterState.GetService(serviceName); info != nil {
+			if ok, owner := canManageService(r, info); !ok {
+				writeJSON(w, http.StatusForbidden, map[string]any{
+					"success": false,
+					"message": fmt.Sprintf("'%s' 서비스는 소유자(%s)만 스케일을 조정할 수 있습니다", serviceName, owner),
+					"code":    "forbidden_owner",
+				})
+				return
+			}
+		}
+	}
+
 	if clusterState == nil {
 		// Fallback: local-only.
 		cli := runtime.DockerClient()
@@ -2873,8 +4674,183 @@ func handleClusterStop(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"success": false, "message": "클러스터 모드가 아닙니다."})
 		return
 	}
+	// Owner check: admin manages all; a user may only stop services it owns.
+	if info := clusterState.GetService(serviceName); info != nil {
+		if ok, owner := canManageService(r, info); !ok {
+			writeJSON(w, http.StatusForbidden, map[string]any{
+				"success": false,
+				"message": fmt.Sprintf("'%s' 서비스는 소유자(%s)만 중지할 수 있습니다", serviceName, owner),
+				"code":    "forbidden_owner",
+			})
+			return
+		}
+	}
 	result := clusterStopServiceInternal(serviceName)
 	writeJSON(w, http.StatusOK, result)
+}
+
+// handleClusterDeleteService fully removes a service: stops + removes all its
+// containers (like stop) AND deletes the service definition + placement rows
+// from cluster state so it no longer appears in listings and reconcile never
+// respawns it. Same owner restriction as stop.
+func handleClusterDeleteService(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ServiceName string `json:"service_name"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "Invalid request"})
+		return
+	}
+	serviceName := strings.TrimSpace(body.ServiceName)
+	if serviceName == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"success": false, "message": "서비스명을 입력하세요."})
+		return
+	}
+	if clusterState == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"success": false, "message": "클러스터 모드가 아닙니다."})
+		return
+	}
+	// Owner check (same rule as stop).
+	if info := clusterState.GetService(serviceName); info != nil {
+		if ok, owner := canManageService(r, info); !ok {
+			writeJSON(w, http.StatusForbidden, map[string]any{
+				"success": false,
+				"message": fmt.Sprintf("'%s' 서비스는 소유자(%s)만 삭제할 수 있습니다", serviceName, owner),
+				"code":    "forbidden_owner",
+			})
+			return
+		}
+	}
+	// Stop + remove containers first, then delete the definition everywhere.
+	clusterStopServiceInternal(serviceName)
+	clusterState.DeleteService(serviceName)
+	// Master's own local services.json.
+	state.DeleteService(serviceName)
+	// Propagate the local-state deletion to every worker so the entry doesn't
+	// linger (and so heartbeats don't re-surface it in listings).
+	delBody, _ := json.Marshal(map[string]any{"service_name": serviceName})
+	for _, n := range clusterState.ListNodes() {
+		if n.Role == "master" {
+			continue
+		}
+		node := n
+		req, _ := http.NewRequest("POST", nodeBaseURL(&node)+"/v1/agent/delete-service", bytes.NewReader(delBody))
+		setNodeHeaders(req, &node)
+		if resp, err := httpClient.Do(req); err == nil {
+			resp.Body.Close()
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"message": fmt.Sprintf("'%s' 서비스 삭제 완료 (컨테이너 제거 + 정의 삭제)", serviceName),
+	})
+}
+
+// handleAgentDeleteService removes a service definition from this node's local
+// services.json (worker-side counterpart of the cluster delete).
+func handleAgentDeleteService(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ServiceName string `json:"service_name"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "Invalid request"})
+		return
+	}
+	name := strings.TrimSpace(body.ServiceName)
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "service_name required"})
+		return
+	}
+	state.DeleteService(name)
+	writeJSON(w, http.StatusOK, map[string]any{"success": true})
+}
+
+// handleClusterNodeProxy forwards a request to a specific node's local API.
+//
+// The dashboard's apiUrl() helper rewrites calls to
+// /v1/cluster/{node}/proxy?path=<urlencoded original path> when a target node
+// other than "local" is selected. Without this handler chi returns a plain
+// "404 page not found" body, which the dashboard then tries to JSON.parse —
+// producing the confusing "Unexpected non-whitespace character after JSON at
+// position 4" error (it parses the leading 404 as a number).
+//
+// "local" / "master" / empty resolve to this node directly (loopback) so the
+// proxy is always safe to call.
+func handleClusterNodeProxy(w http.ResponseWriter, r *http.Request) {
+	nodeName := strings.TrimSpace(chi.URLParam(r, "node"))
+	path := r.URL.Query().Get("path")
+	if path == "" || !strings.HasPrefix(path, "/") {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "proxy path 파라미터가 필요합니다"})
+		return
+	}
+
+	// The /v1/cluster/ prefix bypasses sessionAuthMiddleware, so guard mutating
+	// proxied calls here: forwarding with the cluster token grants privileged
+	// access, so require an admin session for anything that changes state.
+	if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
+		if sess := auth.SessionFromRequest(r); sess == nil || sess.Role != auth.RoleAdmin {
+			writeJSON(w, http.StatusForbidden, map[string]any{
+				"success": false, "message": "관리자 권한이 필요합니다", "code": "forbidden",
+			})
+			return
+		}
+	}
+
+	// Resolve the destination base URL.
+	masterName := os.Getenv("ORCHESTRATOR_NODE_NAME")
+	if masterName == "" {
+		masterName = "master"
+	}
+	var baseURL string
+	var node *models.NodeInfo
+	if nodeName == "" || nodeName == "local" || nodeName == masterName {
+		baseURL = "http://localhost:" + getServerPort()
+	} else if clusterState != nil {
+		node = clusterState.GetNode(nodeName)
+		if node == nil {
+			writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "노드를 찾을 수 없습니다: " + nodeName})
+			return
+		}
+		baseURL = nodeBaseURL(node)
+	} else {
+		baseURL = "http://localhost:" + getServerPort()
+	}
+
+	// Build the forwarded request, preserving method + body.
+	var bodyReader io.Reader
+	if r.Body != nil {
+		data, _ := io.ReadAll(io.LimitReader(r.Body, 16<<20))
+		bodyReader = bytes.NewReader(data)
+	}
+	fwReq, err := http.NewRequest(r.Method, baseURL+path, bodyReader)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "message": err.Error()})
+		return
+	}
+	if ct := r.Header.Get("Content-Type"); ct != "" {
+		fwReq.Header.Set("Content-Type", ct)
+	}
+	// Authenticate the forwarded call with the shared cluster token so the
+	// destination treats it as a trusted inter-node request.
+	if node != nil {
+		setNodeHeaders(fwReq, node)
+	} else if tok := strings.TrimSpace(os.Getenv("ORCHESTRATOR_API_TOKEN")); tok != "" {
+		fwReq.Header.Set("Authorization", "Bearer "+tok)
+	}
+
+	resp, err := longHTTPClient.Do(fwReq)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"success": false, "message": "프록시 요청 실패: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	// Relay status + content-type + body verbatim.
+	if ct := resp.Header.Get("Content-Type"); ct != "" {
+		w.Header().Set("Content-Type", ct)
+	}
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
 }
 
 // handleClusterContainerStop stops a single container on a specific node via the master.
@@ -2896,6 +4872,30 @@ func handleClusterContainerStop(w http.ResponseWriter, r *http.Request) {
 	if node == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"success": false, "message": "Node not found: " + body.NodeName})
 		return
+	}
+	// Owner check: resolve the container's owning service via its placement
+	// row; admin manages all, a user may only remove its own. Containers that
+	// can't be mapped to a known service fall through (token/legacy only).
+	if requesterUsername(r) != "" {
+		svcName := ""
+		for _, p := range clusterState.GetPlacements("", body.NodeName) {
+			if p.ContainerID == body.ContainerID || (body.ContainerName != "" && p.ContainerName == body.ContainerName) {
+				svcName = p.ServiceName
+				break
+			}
+		}
+		if svcName != "" {
+			if info := clusterState.GetService(svcName); info != nil {
+				if ok, owner := canManageService(r, info); !ok {
+					writeJSON(w, http.StatusForbidden, map[string]any{
+						"success": false,
+						"message": fmt.Sprintf("'%s' 서비스는 소유자(%s)만 컨테이너를 제거할 수 있습니다", svcName, owner),
+						"code":    "forbidden_owner",
+					})
+					return
+				}
+			}
+		}
 	}
 	baseURL := nodeBaseURL(node)
 	cid := body.ContainerID
@@ -2962,17 +4962,29 @@ func handleClusterContainerDelete(w http.ResponseWriter, r *http.Request) {
 
 func handleClusterDeploy(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Image       string                     `json:"image"`
-		Name        string                     `json:"name"`
-		Replicas    int                        `json:"replicas"`
-		Strategy    string                     `json:"strategy"`
-		Memory      string                     `json:"memory"`
-		CPU         string                     `json:"cpu"`
-		Environment []string                   `json:"environment"`
-		Volumes     []string                   `json:"volumes"`
-		Ports       []string                   `json:"ports"`
-		Nodes       []string                   `json:"nodes"`
+		Image       string   `json:"image"`
+		Name        string   `json:"name"`
+		Replicas    int      `json:"replicas"`
+		Strategy    string   `json:"strategy"`
+		Memory      string   `json:"memory"`
+		CPU         string   `json:"cpu"`
+		Environment []string `json:"environment"`
+		// Secrets: variable names within Environment that must be persisted
+		// encrypted and access-restricted to the deploying user.
+		Secrets []string `json:"secrets"`
+		// SecretRefs pulls values from the caller's pre-saved user-secret
+		// store. Each ref is expanded into Environment[env_name=plaintext]
+		// just before the container starts; the env_name is also appended to
+		// Secrets so the rest of the pipeline treats it as encrypted at rest.
+		SecretRefs  []usersecrets.SecretRef     `json:"secret_refs"`
+		Volumes     []string                    `json:"volumes"`
+		Ports       []string                    `json:"ports"`
+		Nodes       []string                    `json:"nodes"`
 		Constraints *models.ScheduleConstraints `json:"constraints"`
+		// Subdomain opts this service into subdomain routing
+		// (svc.<base-domain>) instead of the default path routing
+		// (<path-host>/svc/).
+		Subdomain bool `json:"subdomain"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "Invalid request"})
@@ -3059,6 +5071,29 @@ func handleClusterDeploy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Expand any pre-saved user-secret references into body.Environment BEFORE
+	// dispatching to nodes — every container in this deploy needs the secret
+	// value injected as a plaintext env var. Owner check happens inside
+	// ResolveRefs; refs that don't belong to the deploying user reject the
+	// whole deployment.
+	if len(body.SecretRefs) > 0 {
+		deployOwnerEarly := requesterUsername(r)
+		if deployOwnerEarly != "" {
+			resolved, err := usersecrets.ResolveRefs(deployOwnerEarly, body.SecretRefs)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]any{
+					"success": false,
+					"message": "시크릿 변수 적용 실패: " + err.Error(),
+				})
+				return
+			}
+			for envName, val := range resolved {
+				body.Environment = append(body.Environment, envName+"="+val)
+				body.Secrets = append(body.Secrets, envName)
+			}
+		}
+	}
+
 	// Execute on each node: pull image + run containers.
 	var results []map[string]any
 	totalCreated := 0
@@ -3099,6 +5134,7 @@ func handleClusterDeploy(w http.ResponseWriter, r *http.Request) {
 			"environment":          body.Environment,
 			"volumes":              body.Volumes,
 			"ports":                body.Ports,
+			"subdomain":            body.Subdomain,
 		})
 		runReq, _ := http.NewRequest(http.MethodPost, baseURL+"/v1/containers/run", bytes.NewReader(runPayload))
 		setNodeHeaders(runReq, node)
@@ -3127,12 +5163,17 @@ func handleClusterDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Save cluster service.
+	deployOwner := requesterUsername(r)
+	envVars := buildEnvVars(body.Environment, body.Secrets)
 	clusterState.SaveService(name, image, replicas, map[string]any{
 		"memory_limit": body.Memory,
 		"cpu_limit":    body.CPU,
 		"environment":  body.Environment,
+		"env_vars":     envVars,
+		"owner":        deployOwner,
 		"volumes":      body.Volumes,
 		"ports":        body.Ports,
+		"subdomain":    body.Subdomain,
 	})
 
 	allOK := true
@@ -3306,6 +5347,217 @@ func handleAgentAdjustReplicas(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "service_name": svc, "replicas": newReplicas})
 }
 
+// handleClusterStats: GET /v1/cluster/stats. Aggregates live CPU/memory usage
+// per service across all nodes (sums replicas). Read-only, non-sensitive usage
+// numbers — no per-service auth gate.
+func handleClusterStats(w http.ResponseWriter, r *http.Request) {
+	toF := func(v any) float64 {
+		switch n := v.(type) {
+		case float64:
+			return n
+		case int:
+			return float64(n)
+		}
+		return 0
+	}
+	svcFromName := func(name string) string {
+		s := strings.TrimPrefix(name, "/")
+		s = strings.TrimPrefix(s, "orch-")
+		if i := strings.LastIndex(s, "-"); i > 0 {
+			if _, err := strconv.Atoi(s[i+1:]); err == nil {
+				return s[:i]
+			}
+		}
+		return s
+	}
+	agg := map[string]map[string]float64{}
+	add := func(containers []map[string]any) {
+		for _, c := range containers {
+			svc, _ := c["service"].(string)
+			if svc == "" {
+				name, _ := c["name"].(string)
+				svc = svcFromName(name)
+			}
+			if svc == "" {
+				continue
+			}
+			st, _ := c["stats"].(map[string]any)
+			if st == nil {
+				continue
+			}
+			e := agg[svc]
+			if e == nil {
+				e = map[string]float64{}
+				agg[svc] = e
+			}
+			e["cpu_percent"] += toF(st["cpu_percent"])
+			e["memory_usage_mb"] += toF(st["memory_usage_mb"])
+			e["memory_limit_mb"] += toF(st["memory_limit_mb"])
+		}
+	}
+
+	if clusterState == nil {
+		add(monitoring.GetAllContainersWithStats())
+	} else {
+		for _, node := range clusterState.ListNodes() {
+			req, _ := http.NewRequest(http.MethodGet, nodeBaseURL(&node)+"/v1/containers?stats=true", nil)
+			setNodeHeaders(req, &node)
+			resp, err := longHTTPClient.Do(req)
+			if err != nil {
+				continue
+			}
+			var d struct {
+				Containers []map[string]any `json:"containers"`
+			}
+			json.NewDecoder(resp.Body).Decode(&d)
+			resp.Body.Close()
+			add(d.Containers)
+		}
+	}
+
+	out := map[string]any{}
+	for svc, e := range agg {
+		memPct := 0.0
+		if e["memory_limit_mb"] > 0 {
+			memPct = e["memory_usage_mb"] / e["memory_limit_mb"] * 100.0
+		}
+		cpu := e["cpu_percent"]
+		if cpu > 100 {
+			cpu = 100
+		}
+		out[svc] = map[string]any{
+			"cpu_percent":     cpu,
+			"memory_usage_mb": e["memory_usage_mb"],
+			"memory_limit_mb": e["memory_limit_mb"],
+			"memory_percent":  memPct,
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "stats": out})
+}
+
+// handleAgentLogs: POST /v1/agent/logs {service_name, tail}. Node-local endpoint
+// (inter-node, token-auth) that returns recent logs for every container of the
+// named service on this node.
+func handleAgentLogs(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ServiceName string `json:"service_name"`
+		Tail        string `json:"tail"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "error": "Invalid request"})
+		return
+	}
+	svc := strings.TrimSpace(body.ServiceName)
+	tail := strings.TrimSpace(body.Tail)
+	if tail == "" {
+		tail = "200"
+	}
+	cli := runtime.DockerClient()
+	if cli == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"success": false, "error": "Docker connection failed"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	containers, _ := cli.ContainerList(ctx, container.ListOptions{All: true})
+	prefix := "orch-" + svc + "-"
+	var out strings.Builder
+	found := false
+	for _, c := range containers {
+		name := ""
+		for _, n := range c.Names {
+			nm := strings.TrimPrefix(n, "/")
+			if strings.HasPrefix(nm, prefix) {
+				name = nm
+				break
+			}
+		}
+		if name == "" {
+			continue
+		}
+		found = true
+		lr, err := cli.ContainerLogs(ctx, c.ID, container.LogsOptions{
+			ShowStdout: true, ShowStderr: true, Tail: tail, Timestamps: false,
+		})
+		out.WriteString(fmt.Sprintf("===== %s (%s) =====\n", name, c.State))
+		if err == nil {
+			b, _ := io.ReadAll(lr)
+			lr.Close()
+			out.WriteString(stripDockerLogHeaders(string(b)))
+		} else {
+			out.WriteString("(로그 조회 실패: " + err.Error() + ")")
+		}
+		out.WriteString("\n")
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "found": found, "logs": out.String()})
+}
+
+// handleClusterLogs: GET /v1/cluster/logs?service=NAME&tail=N. Returns recent
+// container logs for a service, aggregated across nodes. GET requests bypass the
+// role middleware, so this handler enforces its own auth: a session is required
+// and non-admins may only read logs for services they own (logs can leak
+// secrets).
+func handleClusterLogs(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromRequest(r)
+	if sess == nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"success": false, "message": "로그인이 필요합니다", "code": "unauthenticated"})
+		return
+	}
+	serviceName := strings.TrimSpace(r.URL.Query().Get("service"))
+	if serviceName == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "service 파라미터가 필요합니다"})
+		return
+	}
+	tail := strings.TrimSpace(r.URL.Query().Get("tail"))
+	if tail == "" {
+		tail = "200"
+	}
+	if clusterState == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"success": false, "message": "클러스터 모드가 아닙니다"})
+		return
+	}
+	info := clusterState.GetService(serviceName)
+	if info == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "서비스를 찾을 수 없습니다: " + serviceName})
+		return
+	}
+	if ok, owner := canManageService(r, info); !ok {
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"success": false,
+			"message": fmt.Sprintf("'%s' 서비스는 소유자(%s)만 로그를 볼 수 있습니다", serviceName, owner),
+			"code":    "forbidden_owner",
+		})
+		return
+	}
+	payload, _ := json.Marshal(map[string]any{"service_name": serviceName, "tail": tail})
+	var combined strings.Builder
+	for _, node := range clusterState.ListNodes() {
+		baseURL := nodeBaseURL(&node)
+		req, _ := http.NewRequest(http.MethodPost, baseURL+"/v1/agent/logs", bytes.NewReader(payload))
+		setNodeHeaders(req, &node)
+		resp, err := longHTTPClient.Do(req)
+		if err != nil {
+			continue
+		}
+		var d struct {
+			Found bool   `json:"found"`
+			Logs  string `json:"logs"`
+		}
+		json.NewDecoder(resp.Body).Decode(&d)
+		resp.Body.Close()
+		if d.Found && strings.TrimSpace(d.Logs) != "" {
+			combined.WriteString(fmt.Sprintf("########## node: %s ##########\n", node.Name))
+			combined.WriteString(d.Logs)
+			combined.WriteString("\n")
+		}
+	}
+	logs := combined.String()
+	if strings.TrimSpace(logs) == "" {
+		logs = "(실행 중인 컨테이너 로그가 없습니다)"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "service": serviceName, "logs": logs})
+}
+
 func handleAgentRunOne(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Image       string `json:"image"`
@@ -3366,7 +5618,9 @@ func handleAgentRunOne(w http.ResponseWriter, r *http.Request) {
 		runtime.LabelOrchestrator: "true",
 		runtime.LabelService:      svcName,
 	}
-	for k, v := range runtime.TraefikLabels(svcName, runtime.TraefikHTTPPort) {
+	// Default path routing; agent run-one is used by migrate/compose flows
+	// which don't carry a per-service subdomain preference.
+	for k, v := range runtime.TraefikLabels(svcName, runtime.TraefikHTTPPort, false) {
 		labels[k] = v
 	}
 
@@ -3508,6 +5762,16 @@ func masterSelfHeartbeat() {
 	clusterState.ProcessHeartbeat(nodeName, masterAddr, resources, containers)
 }
 
+// yamlDoubleQuote wraps a Traefik rule expression for safe emission inside
+// a double-quoted YAML scalar. Traefik rules contain backticks and may
+// contain backslashes (Referer regex), both of which need escaping when
+// the value is written inside YAML double quotes.
+func yamlDoubleQuote(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	return `"` + s + `"`
+}
+
 func syncTraefikRoutes() {
 	if clusterState == nil {
 		return
@@ -3555,15 +5819,24 @@ func syncTraefikRoutes() {
 		rule        string
 		service     string
 		entryPoints []string
+		middlewares []string
+		priority    int
 	}
 	type serviceCfg struct {
 		servers []string
 	}
+	type middlewareCfg struct {
+		stripPrefixes []string
+	}
 
 	routers := make(map[string]routerCfg)
 	services := make(map[string]serviceCfg)
+	middlewares := make(map[string]middlewareCfg)
 
 	re := regexp.MustCompile(`[^a-z0-9-]`)
+
+	baseDomain := runtime.BaseDomain()
+	pathHost := runtime.PathHost()
 
 	for svcName, ips := range svcNodes {
 		if len(ips) == 0 {
@@ -3587,15 +5860,43 @@ func syncTraefikRoutes() {
 		}
 		routeName := "cluster-" + safe
 
-		routers[routeName+"-path"] = routerCfg{
-			rule:        fmt.Sprintf("PathPrefix(`/%s/`)", svcName),
-			service:     routeName,
-			entryPoints: []string{"web"},
-		}
-		routers[routeName] = routerCfg{
-			rule:        fmt.Sprintf("Host(`%s.local`)", svcName),
-			service:     routeName,
-			entryPoints: []string{"web"},
+		if serviceUsesSubdomain(svcName) && baseDomain != "" {
+			// Subdomain routing (opt-in): svc.baseDomain → worker Traefik.
+			routers[routeName] = routerCfg{
+				rule:        fmt.Sprintf("Host(`%s.%s`)", svcName, baseDomain),
+				service:     routeName,
+				entryPoints: []string{"web"},
+			}
+		} else {
+			// Default path routing. The MASTER forwards the original /svc/...
+			// path to the worker's Traefik (port 80), which applies the
+			// container's own strip-prefix middleware — so we must NOT strip
+			// here (that would double-strip).
+			if pathHost != "" {
+				routers[routeName+"-host"] = routerCfg{
+					rule:        fmt.Sprintf("Host(`%s`) && PathPrefix(`/%s/`)", pathHost, svcName),
+					service:     routeName,
+					entryPoints: []string{"web"},
+					priority:    120,
+				}
+			}
+			routers[routeName+"-path"] = routerCfg{
+				rule:        fmt.Sprintf("PathPrefix(`/%s/`)", svcName),
+				service:     routeName,
+				entryPoints: []string{"web"},
+				priority:    100,
+			}
+			routers[routeName+"-referer"] = routerCfg{
+				rule:        fmt.Sprintf("HeadersRegexp(`Referer`, `^https?://[^/]+/%s(/|\\?|$)`)", svcName),
+				service:     routeName,
+				entryPoints: []string{"web"},
+				priority:    50,
+			}
+			routers[routeName] = routerCfg{
+				rule:        fmt.Sprintf("Host(`%s.local`)", svcName),
+				service:     routeName,
+				entryPoints: []string{"web"},
+			}
 		}
 
 		var sortedIPs []string
@@ -3626,12 +5927,45 @@ func syncTraefikRoutes() {
 		for _, name := range routerKeys {
 			cfg := routers[name]
 			lines = append(lines, fmt.Sprintf("    %s:", name))
-			lines = append(lines, fmt.Sprintf("      rule: \"%s\"", cfg.rule))
+			// Quote the rule — the Referer regex contains backslashes that
+			// YAML would otherwise interpret as escapes, breaking parsing.
+			// Using a bare quoted string means we need to escape any embedded
+			// double quotes; Traefik rules don't use those, so this is safe.
+			lines = append(lines, fmt.Sprintf("      rule: %s", yamlDoubleQuote(cfg.rule)))
 			lines = append(lines, fmt.Sprintf("      service: %s", cfg.service))
+			if cfg.priority > 0 {
+				lines = append(lines, fmt.Sprintf("      priority: %d", cfg.priority))
+			}
 			if len(cfg.entryPoints) > 0 {
 				lines = append(lines, "      entryPoints:")
 				for _, ep := range cfg.entryPoints {
 					lines = append(lines, fmt.Sprintf("        - %s", ep))
+				}
+			}
+			if len(cfg.middlewares) > 0 {
+				lines = append(lines, "      middlewares:")
+				for _, mw := range cfg.middlewares {
+					lines = append(lines, fmt.Sprintf("        - %s", mw))
+				}
+			}
+		}
+	}
+
+	if len(middlewares) > 0 {
+		lines = append(lines, "  middlewares:")
+		var mwKeys []string
+		for k := range middlewares {
+			mwKeys = append(mwKeys, k)
+		}
+		sort.Strings(mwKeys)
+		for _, name := range mwKeys {
+			cfg := middlewares[name]
+			lines = append(lines, fmt.Sprintf("    %s:", name))
+			if len(cfg.stripPrefixes) > 0 {
+				lines = append(lines, "      stripPrefix:")
+				lines = append(lines, "        prefixes:")
+				for _, p := range cfg.stripPrefixes {
+					lines = append(lines, fmt.Sprintf("          - \"%s\"", p))
 				}
 			}
 		}
@@ -3678,8 +6012,15 @@ func nodeBaseURL(node *models.NodeInfo) string {
 
 func setNodeHeaders(req *http.Request, node *models.NodeInfo) {
 	req.Header.Set("Content-Type", "application/json")
-	if node.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+node.Token)
+	token := node.Token
+	if token == "" {
+		// Fall back to the master's shared cluster token. Workers that joined
+		// via heartbeat have an empty Token field on master-side state, but
+		// they run with the same ORCHESTRATOR_API_TOKEN in their own env.
+		token = strings.TrimSpace(os.Getenv("ORCHESTRATOR_API_TOKEN"))
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 }
 
@@ -3787,11 +6128,18 @@ func clusterStopServiceInternal(serviceName string) map[string]any {
 }
 
 func serviceInfoToMap(s models.ServiceInfo) map[string]any {
+	return serviceInfoToMapForViewer(s, "")
+}
+
+// serviceInfoToMapForViewer is the owner-aware variant. It enriches the
+// response with the persisted owner + env_vars, masking secret values for
+// any viewer that is not the owner.
+func serviceInfoToMapForViewer(s models.ServiceInfo, viewer string) map[string]any {
 	ids := s.ContainerIDs
 	if ids == nil {
 		ids = []string{}
 	}
-	return map[string]any{
+	m := map[string]any{
 		"name":          s.Name,
 		"image":         s.Image,
 		"replicas":      s.Replicas,
@@ -3800,6 +6148,16 @@ func serviceInfoToMap(s models.ServiceInfo) map[string]any {
 		"status":        s.Status,
 		"container_ids": ids,
 	}
+	if svc := state.GetService(s.Name); svc != nil {
+		if owner, ok := svc["owner"].(string); ok {
+			m["owner"] = owner
+		}
+		if evs := maskedEnvVarsForViewer(svc, viewer); len(evs) > 0 {
+			m["env_vars"] = evs
+			m["can_edit_secrets"] = viewer != "" && viewer == m["owner"]
+		}
+	}
+	return m
 }
 
 // isDockerInternalIP returns true if the IP belongs to common Docker/container network ranges.
@@ -3809,8 +6167,8 @@ func isDockerInternalIP(ip string) bool {
 		return false
 	}
 	dockerRanges := []string{
-		"172.16.0.0/12", // Docker bridge default
-		"10.0.0.0/8",    // Common overlay/swarm
+		"172.16.0.0/12",  // Docker bridge default
+		"10.0.0.0/8",     // Common overlay/swarm
 		"192.168.0.0/16", // docker-compose default on some setups
 	}
 	for _, cidr := range dockerRanges {
@@ -3863,7 +6221,9 @@ func detectHostIP() string {
 						v, _ := strconv.ParseUint(gwHex[i*2:i*2+2], 16, 8)
 						octets[i] = v
 					}
-					gwIP := fmt.Sprintf("%d.%d.%d.%d", octets[0], octets[1], octets[2], octets[3])
+					// /proc/net/route stores the gateway in little-endian hex on x86,
+					// so the most-significant byte is last. Reverse to get a.b.c.d.
+					gwIP := fmt.Sprintf("%d.%d.%d.%d", octets[3], octets[2], octets[1], octets[0])
 					// If the gateway itself is Docker-internal, try connecting through it
 					// to discover the host's external IP via the gateway's perspective.
 					if !isDockerInternalIP(gwIP) {
@@ -4045,7 +6405,12 @@ func autoHealRestart(p models.ContainerPlacement) error {
 		if cl, ok := svcInfo["cpu_limit"].(string); ok && cl != "" {
 			runPayload["cpu"] = cl
 		}
-		if env, ok := svcInfo["environment"].(string); ok && env != "" && env != "[]" {
+		// Prefer the structured env_vars (with per-secret encryption) so the
+		// container always restarts with the full set of variables intact;
+		// fall back to the legacy plaintext slice when env_vars is missing.
+		if envSlice := decryptedEnvironment(svcInfo); len(envSlice) > 0 {
+			runPayload["environment"] = envSlice
+		} else if env, ok := svcInfo["environment"].(string); ok && env != "" && env != "[]" {
 			var envSlice []string
 			json.Unmarshal([]byte(env), &envSlice)
 			if len(envSlice) > 0 {
@@ -4833,13 +7198,153 @@ func readFileFromTar(reader io.ReadCloser) []byte {
 // Agent: Container Exec (worker endpoint for distributed blockchain)
 // ---------------------------------------------------------------------------
 
+// handleAgentExec runs `docker exec <container> sh -c <cmd>` on the host.
+//
+// SECURITY: This endpoint can execute arbitrary shell commands. It MUST only
+// be reachable by authenticated cluster traffic or an admin session.
+// Access is gated by:
+//  1. Valid ORCHESTRATOR_API_TOKEN bearer (inter-node cluster calls), OR
+//  2. Admin session cookie (interactive operator).
+//
+// Additionally, only allow-listed container-name patterns (currently limited
+// to blockchain-* / qs-dist-* used by the distributed deploy flow) are
+// accepted to minimize blast radius.
+// handleAgentUpdateImage updates the worker-side services.json so the next
+// reconcile uses the new image/tag. Called from master when the user chooses
+// a different tag via `/v1/services/{name}/update`.
+func handleAgentUpdateImage(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ServiceName string `json:"service_name"`
+		Image       string `json:"image"`
+		Replicas    int    `json:"replicas"`
+		// Optional resource-limit overrides. When non-empty, they replace the
+		// preserved local limits so reconcile recreates with new constraints.
+		Memory string `json:"memory"`
+		CPU    string `json:"cpu"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "Invalid request"})
+		return
+	}
+	body.ServiceName = strings.TrimSpace(body.ServiceName)
+	body.Image = strings.TrimSpace(body.Image)
+	if body.ServiceName == "" || body.Image == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "service_name and image required"})
+		return
+	}
+	info := state.GetService(body.ServiceName)
+	if info == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"success": false, "message": "service not tracked on this node"})
+		return
+	}
+	// Preserve all existing options; only the image (and possibly replicas) change.
+	replicas := body.Replicas
+	if replicas <= 0 {
+		if v, ok := info["replicas"].(float64); ok {
+			replicas = int(v)
+		} else if v, ok := info["replicas"].(int); ok {
+			replicas = v
+		}
+	}
+	var opts []state.UpsertOption
+	// Resource limits: explicit override > preserved existing.
+	memLimit, _ := info["memory_limit"].(string)
+	if body.Memory != "" {
+		memLimit = body.Memory
+	}
+	if memLimit != "" {
+		opts = append(opts, state.WithMemoryLimit(memLimit))
+	}
+	cpuLimit, _ := info["cpu_limit"].(string)
+	if body.CPU != "" {
+		cpuLimit = body.CPU
+	}
+	if cpuLimit != "" {
+		opts = append(opts, state.WithCPULimit(cpuLimit))
+	}
+	if v, ok := info["environment"].([]any); ok {
+		var env []string
+		for _, e := range v {
+			if s, ok := e.(string); ok {
+				env = append(env, s)
+			}
+		}
+		opts = append(opts, state.WithEnvironment(env))
+	}
+	if v, ok := info["volumes"].([]any); ok {
+		var vs []string
+		for _, e := range v {
+			if s, ok := e.(string); ok {
+				vs = append(vs, s)
+			}
+		}
+		opts = append(opts, state.WithVolumes(vs))
+	}
+	if v, ok := info["ports"].([]any); ok {
+		var ps []string
+		for _, e := range v {
+			if s, ok := e.(string); ok {
+				ps = append(ps, s)
+			}
+		}
+		opts = append(opts, state.WithPorts(ps))
+	}
+	if lb, ok := info["extra_labels"].(map[string]any); ok {
+		m := map[string]string{}
+		for k, v := range lb {
+			if s, ok := v.(string); ok {
+				m[k] = s
+			}
+		}
+		if len(m) > 0 {
+			opts = append(opts, state.WithExtraLabels(m))
+		}
+	}
+	state.UpsertService(body.ServiceName, body.Image, replicas, opts...)
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "service": body.ServiceName, "image": body.Image})
+}
+
 func handleAgentExec(w http.ResponseWriter, r *http.Request) {
+	// AuthN
+	tok := strings.TrimSpace(os.Getenv("ORCHESTRATOR_API_TOKEN"))
+	authed := false
+	if tok != "" && r.Header.Get("Authorization") == "Bearer "+tok {
+		authed = true
+	}
+	if !authed {
+		if sess := auth.SessionFromRequest(r); sess != nil && sess.Role == auth.RoleAdmin {
+			authed = true
+		}
+	}
+	if !authed {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"success": false, "message": "인증되지 않은 exec 요청"})
+		return
+	}
+
 	var body struct {
 		Container string `json:"container"`
 		Cmd       string `json:"cmd"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "Invalid request"})
+		return
+	}
+
+	// Container name allowlist — only blockchain deploy containers.
+	if !isExecAllowedContainer(body.Container) {
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"success": false,
+			"message": "허용되지 않은 컨테이너 이름입니다",
+		})
+		return
+	}
+	// Reject obviously dangerous shell patterns. Not exhaustive — the real
+	// boundary is the container allowlist + caller authentication above.
+	if strings.ContainsAny(body.Cmd, "`") || strings.Contains(body.Cmd, "$(") {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"success": false,
+			"message": "허용되지 않은 cmd 문법 (backtick/$() 금지)",
+		})
 		return
 	}
 
@@ -4856,6 +7361,55 @@ func handleAgentExec(w http.ResponseWriter, r *http.Request) {
 		"success": true,
 		"output":  strings.TrimSpace(string(output)),
 	})
+}
+
+var execContainerAllowPatterns = []string{"blockchain-", "qs-dist-", "orch-"}
+
+// isSafeIdent allows [A-Za-z0-9_.-] up to maxLen; rejects everything else.
+// Used for validating values passed as shell argv.
+func isSafeIdent(s string, maxLen int) bool {
+	if s == "" || len(s) > maxLen {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') &&
+			!(c >= '0' && c <= '9') && c != '-' && c != '_' && c != '.' {
+			return false
+		}
+	}
+	return true
+}
+
+// isSafePath restricts a path to absolute filesystem paths without shell
+// metacharacters or parent-dir escapes.
+func isSafePath(s string) bool {
+	if s == "" || len(s) > 256 {
+		return false
+	}
+	if strings.Contains(s, "..") || strings.ContainsAny(s, " \t\n\r`$|&;<>*?\\\"'") {
+		return false
+	}
+	return true
+}
+
+func isExecAllowedContainer(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	// Basic shape check — container names are alphanumeric + _-.
+	for _, c := range name {
+		if !(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') && !(c >= '0' && c <= '9') &&
+			c != '-' && c != '_' && c != '.' {
+			return false
+		}
+	}
+	for _, prefix := range execContainerAllowPatterns {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------
@@ -4962,10 +7516,10 @@ var containerTools = []claudeTool{
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"container_id":    map[string]any{"type": "string", "description": "Container ID to migrate"},
-				"source_node":     map[string]any{"type": "string", "description": "Source node name"},
+				"container_id":     map[string]any{"type": "string", "description": "Container ID to migrate"},
+				"source_node":      map[string]any{"type": "string", "description": "Source node name"},
 				"destination_node": map[string]any{"type": "string", "description": "Destination node name"},
-				"service_name":    map[string]any{"type": "string", "description": "Service name (optional)"},
+				"service_name":     map[string]any{"type": "string", "description": "Service name (optional)"},
 			},
 			"required": []string{"container_id", "source_node", "destination_node"},
 		},

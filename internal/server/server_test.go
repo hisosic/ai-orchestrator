@@ -8,16 +8,32 @@ import (
 	"testing"
 )
 
+const testBearerToken = "test-orch-token-abcdef"
+
 func setupTestServer(t *testing.T) http.Handler {
 	t.Helper()
 	tmpDir := t.TempDir()
 	t.Setenv("ORCHESTRATOR_STATE_DIR", tmpDir)
 	t.Setenv("ORCHESTRATOR_ROLE", "master")
-	// Disable bearer token auth for tests
-	t.Setenv("ORCHESTRATOR_TOKEN", "")
+	// Use a well-known shared API token so authenticated tests can bypass
+	// the session auth middleware via Bearer header.
+	t.Setenv("ORCHESTRATOR_API_TOKEN", testBearerToken)
 
 	InitCluster()
 	return NewRouter()
+}
+
+// authReq wraps httptest.NewRequest to attach the bearer token so the
+// request passes sessionAuthMiddleware as an admin equivalent.
+func authReq(method, path string, body *bytes.Buffer) *http.Request {
+	var r *http.Request
+	if body == nil {
+		r = httptest.NewRequest(method, path, nil)
+	} else {
+		r = httptest.NewRequest(method, path, body)
+	}
+	r.Header.Set("Authorization", "Bearer "+testBearerToken)
+	return r
 }
 
 func TestHealthEndpoint(t *testing.T) {
@@ -66,7 +82,7 @@ func TestCommandEndpoint(t *testing.T) {
 	}
 	payloadBytes, _ := json.Marshal(payload)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/command", bytes.NewReader(payloadBytes))
+	req := authReq(http.MethodPost, "/v1/command", bytes.NewBuffer(payloadBytes))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)

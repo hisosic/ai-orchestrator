@@ -28,10 +28,24 @@ type upsertConfig struct {
 	cpuLimit     *string
 	containerIDs *[]string
 	environment  *[]string
+	envVars      *[]models.EnvVar
+	owner        *string
 	volumes      *[]string
 	ports        *[]string
 	user         *string
 	volumeMode   *string
+	extraLabels  *map[string]string
+}
+
+// WithEnvVars stores the structured EnvVar list (with per-variable secret flag)
+// alongside the legacy environment field.
+func WithEnvVars(v []models.EnvVar) UpsertOption {
+	return func(c *upsertConfig) { c.envVars = &v }
+}
+
+// WithOwner records the username that created/last-modified this service.
+func WithOwner(v string) UpsertOption {
+	return func(c *upsertConfig) { c.owner = &v }
 }
 
 // WithMemoryLimit sets the memory limit option.
@@ -72,6 +86,13 @@ func WithUser(v string) UpsertOption {
 // WithVolumeMode sets the volume mode option.
 func WithVolumeMode(v string) UpsertOption {
 	return func(c *upsertConfig) { c.volumeMode = &v }
+}
+
+// WithExtraLabels sets additional Docker labels that should be re-applied
+// when reconcile recreates this service's containers (e.g. compose group
+// membership labels).
+func WithExtraLabels(v map[string]string) UpsertOption {
+	return func(c *upsertConfig) { c.extraLabels = &v }
 }
 
 // baseDir returns the state directory, respecting ORCHESTRATOR_STATE_DIR env var.
@@ -277,11 +298,27 @@ func UpsertService(name, image string, replicas int, opts ...UpsertOption) {
 		svc["container_ids"] = []string{}
 	}
 
-	// environment
+	// environment (legacy plaintext slice, kept for compatibility)
 	if cfg.environment != nil {
 		svc["environment"] = *cfg.environment
 	} else {
 		svc["environment"] = existing["environment"]
+	}
+
+	// env_vars (structured: name + value + is_secret; secrets stored encrypted)
+	if cfg.envVars != nil {
+		svc["env_vars"] = *cfg.envVars
+	} else if ev, ok := existing["env_vars"]; ok {
+		svc["env_vars"] = ev
+	}
+
+	// owner (username that created/last-modified this service)
+	if cfg.owner != nil {
+		svc["owner"] = *cfg.owner
+	} else if o, ok := existing["owner"]; ok {
+		svc["owner"] = o
+	} else {
+		svc["owner"] = "admin" // Phase-1 migration default
 	}
 
 	// volumes
@@ -303,6 +340,13 @@ func UpsertService(name, image string, replicas int, opts ...UpsertOption) {
 		svc["user"] = *cfg.user
 	} else {
 		svc["user"] = existing["user"]
+	}
+
+	// extra_labels — used by reconcile to re-apply compose group membership
+	if cfg.extraLabels != nil {
+		svc["extra_labels"] = *cfg.extraLabels
+	} else if lb, ok := existing["extra_labels"]; ok {
+		svc["extra_labels"] = lb
 	}
 
 	// volume_mode

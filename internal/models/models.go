@@ -57,10 +57,28 @@ type RunContainerRequest struct {
 	Replicas           int      `json:"replicas,omitempty"`
 	UseInternalNetwork bool     `json:"use_internal_network"`
 	Environment        []string `json:"environment,omitempty"`
+	// Secrets lists variable names (within Environment) that should be stored
+	// encrypted at rest. The value reaches the container in plaintext; only
+	// the persisted state is encrypted and access-restricted to the owner.
+	Secrets            []string `json:"secrets,omitempty"`
+	// Subdomain opts into subdomain routing (svc.<base-domain>) instead of
+	// the default path routing (<path-host>/svc/).
+	Subdomain          bool     `json:"subdomain,omitempty"`
 	Volumes            []string `json:"volumes,omitempty"`
 	Ports              []string `json:"ports,omitempty"`
 	User               string   `json:"user,omitempty"`
 	VolumeMode         string   `json:"volume_mode,omitempty"`
+	ExtraAliases       []string          `json:"extra_aliases,omitempty"`
+	ExtraLabels        map[string]string `json:"extra_labels,omitempty"`
+}
+
+// EnvVar is the persisted, owner-aware representation of one environment
+// variable. Value is plaintext for non-secrets, or "enc:v1:..." ciphertext
+// for secrets.
+type EnvVar struct {
+	Name     string `json:"name"`
+	Value    string `json:"value"`
+	IsSecret bool   `json:"is_secret,omitempty"`
 }
 
 type ScaleServiceRequest struct {

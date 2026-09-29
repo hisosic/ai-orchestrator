@@ -32,10 +32,52 @@ type ServiceEndpoint struct {
 	ResponseMs    int64  `json:"response_ms"`
 }
 
+// endpointsCache caches /v1/services/endpoints responses by (filter,scheme,host).
+// TTL is short (3s) to match the SSE tick rate — multiple clients hitting this
+// endpoint simultaneously effectively share one computation.
+type endpointsCacheEntry struct {
+	payload   []byte
+	expiresAt time.Time
+}
+
+var (
+	endpointsCacheMu sync.RWMutex
+	endpointsCache   = map[string]endpointsCacheEntry{}
+)
+
+const endpointsCacheTTL = 3 * time.Second
+
 // handleServiceEndpoints returns live, verified endpoints for all services.
 // GET /v1/services/endpoints?service=xxx (optional filter)
 func handleServiceEndpoints(w http.ResponseWriter, r *http.Request) {
 	filterSvc := r.URL.Query().Get("service")
+
+	// Cache key includes filter + the public host/scheme so different domains
+	// get different cached payloads.
+	host := strings.TrimSpace(r.Header.Get("X-Forwarded-Host"))
+	if host == "" {
+		host = r.Host
+	}
+	scheme := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto"))
+	if scheme == "" {
+		if r.TLS != nil {
+			scheme = "https"
+		} else {
+			scheme = "http"
+		}
+	}
+	cacheKey := filterSvc + "|" + scheme + "|" + host
+
+	endpointsCacheMu.RLock()
+	entry, ok := endpointsCache[cacheKey]
+	endpointsCacheMu.RUnlock()
+	if ok && time.Now().Before(entry.expiresAt) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Cache", "HIT")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(entry.payload)
+		return
+	}
 
 	// Determine master IP for building URLs
 	masterNodeName := os.Getenv("ORCHESTRATOR_NODE_NAME")
@@ -111,12 +153,18 @@ func handleServiceEndpoints(w http.ResponseWriter, r *http.Request) {
 	if forceRewrite {
 		externalBase = pubHost
 	}
+	externalBaseDomain := runtime.BaseDomain() // e.g. "24x365.online"
 	var wg sync.WaitGroup
 	for i := range all {
 		wg.Add(1)
 		go func(ep *ServiceEndpoint) {
 			defer wg.Done()
 			if externalBase != "" && strings.Contains(ep.URL, externalBase) {
+				ep.Reachable = true
+				ep.ResponseMs = 0
+				return
+			}
+			if externalBaseDomain != "" && strings.Contains(ep.URL, externalBaseDomain) {
 				ep.Reachable = true
 				ep.ResponseMs = 0
 				return
@@ -138,20 +186,51 @@ func handleServiceEndpoints(w http.ResponseWriter, r *http.Request) {
 	}
 	for svc, eps := range grouped {
 		sort.SliceStable(eps, func(i, j int) bool {
+			// 1) Reachable endpoints first.
+			if eps[i].Reachable != eps[j].Reachable {
+				return eps[i].Reachable
+			}
+			// 2) Direct-port URLs (http://host:PORT[/]) are preferred over
+			//    path-prefix URLs (http://host/service/). Traefik strip-prefix
+			//    routing breaks SPAs (Next.js, React, etc.) that reference
+			//    absolute asset paths like /_next/static/... — they 404 at the
+			//    master because no Traefik router matches those paths. The
+			//    direct-port URL hits the app at its own root so absolute
+			//    asset paths resolve correctly.
+			di := isDirectPortURL(eps[i].URL)
+			dj := isDirectPortURL(eps[j].URL)
+			if di != dj {
+				return di
+			}
+			// 3) Then prefer URLs on the user-facing public host (so the
+			//    dashboard doesn't jump to a different origin unnecessarily).
 			pi := strings.Contains(eps[i].URL, pubHost)
 			pj := strings.Contains(eps[j].URL, pubHost)
 			if pi != pj {
 				return pi
 			}
-			return eps[i].Reachable && !eps[j].Reachable
+			return false
 		})
 		grouped[svc] = eps
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"endpoints":  grouped,
 		"public_url": strings.TrimRight(fmt.Sprintf("%s://%s", pubScheme, pubHost), "/"),
-	})
+	}
+	payload, _ := json.Marshal(resp)
+
+	endpointsCacheMu.Lock()
+	endpointsCache[cacheKey] = endpointsCacheEntry{
+		payload:   payload,
+		expiresAt: time.Now().Add(endpointsCacheTTL),
+	}
+	endpointsCacheMu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Cache", "MISS")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(payload)
 }
 
 // detectRequestBase extracts the user-facing scheme + host from the incoming request.
@@ -261,6 +340,22 @@ func ensurePublicEndpoints(all []ServiceEndpoint, pubScheme, pubHost string, for
 		bySvc[ep.Service] = append(bySvc[ep.Service], ep)
 	}
 
+	baseDomain := runtime.BaseDomain()
+
+	// publicURLFor builds the canonical public URL for a service honoring its
+	// routing mode: subdomain (svc.<base-domain>) when the service opted in,
+	// otherwise the default path routing (<path-host>/svc/).
+	publicURLFor := func(svc string) string {
+		if serviceUsesSubdomain(svc) && baseDomain != "" {
+			return fmt.Sprintf("%s://%s.%s/", pubScheme, svc, baseDomain)
+		}
+		host := runtime.PathHost()
+		if host == "" {
+			host = pubHost
+		}
+		return fmt.Sprintf("%s://%s/%s/", pubScheme, host, svc)
+	}
+
 	// forceRewrite=true: one primary URL per service (hides internal alternates).
 	if forceRewrite {
 		out := make([]ServiceEndpoint, 0, len(bySvc))
@@ -272,14 +367,13 @@ func ensurePublicEndpoints(all []ServiceEndpoint, pubScheme, pubHost string, for
 				out = append(out, eps...)
 				continue
 			}
-			publicURL := fmt.Sprintf("%s://%s/%s/", pubScheme, pubHost, svc)
 			out = append(out, ServiceEndpoint{
 				Service:       svc,
 				HostPort:      "80",
 				ContainerPort: "80",
 				NodeName:      eps[0].NodeName,
 				NodeIP:        pubHost,
-				URL:           publicURL,
+				URL:           publicURLFor(svc),
 			})
 		}
 		return out
@@ -308,10 +402,24 @@ func ensurePublicEndpoints(all []ServiceEndpoint, pubScheme, pubHost string, for
 			ContainerPort: "80",
 			NodeName:      eps[0].NodeName,
 			NodeIP:        pubHost,
-			URL:           fmt.Sprintf("%s://%s/%s/", pubScheme, pubHost, svc),
+			URL:           publicURLFor(svc),
 		})
 	}
 	return out
+}
+
+// serviceUsesSubdomain reports whether a service opted into subdomain routing,
+// read from cluster state (set at deploy time).
+func serviceUsesSubdomain(svc string) bool {
+	if clusterState == nil {
+		return false
+	}
+	if info := clusterState.GetService(svc); info != nil {
+		if v, ok := info["subdomain"].(bool); ok {
+			return v
+		}
+	}
+	return false
 }
 
 // getLocalEndpoints inspects Docker containers on this node for port mappings.
@@ -350,6 +458,12 @@ func getLocalEndpoints(filterSvc string) []ServiceEndpoint {
 	for _, c := range containers {
 		svcName := c.Labels[runtime.LabelService]
 		if svcName == "" || systemServices[svcName] {
+			continue
+		}
+		// Group filter: only surface the "frontend" service of each compose
+		// project. Non-frontend members (db, cache, workers…) are hidden
+		// from the endpoint listing but still reachable internally by DNS.
+		if c.Labels["ai.orchestrator.group"] != "" && c.Labels["ai.orchestrator.frontend"] != "true" {
 			continue
 		}
 
@@ -447,6 +561,11 @@ func getRemoteEndpoints(nodeAddr, filterSvc, nodeName string) []ServiceEndpoint 
 		if svcName == "" || systemServices[svcName] {
 			continue
 		}
+		// Group filter on worker-returned payload (which now exposes group/frontend)
+		grp, _ := c["group"].(string)
+		if grp != "" && c["frontend"] != true {
+			continue
+		}
 		if filterSvc != "" && svcName != filterSvc {
 			continue
 		}
@@ -495,6 +614,26 @@ func getRemoteEndpoints(nodeAddr, filterSvc, nodeName string) []ServiceEndpoint 
 	}
 
 	return endpoints
+}
+
+// isDirectPortURL reports whether the URL points at an app's own root on a
+// specific host port — i.e. not going through Traefik's path-prefix routing.
+// A direct-port URL has an explicit :port and no trailing path segments
+// (path is empty or "/"). Path-prefix URLs like http://host/service/ have
+// a path segment and break SPAs that reference absolute asset paths.
+func isDirectPortURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	// Must have an explicit port. u.Port() returns "" for URLs that use
+	// the scheme default (80 for http, 443 for https).
+	if u.Port() == "" {
+		return false
+	}
+	// Path must be empty or just "/" — anything else means path-based
+	// routing, which trips up SPAs.
+	return u.Path == "" || u.Path == "/"
 }
 
 // getMasterIP returns the master node's host IP.

@@ -142,17 +142,21 @@ func ListContainers(includeStopped bool) []map[string]any {
 
 		managed := labels[rt.LabelOrchestrator] == "true"
 		service := labels[rt.LabelService]
+		group := labels["ai.orchestrator.group"]
+		frontend := labels["ai.orchestrator.frontend"] == "true"
 
 		out = append(out, map[string]any{
-			"id":      cid,
-			"name":    name,
-			"image":   c.Image,
-			"status":  c.Status,
-			"state":   c.State,
-			"created": c.Created,
-			"managed": managed,
-			"service": service,
-			"ports":   formatPorts(c.Ports),
+			"id":       cid,
+			"name":     name,
+			"image":    c.Image,
+			"status":   c.Status,
+			"state":    c.State,
+			"created":  c.Created,
+			"managed":  managed,
+			"service":  service,
+			"group":    group,
+			"frontend": frontend,
+			"ports":    formatPorts(c.Ports),
 		})
 	}
 

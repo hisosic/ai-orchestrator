@@ -150,6 +150,105 @@ func Detect(dir string) (*DetectResult, error) {
 // ---------------------------------------------------------------------------
 
 // composeFile is a minimal docker-compose file structure.
+// expandComposeVars substitutes docker-compose-style variable references in a
+// string using the current process env as the lookup source. Supports:
+//
+//	${VAR}         → value of VAR (empty if unset)
+//	${VAR:-def}    → value of VAR if set and non-empty, else "def"
+//	${VAR-def}     → value of VAR if set (even empty), else "def"
+//	${VAR:?err}    → value of VAR if set, else leave as-is (no crash)
+//	$VAR           → value of VAR (bare, when followed by non-alpha)
+//	$$             → literal $ (docker-compose escape)
+func expandComposeVars(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		if c != '$' {
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		if i+1 >= len(s) {
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		next := s[i+1]
+		if next == '$' {
+			b.WriteByte('$')
+			i += 2
+			continue
+		}
+		if next == '{' {
+			end := strings.IndexByte(s[i+2:], '}')
+			if end < 0 {
+				b.WriteByte(c)
+				i++
+				continue
+			}
+			expr := s[i+2 : i+2+end]
+			b.WriteString(resolveVarExpr(expr))
+			i += 2 + end + 1
+			continue
+		}
+		j := i + 1
+		for j < len(s) {
+			r := s[j]
+			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+				(r >= '0' && r <= '9') || r == '_') {
+				break
+			}
+			j++
+		}
+		if j > i+1 {
+			name := s[i+1 : j]
+			b.WriteString(os.Getenv(name))
+			i = j
+			continue
+		}
+		b.WriteByte(c)
+		i++
+	}
+	return b.String()
+}
+
+func resolveVarExpr(expr string) string {
+	for i := 0; i < len(expr); i++ {
+		c := expr[i]
+		if c == ':' && i+1 < len(expr) {
+			op := expr[i+1]
+			name := expr[:i]
+			def := expr[i+2:]
+			val := os.Getenv(name)
+			switch op {
+			case '-':
+				if val == "" {
+					return def
+				}
+				return val
+			case '?':
+				return val
+			case '+':
+				if val != "" {
+					return def
+				}
+				return ""
+			}
+		}
+		if c == '-' {
+			name := expr[:i]
+			def := expr[i+1:]
+			if v, ok := os.LookupEnv(name); ok {
+				return v
+			}
+			return def
+		}
+	}
+	return os.Getenv(expr)
+}
+
 type composeFile struct {
 	Version  string                    `yaml:"version"`
 	Services map[string]composeService `yaml:"services"`
@@ -174,6 +273,22 @@ func parseComposeFile(path string, baseDir string) ([]ServiceDef, error) {
 	if err != nil {
 		return nil, err
 	}
+	return ParseComposeBytes(data, baseDir)
+}
+
+// ParseComposeBytes parses docker-compose YAML content from memory.
+// baseDir is used when the compose references build contexts or env_files as
+// relative paths; when those aren't relevant (pure image-based compose) pass
+// an empty string.
+//
+// Shell-style variable references in YAML values (${VAR}, ${VAR:-default},
+// ${VAR-default}, $VAR) are expanded using the orchestrator process env.
+// Undefined variables with no default resolve to empty string (docker-compose
+// behavior).
+func ParseComposeBytes(data []byte, baseDir string) ([]ServiceDef, error) {
+	// Expand shell-style variables BEFORE YAML parse so ${VAR} inside strings
+	// get substituted just like docker-compose does.
+	data = []byte(expandComposeVars(string(data)))
 
 	var cf composeFile
 	if err := yaml.Unmarshal(data, &cf); err != nil {
@@ -294,6 +409,15 @@ func parseEnvironment(env interface{}) []string {
 	case map[string]interface{}:
 		var result []string
 		for k, v := range e {
+			// nil maps to an empty value (matches docker-compose's
+			// `KEY: ${VAR:-}` semantics). Without this guard, fmt's
+			// default %v formatter emits the literal "<nil>" string,
+			// which breaks apps that parse the value as a URL/DSN
+			// (e.g. psycopg2: invalid dsn: missing "=" after "<nil>").
+			if v == nil {
+				result = append(result, k+"=")
+				continue
+			}
 			result = append(result, fmt.Sprintf("%s=%v", k, v))
 		}
 		return result

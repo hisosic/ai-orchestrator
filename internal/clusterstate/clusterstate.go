@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -93,7 +94,11 @@ func (m *ClusterStateManager) initDB() {
 			ports TEXT DEFAULT '[]',
 			user_spec TEXT,
 			volume_mode TEXT DEFAULT 'shared',
-			schedule_constraints TEXT
+			schedule_constraints TEXT,
+			env_vars TEXT DEFAULT '[]',
+			owner TEXT DEFAULT 'admin',
+			subdomain INTEGER DEFAULT 0,
+			shared INTEGER DEFAULT 0
 		);
 
 		CREATE TABLE IF NOT EXISTS migrations (
@@ -127,6 +132,20 @@ func (m *ClusterStateManager) initDB() {
 	_, err = m.db.Exec(schema)
 	if err != nil {
 		panic(fmt.Sprintf("clusterstate: failed to init schema: %v", err))
+	}
+
+	// Idempotent migrations for the services table (Phase-1 secret encryption).
+	// SQLite has no IF NOT EXISTS on ADD COLUMN, so we ignore "duplicate column"
+	// errors on subsequent runs.
+	for _, stmt := range []string{
+		`ALTER TABLE services ADD COLUMN env_vars TEXT DEFAULT '[]'`,
+		`ALTER TABLE services ADD COLUMN owner TEXT DEFAULT 'admin'`,
+		`ALTER TABLE services ADD COLUMN subdomain INTEGER DEFAULT 0`,
+		`ALTER TABLE services ADD COLUMN shared INTEGER DEFAULT 0`,
+	} {
+		if _, err := m.db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			panic(fmt.Sprintf("clusterstate: migration failed: %v (stmt=%q)", err, stmt))
+		}
 	}
 }
 
@@ -647,6 +666,30 @@ func (m *ClusterStateManager) SaveService(name, image string, desiredReplicas in
 	volJSON, _ := json.Marshal(getSlice(opts, "volumes"))
 	portsJSON, _ := json.Marshal(getSlice(opts, "ports"))
 
+	// env_vars (structured, owner-aware): marshal whatever shape the caller
+	// provided; "[]" if absent so the column stays usable.
+	envVarsJSON := []byte("[]")
+	if ev, ok := opts["env_vars"]; ok && ev != nil {
+		if b, err := json.Marshal(ev); err == nil {
+			envVarsJSON = b
+		}
+	}
+	owner, _ := opts["owner"].(string)
+	subdomain := 0
+	if v, ok := opts["subdomain"].(bool); ok && v {
+		subdomain = 1
+	}
+	// shared is tri-state: nil when the caller didn't specify it, so the
+	// ON CONFLICT COALESCE preserves the stored value instead of resetting it.
+	var sharedVal any
+	if v, ok := opts["shared"].(bool); ok {
+		if v {
+			sharedVal = 1
+		} else {
+			sharedVal = 0
+		}
+	}
+
 	var constraintsJSON sql.NullString
 	if sc, ok := opts["schedule_constraints"]; ok && sc != nil {
 		b, _ := json.Marshal(sc)
@@ -654,8 +697,8 @@ func (m *ClusterStateManager) SaveService(name, image string, desiredReplicas in
 	}
 
 	m.db.Exec(`
-		INSERT INTO services (name, image, desired_replicas, memory_limit, cpu_limit, environment, volumes, ports, user_spec, volume_mode, schedule_constraints)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO services (name, image, desired_replicas, memory_limit, cpu_limit, environment, volumes, ports, user_spec, volume_mode, schedule_constraints, env_vars, owner, subdomain, shared)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 0))
 		ON CONFLICT(name) DO UPDATE SET
 			image=excluded.image,
 			desired_replicas=excluded.desired_replicas,
@@ -663,28 +706,36 @@ func (m *ClusterStateManager) SaveService(name, image string, desiredReplicas in
 			cpu_limit=COALESCE(excluded.cpu_limit, services.cpu_limit),
 			environment=COALESCE(excluded.environment, services.environment),
 			volumes=COALESCE(excluded.volumes, services.volumes),
-			ports=COALESCE(excluded.ports, services.ports)
+			ports=COALESCE(excluded.ports, services.ports),
+			env_vars=excluded.env_vars,
+			owner=COALESCE(excluded.owner, services.owner),
+			subdomain=excluded.subdomain,
+			shared=COALESCE(?, services.shared)
 	`, name, image, desiredReplicas,
 		nullableStr(memoryLimit), nullableStr(cpuLimit),
 		string(envJSON), string(volJSON), string(portsJSON),
-		nullableStr(userSpec), volumeMode, constraintsJSON)
+		nullableStr(userSpec), volumeMode, constraintsJSON,
+		string(envVarsJSON), nullableStr(owner), subdomain, sharedVal, sharedVal)
 }
 
 // GetService retrieves a service by name, or nil if not found.
 func (m *ClusterStateManager) GetService(name string) map[string]any {
-	row := m.db.QueryRow("SELECT name, image, desired_replicas, memory_limit, cpu_limit, environment, volumes, ports, user_spec, volume_mode, schedule_constraints FROM services WHERE name=?", name)
+	row := m.db.QueryRow("SELECT name, image, desired_replicas, memory_limit, cpu_limit, environment, volumes, ports, user_spec, volume_mode, schedule_constraints, env_vars, owner, subdomain, shared FROM services WHERE name=?", name)
 
 	var sName, sImage string
 	var desiredReplicas int
-	var memoryLimit, cpuLimit, environment, volumes, ports, userSpec, volumeMode, scheduleConstraints sql.NullString
+	var subdomain int
+	var shared sql.NullInt64
+	var memoryLimit, cpuLimit, environment, volumes, ports, userSpec, volumeMode, scheduleConstraints, envVars, owner sql.NullString
 
 	err := row.Scan(&sName, &sImage, &desiredReplicas, &memoryLimit, &cpuLimit,
-		&environment, &volumes, &ports, &userSpec, &volumeMode, &scheduleConstraints)
+		&environment, &volumes, &ports, &userSpec, &volumeMode, &scheduleConstraints,
+		&envVars, &owner, &subdomain, &shared)
 	if err != nil {
 		return nil
 	}
 
-	return map[string]any{
+	out := map[string]any{
 		"name":                 sName,
 		"image":                sImage,
 		"desired_replicas":     desiredReplicas,
@@ -696,7 +747,46 @@ func (m *ClusterStateManager) GetService(name string) map[string]any {
 		"user_spec":            userSpec.String,
 		"volume_mode":          volumeMode.String,
 		"schedule_constraints": scheduleConstraints.String,
+		"owner":                owner.String,
+		"subdomain":            subdomain == 1,
+		"shared":               shared.Valid && shared.Int64 == 1,
 	}
+	// env_vars: parse JSON back into []map[string]any so the response layer's
+	// masking can iterate it directly.
+	if envVars.Valid && envVars.String != "" && envVars.String != "[]" {
+		var parsed []any
+		if err := json.Unmarshal([]byte(envVars.String), &parsed); err == nil {
+			out["env_vars"] = parsed
+		}
+	}
+	return out
+}
+
+// SetServiceShared toggles the public-share flag for a service without touching
+// any other column. Returns true if a row was updated.
+func (m *ClusterStateManager) SetServiceShared(name string, shared bool) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	v := 0
+	if shared {
+		v = 1
+	}
+	res, err := m.db.Exec("UPDATE services SET shared=? WHERE name=?", v, name)
+	if err != nil {
+		return false
+	}
+	n, _ := res.RowsAffected()
+	return n > 0
+}
+
+// DeleteService removes a service definition and its placement rows entirely
+// (used by the "delete service" action — distinct from stop which only sets
+// replicas=0 and keeps the definition).
+func (m *ClusterStateManager) DeleteService(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.db.Exec("DELETE FROM services WHERE name=?", name)
+	m.db.Exec("DELETE FROM container_placements WHERE service_name=?", name)
 }
 
 // ListServices returns all service definitions.

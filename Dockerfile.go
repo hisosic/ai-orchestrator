@@ -1,5 +1,7 @@
 # Build stage
-FROM golang:1.25-alpine AS builder
+# Pinned to a Go patch release that includes all current security fixes
+# for the stdlib (crypto/tls, crypto/x509, archive/tar, net/url, net/http, etc.).
+FROM golang:1.25.9-alpine AS builder
 RUN apk add --no-cache gcc musl-dev
 WORKDIR /app
 COPY go.mod go.sum ./
@@ -9,7 +11,7 @@ RUN CGO_ENABLED=1 GOOS=linux go build -o /orchestrator ./cmd/orchestrator
 
 # Runtime stage
 FROM alpine:3.19
-RUN apk add --no-cache ca-certificates docker-cli bash python3 openssh-client sshpass
+RUN apk add --no-cache ca-certificates docker-cli bash python3 openssh-client sshpass git
 COPY --from=builder /orchestrator /usr/local/bin/orchestrator
 COPY static/ /app/static/
 COPY services/ /app/services/

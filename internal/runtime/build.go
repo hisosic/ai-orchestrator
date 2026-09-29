@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	dtypes "github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 )
 
@@ -111,20 +112,35 @@ func DetectDockerfile(dir string) (string, bool) {
 	return "", false
 }
 
+// generatedContainerPort returns an unused TCP port >= 10000 to use as the
+// generated Dockerfile's EXPOSE/listen port. Falls back to a value in-range if
+// the availability probe fails so generation never blocks.
+func generatedContainerPort() int {
+	if p, err := FindAvailablePort(10000, 20000); err == nil && p >= 10000 {
+		return p
+	}
+	return 10080
+}
+
 // GenerateDockerfile auto-generates a Dockerfile based on detected language.
-// Returns the Dockerfile content, the default container port, and any error.
+// Returns the Dockerfile content, the chosen container port, and any error.
+// The container/listen port is allocated from the unused 10000+ range and the
+// app is told to bind to it via the PORT/SERVER_PORT env (honored by most
+// frameworks) or, for nginx static sites, by rewriting the listen directive.
 func GenerateDockerfile(dir string) (string, int, error) {
+	port := generatedContainerPort()
+
 	// Node.js
 	if _, err := os.Stat(filepath.Join(dir, "package.json")); err == nil {
-		port := 3000
-		content := `FROM node:20-alpine
+		content := fmt.Sprintf(`FROM node:20-alpine
 WORKDIR /app
 COPY package*.json ./
 RUN npm install --production
 COPY . .
-EXPOSE 3000
+ENV PORT=%d
+EXPOSE %d
 CMD ["npm", "start"]
-`
+`, port, port)
 		if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(content), 0644); err != nil {
 			return "", 0, err
 		}
@@ -133,16 +149,16 @@ CMD ["npm", "start"]
 
 	// Python
 	if _, err := os.Stat(filepath.Join(dir, "requirements.txt")); err == nil {
-		port := 8000
-		cmd := detectPythonCmd(dir)
+		cmd := detectPythonCmd(dir, port)
 		content := fmt.Sprintf(`FROM python:3.11-slim
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
+ENV PORT=%d
 EXPOSE %d
 CMD %s
-`, port, cmd)
+`, port, port, cmd)
 		if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(content), 0644); err != nil {
 			return "", 0, err
 		}
@@ -151,8 +167,7 @@ CMD %s
 
 	// Go
 	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-		port := 8080
-		content := `FROM golang:1.23-alpine AS builder
+		content := fmt.Sprintf(`FROM golang:1.23-alpine AS builder
 WORKDIR /app
 COPY go.mod go.sum* ./
 RUN go mod download
@@ -162,19 +177,19 @@ RUN CGO_ENABLED=0 go build -o server .
 FROM alpine:3.19
 WORKDIR /app
 COPY --from=builder /app/server .
-EXPOSE 8080
+ENV PORT=%d
+EXPOSE %d
 CMD ["./server"]
-`
+`, port, port)
 		if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(content), 0644); err != nil {
 			return "", 0, err
 		}
 		return content, port, nil
 	}
 
-	// Java Maven
+	// Java Maven (Spring Boot honors SERVER_PORT)
 	if _, err := os.Stat(filepath.Join(dir, "pom.xml")); err == nil {
-		port := 8080
-		content := `FROM maven:3.9-eclipse-temurin-17 AS builder
+		content := fmt.Sprintf(`FROM maven:3.9-eclipse-temurin-17 AS builder
 WORKDIR /app
 COPY . .
 RUN mvn package -DskipTests
@@ -182,9 +197,11 @@ RUN mvn package -DskipTests
 FROM eclipse-temurin:17-jre-alpine
 WORKDIR /app
 COPY --from=builder /app/target/*.jar app.jar
-EXPOSE 8080
+ENV SERVER_PORT=%d
+ENV PORT=%d
+EXPOSE %d
 CMD ["java", "-jar", "app.jar"]
-`
+`, port, port, port)
 		if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(content), 0644); err != nil {
 			return "", 0, err
 		}
@@ -193,8 +210,7 @@ CMD ["java", "-jar", "app.jar"]
 
 	// Java Gradle
 	if _, err := os.Stat(filepath.Join(dir, "build.gradle")); err == nil {
-		port := 8080
-		content := `FROM gradle:8-jdk17 AS builder
+		content := fmt.Sprintf(`FROM gradle:8-jdk17 AS builder
 WORKDIR /app
 COPY . .
 RUN gradle build -x test
@@ -202,23 +218,25 @@ RUN gradle build -x test
 FROM eclipse-temurin:17-jre-alpine
 WORKDIR /app
 COPY --from=builder /app/build/libs/*.jar app.jar
-EXPOSE 8080
+ENV SERVER_PORT=%d
+ENV PORT=%d
+EXPOSE %d
 CMD ["java", "-jar", "app.jar"]
-`
+`, port, port, port)
 		if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(content), 0644); err != nil {
 			return "", 0, err
 		}
 		return content, port, nil
 	}
 
-	// Static HTML (nginx)
+	// Static HTML (nginx) — rewrite nginx's listen port to the 10000+ port.
 	if _, err := os.Stat(filepath.Join(dir, "index.html")); err == nil {
-		port := 80
-		content := `FROM nginx:alpine
+		content := fmt.Sprintf(`FROM nginx:alpine
 COPY . /usr/share/nginx/html
-EXPOSE 80
+RUN sed -i 's/listen[[:space:]]*80;/listen %d;/' /etc/nginx/conf.d/default.conf
+EXPOSE %d
 CMD ["nginx", "-g", "daemon off;"]
-`
+`, port, port)
 		if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(content), 0644); err != nil {
 			return "", 0, err
 		}
@@ -229,15 +247,91 @@ CMD ["nginx", "-g", "daemon off;"]
 }
 
 // FindAvailablePort finds an available TCP port in the given range.
+// Checks OS-level (net.Listen) and Docker-level (container port bindings
+// for running + stopped containers) allocations. Docker keeps a port
+// reserved for exited containers until they're removed, and net.Listen
+// won't notice that — so we need both checks or we'll hit
+// "port is already allocated" on ContainerStart.
 func FindAvailablePort(rangeStart, rangeEnd int) (int, error) {
+	return FindAvailablePortExcluding(rangeStart, rangeEnd, nil)
+}
+
+// FindAvailablePortExcluding is like FindAvailablePort but additionally skips
+// any ports present in the exclude set. Useful when you already know some
+// ports are in-flight (just handed out but not yet bound).
+func FindAvailablePortExcluding(rangeStart, rangeEnd int, exclude map[int]bool) (int, error) {
+	dockerUsed := dockerUsedHostPorts(context.Background())
 	for port := rangeStart; port <= rangeEnd; port++ {
-		ln, err := net.Listen("tcp", ":"+strconv.Itoa(port))
-		if err == nil {
-			ln.Close()
-			return port, nil
+		if exclude[port] || dockerUsed[port] {
+			continue
 		}
+		ln, err := net.Listen("tcp", ":"+strconv.Itoa(port))
+		if err != nil {
+			continue
+		}
+		ln.Close()
+		return port, nil
 	}
 	return 0, fmt.Errorf("사용 가능한 포트가 없습니다 (%d-%d)", rangeStart, rangeEnd)
+}
+
+// IsPortAllocationError reports whether err is a Docker port-allocation
+// conflict — typically the wording "port is already allocated" or
+// "Bind for 0.0.0.0:PORT failed". Used to trigger automatic port reassignment.
+func IsPortAllocationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "port is already allocated") ||
+		strings.Contains(s, "address already in use") ||
+		(strings.Contains(s, "Bind for ") && strings.Contains(s, "failed"))
+}
+
+// dockerUsedHostPorts returns a set of host ports currently bound by any
+// Docker container (running or exited). Returns nil if Docker isn't
+// reachable — callers then fall back to net.Listen only.
+func dockerUsedHostPorts(ctx context.Context) map[int]bool {
+	cli := DockerClient()
+	if cli == nil {
+		return nil
+	}
+	list, err := cli.ContainerList(ctx, container.ListOptions{All: true})
+	if err != nil {
+		return nil
+	}
+	used := make(map[int]bool, 64)
+	for _, c := range list {
+		for _, p := range c.Ports {
+			if p.PublicPort > 0 {
+				used[int(p.PublicPort)] = true
+			}
+		}
+	}
+	// Also consult inspect on every container in case ContainerList omitted
+	// port bindings (happens for some stopped-container states). This is
+	// more expensive but we only do it when the ContainerList port list is
+	// empty for a given container.
+	for _, c := range list {
+		if len(c.Ports) > 0 {
+			continue
+		}
+		ins, err := cli.ContainerInspect(ctx, c.ID)
+		if err != nil || ins.HostConfig == nil {
+			continue
+		}
+		for _, bindings := range ins.HostConfig.PortBindings {
+			for _, b := range bindings {
+				if b.HostPort == "" {
+					continue
+				}
+				if n, err := strconv.Atoi(b.HostPort); err == nil && n > 0 {
+					used[n] = true
+				}
+			}
+		}
+	}
+	return used
 }
 
 // DetectContainerPort tries to parse EXPOSE from a Dockerfile.
@@ -263,8 +357,9 @@ func DetectContainerPort(dir string, dockerfilePath string) int {
 }
 
 // detectPythonCmd determines the CMD for a Python project.
-func detectPythonCmd(dir string) string {
-	// Check for common entry points
+func detectPythonCmd(dir string, port int) string {
+	// Check for common entry points. main.py/app.py read the port themselves
+	// (we set ENV PORT in the Dockerfile); django/uvicorn get it as an arg.
 	if _, err := os.Stat(filepath.Join(dir, "main.py")); err == nil {
 		return `["python", "main.py"]`
 	}
@@ -272,9 +367,9 @@ func detectPythonCmd(dir string) string {
 		return `["python", "app.py"]`
 	}
 	if _, err := os.Stat(filepath.Join(dir, "manage.py")); err == nil {
-		return `["python", "manage.py", "runserver", "0.0.0.0:8000"]`
+		return fmt.Sprintf(`["python", "manage.py", "runserver", "0.0.0.0:%d"]`, port)
 	}
-	return `["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]`
+	return fmt.Sprintf(`["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "%d"]`, port)
 }
 
 // createBuildContext creates a tar archive from a directory for Docker image builds.

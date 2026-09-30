@@ -27,7 +27,7 @@ type NodeResources struct {
 type NodeInfo struct {
 	Name           string            `json:"name"`
 	Address        string            `json:"address"`
-	Token          string            `json:"token,omitempty"`
+	Token          string            `json:"-"` // node API credential; never sent to clients
 	Status         NodeStatus        `json:"status"`
 	Role           string            `json:"role"`
 	Labels         map[string]string `json:"labels,omitempty"`
@@ -143,15 +143,15 @@ type AlertInfo struct {
 }
 
 type ClusterStatus struct {
-	TotalNodes       int                `json:"total_nodes"`
-	HealthyNodes     int                `json:"healthy_nodes"`
-	TotalContainers  int                `json:"total_containers"`
-	TotalCPUCores    int                `json:"total_cpu_cores"`
-	TotalMemoryMB    int                `json:"total_memory_mb"`
-	UsedMemoryMB     int                `json:"used_memory_mb"`
-	AvgCPUPercent    float64            `json:"avg_cpu_percent"`
-	Nodes            []NodeInfo         `json:"nodes"`
-	Services         map[string]any     `json:"services"`
-	ActiveMigrations []MigrationInfo    `json:"active_migrations"`
-	Alerts           []AlertInfo        `json:"alerts"`
+	TotalNodes       int             `json:"total_nodes"`
+	HealthyNodes     int             `json:"healthy_nodes"`
+	TotalContainers  int             `json:"total_containers"`
+	TotalCPUCores    int             `json:"total_cpu_cores"`
+	TotalMemoryMB    int             `json:"total_memory_mb"`
+	UsedMemoryMB     int             `json:"used_memory_mb"`
+	AvgCPUPercent    float64         `json:"avg_cpu_percent"`
+	Nodes            []NodeInfo      `json:"nodes"`
+	Services         map[string]any  `json:"services"`
+	ActiveMigrations []MigrationInfo `json:"active_migrations"`
+	Alerts           []AlertInfo     `json:"alerts"`
 }

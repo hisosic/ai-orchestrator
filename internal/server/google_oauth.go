@@ -58,6 +58,16 @@ func googleRedirectURL(r *http.Request) string {
 	return fmt.Sprintf("%s://%s/v1/auth/google/callback", scheme, host)
 }
 
+// googleLoginDest validates the post-login landing page against an allowlist
+// so the redirect parameter can't be used as an open redirect.
+func googleLoginDest(d string) string {
+	switch d {
+	case "/", "/admin", "/dashboard", "/portal":
+		return d
+	}
+	return "/portal"
+}
+
 // handleGoogleStatus reports whether Google login is available.
 func handleGoogleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"enabled": googleOAuthConfigured()})
@@ -71,16 +81,20 @@ func handleGoogleLogin(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	// The state cookie must be set on the same host Google redirects back to,
+	// so bounce logins arriving via another host (e.g. the internal IP) to
+	// the configured callback host first.
+	if cb, err := url.Parse(googleRedirectURL(r)); err == nil && cb.Host != "" && !strings.EqualFold(cb.Host, r.Host) {
+		http.Redirect(w, r, cb.Scheme+"://"+cb.Host+r.URL.RequestURI(), http.StatusFound)
+		return
+	}
 	state, err := randomURLToken()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "message": err.Error()})
 		return
 	}
 	// Persist where to land after login (default /portal).
-	dest := r.URL.Query().Get("redirect")
-	if dest != "/" && dest != "/dashboard" && dest != "/admin" && dest != "/portal" {
-		dest = "/portal"
-	}
+	dest := googleLoginDest(r.URL.Query().Get("redirect"))
 	http.SetCookie(w, &http.Cookie{
 		Name:     googleStateCookie,
 		Value:    state + "|" + dest,
@@ -120,8 +134,8 @@ func handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 	parts := strings.SplitN(c.Value, "|", 2)
 	wantState := parts[0]
 	dest := "/portal"
-	if len(parts) == 2 && (parts[1] == "/" || parts[1] == "/dashboard" || parts[1] == "/portal") {
-		dest = parts[1]
+	if len(parts) == 2 {
+		dest = googleLoginDest(parts[1])
 	}
 	// Clear the state cookie.
 	http.SetCookie(w, &http.Cookie{Name: googleStateCookie, Value: "", Path: "/", MaxAge: -1})
@@ -188,9 +202,16 @@ func handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Optional workspace-domain restriction.
+	if !ui.EmailVerified {
+		googleFail(w, r, "이메일 인증이 완료되지 않은 계정입니다")
+		return
+	}
+
+	// Optional workspace-domain restriction. The hd claim is only present for
+	// accounts managed by that Workspace; checking the email suffix alone would
+	// admit a personal Google account registered with a company address.
 	if dom := strings.ToLower(strings.TrimSpace(os.Getenv("GOOGLE_OAUTH_ALLOWED_DOMAIN"))); dom != "" {
-		if !strings.HasSuffix(email, "@"+dom) {
+		if !strings.HasSuffix(email, "@"+dom) || !strings.EqualFold(ui.HD, dom) {
 			googleFail(w, r, fmt.Sprintf("%s 도메인 계정만 로그인할 수 있습니다", dom))
 			return
 		}

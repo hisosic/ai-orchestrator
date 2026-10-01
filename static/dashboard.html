@@ -751,76 +751,6 @@
       <button type="button" class="tab active" data-tab-node="__cluster__">클러스터</button>
     </div>
 
-    <!-- System Architecture Diagram (KOMSA on-prem + Parameta IDC + NCP VPC-A) -->
-    <div class="panel" id="archPanel" style="margin-bottom:1.5rem;">
-      <div class="panel-title" style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;" onclick="var b=document.getElementById('archBody');b.style.display=b.style.display==='none'?'':'none';">
-        <span>🗺️ 시스템 구성도</span>
-        <span style="font-size:0.78rem;color:var(--text-muted);">KOMSA 내부망 · 파라메타 IDC · NCP VPC-A (IPsec VPN)</span>
-        <span style="margin-left:auto;font-size:0.8rem;color:var(--text-muted);">▼ 펼치기/접기</span>
-      </div>
-      <div class="panel-body" id="archBody" style="padding:1rem;overflow-x:auto;">
-        <svg viewBox="0 0 940 610" style="width:100%;min-width:720px;max-width:1000px;height:auto;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;" role="img" aria-label="KOMSA 시스템 구성도">
-          <defs>
-            <marker id="arrOpen" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6" fill="none" stroke="context-stroke" stroke-width="1.4"/></marker>
-          </defs>
-          <!-- On-premise container -->
-          <rect x="18" y="14" width="904" height="322" rx="12" fill="var(--bg)" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="7 4"/>
-          <text x="36" y="42" font-size="16" font-weight="700" fill="var(--text)">🏢 KOMSA 내부망 (On-premise)</text>
-
-          <!-- MTIS group -->
-          <rect x="42" y="58" width="392" height="150" rx="9" fill="var(--surface)" stroke="var(--border)"/>
-          <text x="58" y="82" font-size="14" font-weight="600" fill="var(--text)">MTIS</text>
-          <g font-size="13" fill="var(--text)" text-anchor="middle">
-            <rect x="58" y="96" width="112" height="94" rx="7" fill="var(--bg)" stroke="var(--border)"/><text x="114" y="138">🖥️ FE</text><text x="114" y="158" font-size="11" fill="var(--text-muted)">프론트엔드</text>
-            <rect x="182" y="96" width="112" height="94" rx="7" fill="var(--bg)" stroke="var(--border)"/><text x="238" y="138">⚙️ BE</text><text x="238" y="158" font-size="11" fill="var(--text-muted)">백엔드</text>
-            <rect x="306" y="96" width="112" height="94" rx="7" fill="var(--bg)" stroke="var(--border)"/><text x="362" y="138">🗄️ DB</text><text x="362" y="158" font-size="11" fill="var(--text-muted)">데이터베이스</text>
-          </g>
-
-          <!-- 관리자포털 group -->
-          <rect x="470" y="58" width="432" height="150" rx="9" fill="var(--surface)" stroke="var(--border)"/>
-          <text x="486" y="82" font-size="14" font-weight="600" fill="var(--text)">관리자포털</text>
-          <g font-size="13" fill="var(--text)" text-anchor="middle">
-            <rect x="486" y="96" width="120" height="94" rx="7" fill="var(--bg)" stroke="var(--border)"/><text x="546" y="138">🖥️ FE</text><text x="546" y="158" font-size="11" fill="var(--text-muted)">프론트엔드</text>
-            <rect x="618" y="96" width="120" height="94" rx="7" fill="var(--bg)" stroke="var(--warn)" stroke-width="2"/><text x="678" y="134">⚙️ BE 🌐</text><text x="678" y="153" font-size="10.5" fill="var(--warn)">→ 파라메타 IDC</text>
-            <rect x="750" y="96" width="120" height="94" rx="7" fill="var(--bg)" stroke="var(--border)"/><text x="810" y="138">🗄️ DB</text><text x="810" y="158" font-size="11" fill="var(--text-muted)">데이터베이스</text>
-          </g>
-
-          <!-- AI platform server -->
-          <rect x="42" y="238" width="392" height="78" rx="9" fill="var(--surface)" stroke="var(--success)" stroke-width="1.5"/>
-          <text x="62" y="272" font-size="14.5" font-weight="600" fill="var(--text)">🤖 AI 플랫폼 시스템 서버</text>
-          <text x="62" y="295" font-size="11.5" fill="var(--text-muted)">AI 컨테이너 오케스트레이터</text>
-
-          <!-- IPsec VPN: AI server → NCP VPC-A (bidirectional, green dashed) -->
-          <line x1="238" y1="316" x2="238" y2="452" stroke="var(--success)" stroke-width="2" stroke-dasharray="6 4" marker-start="url(#arrOpen)" marker-end="url(#arrOpen)"/>
-          <rect x="150" y="372" width="176" height="24" rx="12" fill="var(--bg)" stroke="var(--success)"/>
-          <text x="238" y="389" font-size="12" font-weight="600" fill="var(--success)" text-anchor="middle">🔒 IPsec VPN</text>
-
-          <!-- Internet: 관리자포털 BE → Parameta IDC (warn dashed) -->
-          <line x1="678" y1="190" x2="678" y2="456" stroke="var(--warn)" stroke-width="2" stroke-dasharray="4 4" marker-end="url(#arrOpen)"/>
-          <rect x="596" y="360" width="164" height="24" rx="12" fill="var(--bg)" stroke="var(--warn)"/>
-          <text x="678" y="377" font-size="12" font-weight="600" fill="var(--warn)" text-anchor="middle">🌐 인터넷망</text>
-
-          <!-- NCP VPC-A (bottom-left) -->
-          <rect x="42" y="452" width="392" height="140" rx="10" fill="var(--surface)" stroke="var(--success)" stroke-width="1.5" stroke-dasharray="7 4"/>
-          <text x="62" y="480" font-size="14.5" font-weight="700" fill="var(--text)">☁️ NCP · VPC-A 계정 (개발 서브넷)</text>
-          <rect x="66" y="498" width="344" height="72" rx="8" fill="var(--bg)" stroke="var(--border)"/>
-          <text x="238" y="530" font-size="13.5" fill="var(--text)" text-anchor="middle">🖥️ 개발서버 1대</text>
-          <text x="238" y="551" font-size="11.5" fill="var(--text-muted)" text-anchor="middle">스테이징 환경</text>
-
-          <!-- Parameta IDC (bottom-right) -->
-          <rect x="508" y="456" width="394" height="120" rx="10" fill="var(--surface)" stroke="var(--warn)" stroke-width="1.5"/>
-          <text x="528" y="486" font-size="14.5" font-weight="700" fill="var(--text)">🏢 파라메타 IDC</text>
-          <text x="528" y="510" font-size="12" fill="var(--text-muted)">관리자포털 BE ↔ 인터넷망 연동</text>
-          <text x="528" y="532" font-size="12" fill="var(--text-muted)">(외부 데이터센터)</text>
-        </svg>
-        <div style="margin-top:0.6rem;font-size:0.78rem;color:var(--text-muted);display:flex;flex-wrap:wrap;gap:1.2rem;">
-          <span>┈┈ <span style="color:var(--accent);">내부망 경계</span></span>
-          <span>🔒 <span style="color:var(--success);">IPsec VPN (스테이징, 양방향)</span></span>
-          <span>🌐 <span style="color:var(--warn);">인터넷망 연동</span></span>
-        </div>
-      </div>
-    </div>
-
     <!-- Service Thumbnails (live previews of reachable services) -->
     <div class="panel" id="serviceThumbnailPanel" style="margin-bottom:1.5rem;display:none;">
       <div class="panel-title" style="display:flex;align-items:center;gap:0.5rem;">
@@ -1656,6 +1586,7 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
         '<div class="modal-header"><span>사용자 관리</span><button type="button" class="modal-close" aria-label="닫기">&times;</button></div>' +
         '<div class="modal-body">' +
         '<div id="userMgmtList" style="margin-bottom:1rem;"><span class="loading">불러오는 중…</span></div>' +
+        '<div id="userResetResult" style="display:none;margin-bottom:1rem;padding:0.6rem 0.75rem;border:1px solid var(--warn);border-radius:var(--radius);font-size:0.82rem;"></div>' +
         '<div style="border-top:1px solid var(--border);padding-top:0.75rem;">' +
         '<div style="font-weight:600;margin-bottom:0.4rem;">새 사용자 추가</div>' +
         '<div style="display:flex;gap:0.4rem;align-items:center;flex-wrap:wrap;">' +
@@ -1690,11 +1621,43 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
             html += '<td style="padding:0.3rem;font-family:\'JetBrains Mono\',monospace;">' + escapeHtml(u.username) + '</td>';
             html += '<td style="padding:0.3rem;"><span class="badge badge-' + (u.role === 'admin' ? 'running' : 'stopped') + '">' + escapeHtml(u.role) + '</span></td>';
             html += '<td style="padding:0.3rem;color:var(--text-muted);font-size:0.75rem;">' + escapeHtml((u.created_at || '').substring(0, 10)) + '</td>';
-            html += '<td style="padding:0.3rem;text-align:right;"><button type="button" class="btn btn-sm btn-danger" data-user-del="' + escapeHtml(u.username) + '">삭제</button></td>';
+            var isSelf = _currentUser && _currentUser.username === u.username;
+            html += '<td style="padding:0.3rem;text-align:right;white-space:nowrap;">' +
+              (isSelf ? '<span style="color:var(--text-muted);font-size:0.75rem;">(본인)</span>' :
+                '<button type="button" class="btn btn-sm btn-warn" data-user-reset="' + escapeHtml(u.username) + '">비밀번호 초기화</button> ' +
+                '<button type="button" class="btn btn-sm btn-danger" data-user-del="' + escapeHtml(u.username) + '">삭제</button>') +
+              '</td>';
             html += '</tr>';
           });
           html += '</tbody></table>';
           listEl.innerHTML = html;
+          listEl.querySelectorAll('[data-user-reset]').forEach(function(btn) {
+            btn.addEventListener('click', async function() {
+              var uname = this.getAttribute('data-user-reset');
+              if (!confirm("'" + uname + "' 계정의 비밀번호를 임시 비밀번호로 초기화할까요?\n해당 사용자는 모든 기기에서 로그아웃됩니다.")) return;
+              var box = overlay.querySelector('#userResetResult');
+              try {
+                var rr = await fetch(API + '/v1/auth/users/' + encodeURIComponent(uname) + '/reset-password', {
+                  method: 'POST', credentials: 'same-origin',
+                  headers: { 'X-CSRF-Token': getCsrfToken() }
+                });
+                var dd = await rr.json();
+                if (!dd.success) { overlay.querySelector('#userMgmtMsg').textContent = '초기화 실패: ' + (dd.message || ''); return; }
+                box.innerHTML =
+                  '<div style="font-weight:600;margin-bottom:0.35rem;">🔑 ' + escapeHtml(uname) + ' 임시 비밀번호</div>' +
+                  '<div style="display:flex;gap:0.4rem;align-items:center;">' +
+                  '<code id="userResetPw" style="flex:1;font-family:\'JetBrains Mono\',monospace;font-size:0.95rem;background:var(--bg);padding:0.35rem 0.5rem;border-radius:var(--radius);user-select:all;"></code>' +
+                  '<button type="button" class="btn btn-sm btn-outline" id="userResetCopy">복사</button></div>' +
+                  '<div style="color:var(--text-muted);margin-top:0.35rem;">이 창을 닫으면 다시 볼 수 없습니다. 사용자에게 전달하고, 로그인 후 "비밀번호 변경"으로 바꾸도록 안내하세요.</div>';
+                box.querySelector('#userResetPw').textContent = dd.temp_password;
+                box.querySelector('#userResetCopy').addEventListener('click', function() {
+                  var b = this;
+                  navigator.clipboard.writeText(dd.temp_password).then(function() { b.textContent = '✓ 복사됨'; }, function() { b.textContent = '복사 실패'; });
+                });
+                box.style.display = '';
+              } catch(e) { overlay.querySelector('#userMgmtMsg').textContent = '초기화 실패: ' + e.message; }
+            });
+          });
           listEl.querySelectorAll('[data-user-del]').forEach(function(btn) {
             btn.addEventListener('click', async function() {
               var uname = this.getAttribute('data-user-del');

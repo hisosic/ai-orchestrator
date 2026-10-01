@@ -353,6 +353,7 @@ func NewRouter() http.Handler {
 	r.Get("/v1/auth/users", handleListUsers)
 	r.Post("/v1/auth/users", handleCreateUser)
 	r.Delete("/v1/auth/users/{username}", handleDeleteUser)
+	r.Post("/v1/auth/users/{username}/reset-password", handleResetUserPassword)
 	r.Get("/v1/public/services", handlePublicServices)
 	r.Get("/v1/user/services", handleListUserServices)
 	r.Post("/v1/user/service-share", handleUserServiceShare)
@@ -2352,6 +2353,37 @@ func handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 	auditRequest(r, "DELETE /v1/auth/users/"+username, username, "deleted")
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "username": username})
+}
+
+// handleResetUserPassword: POST /v1/auth/users/{username}/reset-password.
+// Admin-only. Sets a random temporary password, signs the user out
+// everywhere, and returns the temporary password once.
+func handleResetUserPassword(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromRequest(r)
+	if sess == nil || sess.Role != auth.RoleAdmin {
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"success": false, "message": "관리자 권한이 필요합니다", "code": "forbidden",
+		})
+		return
+	}
+	username := strings.TrimSpace(chi.URLParam(r, "username"))
+	if username == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "username required"})
+		return
+	}
+	if username == sess.Username {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "자신의 비밀번호는 '비밀번호 변경'에서 바꾸세요"})
+		return
+	}
+	temp, err := auth.ResetPassword(username)
+	if err != nil {
+		auditRequest(r, "POST /v1/auth/users/"+username+"/reset-password", username, "failure:"+err.Error())
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": err.Error()})
+		return
+	}
+	auditRequest(r, "POST /v1/auth/users/"+username+"/reset-password", username, "reset")
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "username": username, "temp_password": temp})
 }
 
 // ---------------------------------------------------------------------------

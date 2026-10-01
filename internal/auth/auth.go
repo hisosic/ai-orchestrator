@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -333,6 +334,66 @@ func ChangePassword(username, currentPw, newPw string) error {
 	user.PasswordHash = string(hash)
 	mu.Unlock()
 	return saveToDisk()
+}
+
+// ResetPassword replaces a user's password with a random temporary one and
+// signs out all of that user's sessions. The temporary password is returned
+// so an admin can hand it over; it is never stored in plaintext.
+func ResetPassword(username string) (string, error) {
+	mu.RLock()
+	u := users[username]
+	mu.RUnlock()
+	if u == nil {
+		return "", errors.New("사용자를 찾을 수 없습니다")
+	}
+	temp, err := generateTempPassword()
+	if err != nil {
+		return "", err
+	}
+	if err := resetPassword(username, temp); err != nil {
+		return "", err
+	}
+	InvalidateUserSessions(username)
+	return temp, nil
+}
+
+// generateTempPassword returns a 14-char password containing every character
+// class, so it always satisfies ValidatePasswordPolicy. Look-alike characters
+// (0/O, 1/l/I) are left out because admins read it out to users.
+func generateTempPassword() (string, error) {
+	classes := []string{"abcdefghijkmnpqrstuvwxyz", "ABCDEFGHJKLMNPQRSTUVWXYZ", "23456789", "!@#$%*-_"}
+	all := strings.Join(classes, "")
+	pick := func(set string) (byte, error) {
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(set))))
+		if err != nil {
+			return 0, err
+		}
+		return set[n.Int64()], nil
+	}
+	out := make([]byte, 0, 14)
+	for _, set := range classes {
+		c, err := pick(set)
+		if err != nil {
+			return "", err
+		}
+		out = append(out, c)
+	}
+	for len(out) < 14 {
+		c, err := pick(all)
+		if err != nil {
+			return "", err
+		}
+		out = append(out, c)
+	}
+	// Fisher-Yates so the guaranteed characters aren't always up front.
+	for i := len(out) - 1; i > 0; i-- {
+		j, err := rand.Int(rand.Reader, big.NewInt(int64(i+1)))
+		if err != nil {
+			return "", err
+		}
+		out[i], out[j.Int64()] = out[j.Int64()], out[i]
+	}
+	return string(out), nil
 }
 
 // InvalidateUserSessions removes all active sessions for the given user.

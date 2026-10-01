@@ -236,7 +236,23 @@ func handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 	setCSRFCookie(w, r)
 	auditLog(email, string(sess.Role), clientIPString(r), "login", email, "google_oauth")
 
-	http.Redirect(w, r, dest, http.StatusFound)
+	writePostLoginHop(w, dest)
+}
+
+// writePostLoginHop finishes the OAuth round trip with a tiny same-origin
+// page that navigates to dest, instead of a 302. The session cookie is
+// SameSite=Strict, and browsers don't send Strict cookies on a redirect
+// chain that started at accounts.google.com, so a direct redirect to a
+// server-gated page like /admin would arrive without the session. A
+// navigation started by this page is same-site, so the cookie is sent.
+func writePostLoginHop(w http.ResponseWriter, dest string) {
+	dest = googleLoginDest(dest) // allowlisted, safe to embed
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=%[1]s"><title>로그인 중…</title></head>
+<body style="margin:0;background:#0a0f1a;color:#9aa8c4;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh">
+<p>로그인 중… <a href="%[1]s" style="color:#5aa7ff">계속</a></p><script>location.replace(%[1]q)</script></body></html>`, dest)
 }
 
 // googleFail redirects back to the page the login started from (portal or

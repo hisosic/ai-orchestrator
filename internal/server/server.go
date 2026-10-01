@@ -86,7 +86,7 @@ func userMutatingAllowed(path string) bool {
 		path == "/v1/cluster/container/stop":
 		return true
 	case strings.HasPrefix(path, "/v1/services/") &&
-		(strings.HasSuffix(path, "/update") || strings.HasSuffix(path, "/env")):
+		(strings.HasSuffix(path, "/update") || strings.HasSuffix(path, "/env") || strings.HasSuffix(path, "/delete-protection")):
 		return true
 	}
 	return false
@@ -447,6 +447,7 @@ func NewRouter() http.Handler {
 	r.Post("/v1/services/group/{name}/stop", handleGroupStop)
 	r.Post("/v1/services/group/{name}/update", handleGroupUpdate)
 	r.Post("/v1/services/{name}/update", handleServiceUpdate)
+	r.Post("/v1/services/{name}/delete-protection", handleServiceDeleteProtection)
 	r.Put("/v1/services/{name}/env", handleServiceEnvUpdate)
 	r.Get("/v1/compose-templates", handleComposeTemplateList)
 	r.Post("/v1/compose-templates", handleComposeTemplateSave)
@@ -3277,6 +3278,9 @@ func getServicesDataForViewer(showSystem bool, viewer string) []map[string]any {
 			if sh, ok := svcMeta["shared"].(bool); ok {
 				entry["shared"] = sh
 			}
+			if dp, ok := svcMeta["delete_protected"].(bool); ok {
+				entry["delete_protected"] = dp
+			}
 			if evs := maskedEnvVarsForViewer(svcMeta, viewer); len(evs) > 0 {
 				entry["env_vars"] = evs
 				entry["can_edit_secrets"] = viewer != "" && viewer == entry["owner"]
@@ -3339,6 +3343,9 @@ func getServicesDataForViewer(showSystem bool, viewer string) []map[string]any {
 			}
 			if sh, ok := full["shared"].(bool); ok {
 				entry["shared"] = sh
+			}
+			if dp, ok := full["delete_protected"].(bool); ok {
+				entry["delete_protected"] = dp
 			}
 			if evs := maskedEnvVarsForViewer(full, viewer); len(evs) > 0 {
 				entry["env_vars"] = evs
@@ -3686,6 +3693,9 @@ func handleAction(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, models.CommandResponse{Success: false, Message: "컨테이너 ID를 지정하세요."})
 			return
 		}
+		if rejectProtectedContainer(w, req.ContainerID) {
+			return
+		}
 		ok, msg, _ = runtime.RemoveContainerByID(ctx, cli, req.ContainerID)
 		details = map[string]any{}
 
@@ -3786,6 +3796,9 @@ func handleStopContainer(w http.ResponseWriter, r *http.Request) {
 
 func handleRemoveContainer(w http.ResponseWriter, r *http.Request) {
 	containerID := chi.URLParam(r, "id")
+	if rejectProtectedContainer(w, containerID) {
+		return
+	}
 	cli := runtime.DockerClient()
 	if cli == nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "message": "Docker connection failed"})
@@ -4859,6 +4872,9 @@ func handleClusterDeleteService(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if rejectProtectedDelete(w, serviceName) {
+		return
+	}
 	// Stop + remove containers first, then delete the definition everywhere.
 	clusterStopServiceInternal(serviceName)
 	clusterState.DeleteService(serviceName)
@@ -5072,6 +5088,9 @@ func handleClusterContainerStop(w http.ResponseWriter, r *http.Request) {
 // handleClusterContainerDelete is an alias for DELETE method.
 func handleClusterContainerDelete(w http.ResponseWriter, r *http.Request) {
 	cid := chi.URLParam(r, "id")
+	if rejectProtectedContainer(w, cid) {
+		return
+	}
 	nodeName := r.URL.Query().Get("node")
 	if clusterState == nil || nodeName == "" {
 		writeJSON(w, http.StatusOK, map[string]any{"success": false, "message": "Cluster not available or node not specified"})

@@ -183,6 +183,13 @@
         <span id="mgShareMsg" class="muted" style="font-size:0.76rem;margin-left:auto;"></span>
       </label>
 
+      <!-- Delete protection toggle -->
+      <label class="row" style="gap:0.5rem;align-items:center;border:1px solid var(--border);border-radius:var(--radius);padding:0.55rem 0.7rem;margin-bottom:0.7rem;cursor:pointer;">
+        <input type="checkbox" id="mgProtected" onchange="mgToggleProtect(this.checked)">
+        <span style="font-size:0.85rem;">🛡 삭제 방지 <span class="muted" style="font-size:0.78rem;">— 켜면 포털·관리 콘솔·MCP 어디서도 이 서비스와 컨테이너를 삭제할 수 없습니다</span></span>
+        <span id="mgProtectMsg" class="muted" style="font-size:0.76rem;margin-left:auto;"></span>
+      </label>
+
       <!-- Power + scale controls -->
       <div style="border:1px solid var(--border);border-radius:var(--radius);padding:0.7rem;margin-bottom:0.7rem;">
         <div style="font-weight:600;font-size:0.85rem;margin-bottom:0.5rem;">전원 / 스케일</div>
@@ -242,7 +249,7 @@
       </div>
 
       <div class="row" style="justify-content:flex-end;border-top:1px solid var(--border);padding-top:0.7rem;">
-        <button class="btn btn-sm btn-danger" onclick="mgDelete()">🗑 서비스 삭제</button>
+        <button class="btn btn-sm btn-danger" id="mgDeleteBtn" onclick="mgDelete()">🗑 서비스 삭제</button>
       </div>
     </div>
   </div>
@@ -706,6 +713,7 @@
         var showOwner = (_svcScope==='all'||_svcScope==='shared') && s.owner;
         var ownerBadge = showOwner ? ' <span class="muted" style="font-size:0.7rem;">· 👤'+esc(s.owner)+'</span>' : '';
         var sharedBadge = s.shared ? ' <span title="공유됨" style="font-size:0.72rem;">🌐</span>' : '';
+        if(s.delete_protected) sharedBadge += ' <span title="삭제 방지" style="font-size:0.72rem;">🛡</span>';
         var head='<div class="svc-head"><span class="svc-name" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+(s.kind==='database'?'🗄️ ':'')+esc(s.name)+sharedBadge+ownerBadge+'</span><span style="display:flex;align-items:center;gap:9px;flex:0 0 auto;">'+resBars+'<span class="badge '+(running>0?'badge-run':'badge-stop')+'">'+running+'/'+(s.replicas||0)+'</span></span></div>';
         if(s.kind==='database'){
           var hp=(s.db_host||'')+':'+(s.db_port||'');
@@ -776,6 +784,8 @@
       document.getElementById('mgEnvMsg').textContent='';
       document.getElementById('mgShared').checked=!!s.shared;
       document.getElementById('mgShareMsg').textContent='';
+      document.getElementById('mgProtectMsg').textContent='';
+      mgApplyProtect(!!s.delete_protected);
       var logs=document.getElementById('mgLogs'); logs.style.display='none'; logs.textContent='';
       mgRenderEnv(s.env_vars||[]);
       document.getElementById('manageOverlay').classList.add('show');
@@ -894,6 +904,24 @@
       }catch(e){ pre.textContent='오류: '+e.message; }
     }
 
+    function mgApplyProtect(on){
+      document.getElementById('mgProtected').checked=on;
+      var b=document.getElementById('mgDeleteBtn');
+      b.disabled=on; b.title=on?'삭제 방지가 켜져 있습니다':'';
+    }
+    async function mgToggleProtect(on){
+      if(!on && !confirm("'"+_mgName+"' 서비스의 삭제 방지를 해제할까요? 해제하면 삭제할 수 있게 됩니다.")){ mgApplyProtect(true); return; }
+      var m=document.getElementById('mgProtectMsg'); m.style.color='var(--text-muted)'; m.textContent='적용 중...';
+      try{
+        var r=await fetch(API+'/v1/services/'+encodeURIComponent(_mgName)+'/delete-protection',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf()},body:JSON.stringify({enabled:on})});
+        var d=await r.json();
+        if(!d.success){ m.style.color='var(--danger)'; m.textContent='실패: '+(d.message||''); mgApplyProtect(!on); return; }
+        m.style.color='var(--success)'; m.textContent=on?'✓ 삭제 방지 켜짐':'✓ 삭제 방지 해제';
+        if(_svcMap[_mgName]) _svcMap[_mgName].delete_protected=on;
+        mgApplyProtect(on);
+        setTimeout(loadServices,800);
+      }catch(e){ m.style.color='var(--danger)'; m.textContent='오류: '+e.message; mgApplyProtect(!on); }
+    }
     async function mgDelete(){
       if(!confirm("'"+_mgName+"' 서비스를 삭제할까요? 컨테이너가 제거되고 정의도 삭제됩니다.")) return;
       await delSvc(_mgName);

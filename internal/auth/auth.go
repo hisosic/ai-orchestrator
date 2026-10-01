@@ -55,6 +55,7 @@ type Session struct {
 	Username  string
 	Role      Role
 	ExpiresAt time.Time
+	Internal  bool // issued for an API-token (MCP) call, not a browser login
 }
 
 var (

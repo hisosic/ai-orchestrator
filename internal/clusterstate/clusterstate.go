@@ -98,7 +98,8 @@ func (m *ClusterStateManager) initDB() {
 			env_vars TEXT DEFAULT '[]',
 			owner TEXT DEFAULT 'admin',
 			subdomain INTEGER DEFAULT 0,
-			shared INTEGER DEFAULT 0
+			shared INTEGER DEFAULT 0,
+			delete_protected INTEGER DEFAULT 0
 		);
 
 		CREATE TABLE IF NOT EXISTS migrations (
@@ -142,6 +143,7 @@ func (m *ClusterStateManager) initDB() {
 		`ALTER TABLE services ADD COLUMN owner TEXT DEFAULT 'admin'`,
 		`ALTER TABLE services ADD COLUMN subdomain INTEGER DEFAULT 0`,
 		`ALTER TABLE services ADD COLUMN shared INTEGER DEFAULT 0`,
+		`ALTER TABLE services ADD COLUMN delete_protected INTEGER DEFAULT 0`,
 	} {
 		if _, err := m.db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			panic(fmt.Sprintf("clusterstate: migration failed: %v (stmt=%q)", err, stmt))
@@ -720,17 +722,17 @@ func (m *ClusterStateManager) SaveService(name, image string, desiredReplicas in
 
 // GetService retrieves a service by name, or nil if not found.
 func (m *ClusterStateManager) GetService(name string) map[string]any {
-	row := m.db.QueryRow("SELECT name, image, desired_replicas, memory_limit, cpu_limit, environment, volumes, ports, user_spec, volume_mode, schedule_constraints, env_vars, owner, subdomain, shared FROM services WHERE name=?", name)
+	row := m.db.QueryRow("SELECT name, image, desired_replicas, memory_limit, cpu_limit, environment, volumes, ports, user_spec, volume_mode, schedule_constraints, env_vars, owner, subdomain, shared, delete_protected FROM services WHERE name=?", name)
 
 	var sName, sImage string
 	var desiredReplicas int
 	var subdomain int
-	var shared sql.NullInt64
+	var shared, deleteProtected sql.NullInt64
 	var memoryLimit, cpuLimit, environment, volumes, ports, userSpec, volumeMode, scheduleConstraints, envVars, owner sql.NullString
 
 	err := row.Scan(&sName, &sImage, &desiredReplicas, &memoryLimit, &cpuLimit,
 		&environment, &volumes, &ports, &userSpec, &volumeMode, &scheduleConstraints,
-		&envVars, &owner, &subdomain, &shared)
+		&envVars, &owner, &subdomain, &shared, &deleteProtected)
 	if err != nil {
 		return nil
 	}
@@ -750,6 +752,7 @@ func (m *ClusterStateManager) GetService(name string) map[string]any {
 		"owner":                owner.String,
 		"subdomain":            subdomain == 1,
 		"shared":               shared.Valid && shared.Int64 == 1,
+		"delete_protected":     deleteProtected.Valid && deleteProtected.Int64 == 1,
 	}
 	// env_vars: parse JSON back into []map[string]any so the response layer's
 	// masking can iterate it directly.
@@ -782,11 +785,49 @@ func (m *ClusterStateManager) SetServiceShared(name string, shared bool) bool {
 // DeleteService removes a service definition and its placement rows entirely
 // (used by the "delete service" action — distinct from stop which only sets
 // replicas=0 and keeps the definition).
-func (m *ClusterStateManager) DeleteService(name string) {
+// DeleteService removes a service definition and its placements. It is a
+// no-op for delete-protected services, as a last line of defence behind the
+// API-level checks; it reports whether the service was deleted.
+func (m *ClusterStateManager) DeleteService(name string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.db.Exec("DELETE FROM services WHERE name=?", name)
+	res, err := m.db.Exec("DELETE FROM services WHERE name=? AND COALESCE(delete_protected, 0)=0", name)
+	if err != nil {
+		return false
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		var protected int
+		if m.db.QueryRow("SELECT COALESCE(delete_protected, 0) FROM services WHERE name=?", name).Scan(&protected) == nil && protected == 1 {
+			return false
+		}
+	}
 	m.db.Exec("DELETE FROM container_placements WHERE service_name=?", name)
+	return true
+}
+
+// SetDeleteProtection turns delete protection on or off for a service.
+func (m *ClusterStateManager) SetDeleteProtection(name string, on bool) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	v := 0
+	if on {
+		v = 1
+	}
+	res, err := m.db.Exec("UPDATE services SET delete_protected=? WHERE name=?", v, name)
+	if err != nil {
+		return false
+	}
+	n, _ := res.RowsAffected()
+	return n == 1
+}
+
+// IsDeleteProtected reports whether a service has delete protection on.
+func (m *ClusterStateManager) IsDeleteProtected(name string) bool {
+	var protected int
+	if err := m.db.QueryRow("SELECT COALESCE(delete_protected, 0) FROM services WHERE name=?", name).Scan(&protected); err != nil {
+		return false
+	}
+	return protected == 1
 }
 
 // ListServices returns all service definitions.

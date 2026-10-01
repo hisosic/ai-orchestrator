@@ -2877,7 +2877,9 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
         html += '<button type="button" class="btn btn-sm btn-outline" data-csvc-env-edit="' + escapeHtml(s.name) + '" title="환경변수 편집/추가" style="margin-right:0.25rem;">🔧 env</button>';
         html += '<button type="button" class="btn btn-sm btn-outline" data-csvc-logs="' + escapeHtml(s.name) + '" title="컨테이너 로그 보기" style="margin-right:0.25rem;">📜 로그</button>';
         html += '<button type="button" class="btn btn-sm btn-danger" data-csvc-stop="' + escapeHtml(s.name) + '" style="margin-right:0.25rem;">중지</button>';
-        html += '<button type="button" class="btn btn-sm btn-danger" data-csvc-delete="' + escapeHtml(s.name) + '" title="컨테이너 제거 + 서비스 정의 삭제">삭제</button>';
+        var prot = !!s.delete_protected;
+        html += '<button type="button" class="btn btn-sm ' + (prot ? 'btn-success' : 'btn-outline') + '" data-csvc-protect="' + escapeHtml(s.name) + '" data-on="' + (prot ? '1' : '0') + '" title="' + (prot ? '삭제 방지 켜짐 — 클릭하면 해제' : '삭제 방지 켜기') + '" style="margin-right:0.25rem;">🛡' + (prot ? ' 보호됨' : '') + '</button>';
+        html += '<button type="button" class="btn btn-sm btn-danger" data-csvc-delete="' + escapeHtml(s.name) + '"' + (prot ? ' disabled title="삭제 방지가 켜져 있습니다"' : ' title="컨테이너 제거 + 서비스 정의 삭제"') + '>삭제</button>';
         html += '</td>';
         html += '</tr>';
         // Hidden env-details row, expanded by the toggle link above.
@@ -2940,6 +2942,23 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
             appendLog('클러스터 중지: ' + svc, d);
             loadAll();
           } catch(e) { appendLog('중지 실패', {success:false, message:e.message}); }
+        });
+      });
+      panel.querySelectorAll('[data-csvc-protect]').forEach(function(el) {
+        el.addEventListener('click', async function() {
+          var svc = this.getAttribute('data-csvc-protect');
+          var on = this.getAttribute('data-on') !== '1';
+          if (!on && !confirm("'" + svc + "' 서비스의 삭제 방지를 해제할까요?\n해제하면 이 서비스와 컨테이너를 삭제할 수 있게 됩니다.")) return;
+          try {
+            var r = await fetch(API + '/v1/services/' + encodeURIComponent(svc) + '/delete-protection', {
+              method: 'POST', credentials: 'same-origin',
+              headers: {'Content-Type':'application/json', 'X-CSRF-Token': getCsrfToken()},
+              body: JSON.stringify({enabled: on})
+            });
+            var d = await r.json();
+            appendLog('삭제 방지 ' + (on ? '켜기' : '해제') + ': ' + svc, d);
+            loadAll();
+          } catch(e) { appendLog('삭제 방지 변경 실패', {success:false, message:e.message}); }
         });
       });
       panel.querySelectorAll('[data-csvc-delete]').forEach(function(el) {

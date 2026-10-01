@@ -232,7 +232,7 @@ func IssueInternalSession(username string, role Role) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Session{Token: token, Username: u.Username, Role: role, ExpiresAt: time.Now().Add(internalSessionTTL)}
+	s := &Session{Token: token, Username: u.Username, Role: role, ExpiresAt: time.Now().Add(internalSessionTTL), Internal: true}
 	mu.Lock()
 	sessions[token] = s
 	mu.Unlock()

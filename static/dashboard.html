@@ -2038,7 +2038,8 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
           // here would yank the form out from under them on every refresh.
           hideLoginOverlay();
         } else {
-          setRole('guest', null);
+          // Session ended while the page was open: return to the sign-in gate.
+          location.replace('/admin');
         }
       } catch (e) {
         setRole('guest', null);
@@ -2071,8 +2072,8 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
     }
     async function doLogout() {
       try { await fetch(API + '/v1/auth/logout', { method: 'POST', credentials: 'same-origin' }); } catch(_) {}
-      handleAuthExpired();
-      try { loadAll(); } catch(_) {}
+      // The server only serves this page to signed-in admins; go back to its sign-in gate.
+      location.replace('/admin');
     }
     function now() {
       const d = new Date();

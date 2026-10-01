@@ -29,17 +29,20 @@ func TestAdminPageRequiresAdminLogin(t *testing.T) {
 			t.Errorf("anonymous %s: %d", p, w.Code)
 		}
 	}
-	// Anonymous with Google configured: redirected to Google login.
+	// Anonymous with Google configured: sign-in page offering Google only.
 	setGoogleEnv(t)
-	if w := getAs(h, "/admin", ""); w.Code != http.StatusFound || w.Header().Get("Location") != "/v1/auth/google/login?redirect=/admin" {
-		t.Errorf("anonymous+google: %d %s", w.Code, w.Header().Get("Location"))
+	w := getAs(h, "/admin?login_error=%3Cscript%3Ex", "")
+	if w.Code != http.StatusUnauthorized || bytesContain(w, "DASHBOARD") ||
+		!bytesContain(w, "/v1/auth/google/login?redirect=/admin") || bytesContain(w, `id="pwForm"`) ||
+		bytesContain(w, "<script>x") {
+		t.Errorf("anonymous+google sign-in page: %d", w.Code)
 	}
 
 	user, err := auth.EnsureUserSession("dev@parametacorp.com", auth.RoleUser)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if w := getAs(h, "/admin", user.Token); w.Code != http.StatusForbidden || bytesContain(w, "DASHBOARD") {
+	if w := getAs(h, "/admin", user.Token); w.Code != http.StatusForbidden || bytesContain(w, "DASHBOARD") || !bytesContain(w, "dev@parametacorp.com") {
 		t.Errorf("non-admin: %d", w.Code)
 	}
 	admin, err := auth.EnsureUserSession("boss@parametacorp.com", auth.RoleAdmin)

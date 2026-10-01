@@ -15,7 +15,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"html"
 	"io"
 	"log"
 	"net"
@@ -965,12 +964,12 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 		h.Set("Referrer-Policy", "same-origin")
 		h.Set("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
 		// CSP only for dashboard HTML. APIs return JSON and don't need it.
-		if r.URL.Path == "/" || r.URL.Path == "/dashboard" || r.URL.Path == "/portal" {
+		if r.URL.Path == "/" || r.URL.Path == "/admin" || r.URL.Path == "/dashboard" || r.URL.Path == "/portal" {
 			h.Set("Content-Security-Policy",
 				"default-src 'self'; "+
 					"script-src 'self' 'unsafe-inline'; "+ // inline scripts in dashboard.html
-					"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "+
-					"font-src 'self' https://fonts.gstatic.com data:; "+
+					"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; "+ // jsdelivr: Pretendard on the admin sign-in
+					"font-src 'self' https://fonts.gstatic.com https://cdn.jsdelivr.net data:; "+
 					"img-src 'self' data: http: https:; "+
 					// Allow http: too so service-preview thumbnails work when the
 					// dashboard itself is served over plain HTTP (direct-IP access);
@@ -2193,18 +2192,6 @@ func applyDBFields(s map[string]any) {
 	}
 }
 
-// writeGatePage renders a minimal standalone page for blocked dashboard access.
-func writeGatePage(w http.ResponseWriter, status int, title, msg string) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(status)
-	fmt.Fprintf(w, `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>%s</title>
-<style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0d1117;color:#e6edf3}
-@media (prefers-color-scheme: light){body{background:#fff;color:#1f2328}}
-main{max-width:420px;padding:1.5rem;text-align:center}a{color:#58a6ff}</style></head>
-<body><main><h1 style="font-size:1.3rem">%s</h1><p>%s</p><p><a href="/">서비스 포털로 이동</a></p></main></body></html>`,
-		html.EscapeString(title), html.EscapeString(title), html.EscapeString(msg))
-}
-
 // handlePublicServices: GET /v1/public/services — services that owners marked
 // as shared, visible without authentication. Secrets/env are never included.
 func handlePublicServices(w http.ResponseWriter, r *http.Request) {
@@ -2687,17 +2674,11 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
 	// non-admin visitors, not even as a shell that then loads data.
 	sess := auth.SessionFromRequest(r)
 	if sess == nil {
-		w.Header().Set("Cache-Control", "no-store")
-		if googleOAuthConfigured() {
-			http.Redirect(w, r, "/v1/auth/google/login?redirect=/admin", http.StatusFound)
-			return
-		}
-		writeGatePage(w, http.StatusUnauthorized, "로그인이 필요합니다", "관리자 대시보드는 로그인한 관리자만 볼 수 있습니다.")
+		writeAdminGate(w, r, http.StatusUnauthorized, adminGateData{})
 		return
 	}
 	if sess.Role != auth.RoleAdmin {
-		w.Header().Set("Cache-Control", "no-store")
-		writeGatePage(w, http.StatusForbidden, "접근 권한이 없습니다", sess.Username+" 계정은 관리자 대시보드에 접근할 수 없습니다.")
+		writeAdminGate(w, r, http.StatusForbidden, adminGateData{Forbidden: true, Username: sess.Username})
 		return
 	}
 	w.Header().Set("Vary", "Cookie")

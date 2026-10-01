@@ -239,10 +239,23 @@ func handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, dest, http.StatusFound)
 }
 
-// googleFail redirects back to the portal with an error query param so the UI
-// can surface it, instead of dumping a raw error page.
+// googleFail redirects back to the page the login started from (portal or
+// admin sign-in) with an error query param so it can surface the reason.
 func googleFail(w http.ResponseWriter, r *http.Request, msg string) {
-	http.Redirect(w, r, "/portal?login_error="+url.QueryEscape("Google 로그인 실패: "+msg), http.StatusFound)
+	back := "/portal"
+	if c, err := r.Cookie(googleStateCookie); err == nil {
+		if parts := strings.SplitN(c.Value, "|", 2); len(parts) == 2 {
+			if d := googleLoginDest(parts[1]); d == "/admin" || d == "/dashboard" {
+				back = "/admin"
+			}
+		}
+	}
+	http.Redirect(w, r, back+"?login_error="+url.QueryEscape("Google 로그인 실패: "+msg), http.StatusFound)
+}
+
+// googleAllowedDomain is the Workspace domain logins are restricted to, if any.
+func googleAllowedDomain() string {
+	return strings.ToLower(strings.TrimSpace(os.Getenv("GOOGLE_OAUTH_ALLOWED_DOMAIN")))
 }
 
 func clientIPString(r *http.Request) string {

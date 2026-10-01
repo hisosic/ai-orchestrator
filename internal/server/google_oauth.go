@@ -70,7 +70,7 @@ func googleLoginDest(d string) string {
 
 // handleGoogleStatus reports whether Google login is available.
 func handleGoogleStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"enabled": googleOAuthConfigured()})
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": googleOAuthConfigured(), "password_login": passwordLoginEnabled()})
 }
 
 // handleGoogleLogin redirects the browser to Google's consent screen.

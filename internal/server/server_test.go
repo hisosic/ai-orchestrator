@@ -59,7 +59,7 @@ func TestHealthEndpoint(t *testing.T) {
 func TestListServicesEndpoint(t *testing.T) {
 	handler := setupTestServer(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/services", nil)
+	req := authReq(http.MethodGet, "/v1/services", nil) // anonymous reads now require login
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -108,7 +108,7 @@ func TestCommandEndpoint(t *testing.T) {
 func TestSystemEndpoint(t *testing.T) {
 	handler := setupTestServer(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/system", nil)
+	req := authReq(http.MethodGet, "/v1/system", nil) // anonymous reads now require login
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 

@@ -81,15 +81,15 @@
   <div class="overlay-modal" id="loginOverlay">
     <div class="modal">
       <h2>로그인</h2>
-      <p class="muted" style="font-size:0.85rem;margin-top:0;">계정으로 로그인하면 내 서비스를 배포·관리할 수 있습니다.</p>
-      <form id="loginForm" onsubmit="event.preventDefault(); doLogin(); return false;">
+      <p class="muted" style="font-size:0.85rem;margin-top:0;">회사 Google 계정(@parametacorp.com)으로 로그인하면 내 서비스를 배포·관리할 수 있습니다.</p>
+      <form id="loginForm" style="display:none;" onsubmit="event.preventDefault(); doLogin(); return false;">
         <div style="margin-bottom:0.6rem;"><input id="loginUser" placeholder="아이디" autocomplete="username" style="width:100%;"></div>
         <div style="margin-bottom:0.6rem;"><input id="loginPass" type="password" placeholder="비밀번호" autocomplete="current-password" style="width:100%;"></div>
-        <div id="loginErr" style="color:var(--danger);font-size:0.82rem;min-height:1.1em;margin-bottom:0.5rem;"></div>
         <button class="btn" type="submit" style="width:100%;">로그인</button>
       </form>
+      <div id="loginErr" style="color:var(--danger);font-size:0.82rem;min-height:1.1em;margin-top:0.5rem;"></div>
       <div id="googleLoginWrap" style="display:none;margin-top:0.75rem;">
-        <div style="display:flex;align-items:center;gap:0.5rem;color:var(--text-muted);font-size:0.78rem;margin:0.5rem 0;"><span style="flex:1;height:1px;background:var(--border);"></span>또는<span style="flex:1;height:1px;background:var(--border);"></span></div>
+        <div class="login-or" style="display:none;align-items:center;align-items:center;gap:0.5rem;color:var(--text-muted);font-size:0.78rem;margin:0.5rem 0;"><span style="flex:1;height:1px;background:var(--border);"></span>또는<span style="flex:1;height:1px;background:var(--border);"></span></div>
         <a href="/v1/auth/google/login?redirect=/portal" class="btn btn-outline" style="width:100%;display:flex;align-items:center;justify-content:center;gap:0.5rem;text-decoration:none;box-sizing:border-box;">
           <svg width="16" height="16" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9 3.6l6.7-6.7C35.6 2.6 30.2 0 24 0 14.6 0 6.4 5.4 2.6 13.2l7.8 6.1C12.2 13.6 17.6 9.5 24 9.5z"/><path fill="#4285F4" d="M46.1 24.6c0-1.6-.1-3.1-.4-4.6H24v9.1h12.4c-.5 2.9-2.1 5.3-4.6 7l7.1 5.5c4.2-3.9 6.6-9.6 6.6-16.5z"/><path fill="#FBBC05" d="M10.4 28.7c-.5-1.4-.8-2.9-.8-4.7s.3-3.3.8-4.7l-7.8-6.1C1 16.3 0 20 0 24s1 7.7 2.6 10.8l7.8-6.1z"/><path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.1-5.5c-2 1.3-4.5 2.1-8.8 2.1-6.4 0-11.8-4.1-13.7-9.8l-7.8 6.1C6.4 42.6 14.6 48 24 48z"/></svg>
           Google로 로그인
@@ -99,6 +99,39 @@
   </div>
 
   <!-- Secrets manager overlay -->
+  <!-- MCP connection (personal API tokens) -->
+  <div class="overlay-modal" id="mcpOverlay" onclick="if(event.target===this)closeMcp()">
+    <div class="modal" style="width:680px;max-width:94%;max-height:90vh;overflow:auto;">
+      <div class="row" style="justify-content:space-between;margin-bottom:0.4rem;"><h2 style="margin:0;">🔌 MCP 연결</h2><button class="btn btn-sm btn-outline" onclick="closeMcp()">닫기</button></div>
+      <p class="muted" style="font-size:0.84rem;margin-top:0;">Claude Code·Cursor 같은 AI 개발 도구를 연결해 <b>내 서비스</b>를 배포·업데이트·디버깅할 수 있습니다. 토큰은 발급한 계정의 서비스에만 접근하며, 다른 사용자의 서비스는 조회·수정할 수 없습니다.</p>
+
+      <div class="pg-step" style="margin-top:0.4rem;"><b>1. 액세스 토큰 발급</b>
+        <div class="row" style="margin-top:0.35rem;">
+          <input id="mcpTokName" placeholder="토큰 이름 (예: macbook-claude)" maxlength="60" style="flex:1;min-width:180px;">
+          <button class="btn btn-sm" onclick="createMcpToken()">발급</button>
+        </div>
+        <div id="mcpNewTok" style="display:none;margin-top:0.5rem;padding:0.6rem 0.7rem;border:1px solid var(--warn);border-radius:var(--radius);font-size:0.82rem;"></div>
+        <div id="mcpTokList" style="margin-top:0.5rem;font-size:0.82rem;"></div>
+        <div id="mcpMsg" class="muted" style="font-size:0.8rem;min-height:1.1em;"></div>
+      </div>
+
+      <div class="pg-step"><b>2. 개발 도구에 연결</b>
+        <p class="muted"><b>Claude Code</b> (터미널에서 실행)</p>
+        <pre data-mcp="claude"></pre>
+        <p class="muted"><b>Cursor / 기타 MCP 클라이언트</b> (mcp.json)</p>
+        <pre data-mcp="json"></pre>
+        <p class="muted">발급 직후에는 토큰이 명령에 자동으로 채워집니다. 토큰은 비밀번호처럼 다루고, 유출되면 바로 폐기하세요.</p>
+      </div>
+
+      <div class="pg-step"><b>3. 사용할 수 있는 도구</b>
+        <p class="muted">배포: <code>get_registry_info</code> (docker push 안내) · <code>import_image</code> · <code>deploy_image</code> · <code>deploy_from_git</code> → <code>get_deploy_status</code> · <code>update_image</code> · <code>scale_service</code> · <code>restart_service</code> · <code>delete_service</code><br>
+          디버그: <code>get_service_status</code> · <code>get_logs</code> · <code>inspect_containers</code> · <code>exec_in_container</code> (모든 실행은 감사 로그에 기록)<br>
+          조회: <code>whoami</code> · <code>list_my_services</code> · <code>list_registry_images</code> · <code>list_my_secrets</code></p>
+        <p class="muted">예시 요청: "이 프로젝트를 빌드해서 내부 registry에 push하고 my-api로 배포해줘", "my-api가 계속 재시작되는 원인 찾아줘"</p>
+      </div>
+    </div>
+  </div>
+
   <div class="overlay-modal" id="secretsOverlay" onclick="if(event.target===this)closeSecrets()">
     <div class="modal" style="width:560px;">
       <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:0.5rem;">
@@ -223,6 +256,7 @@
           <option value="system">시스템</option><option value="light">라이트</option><option value="dark">다크</option>
         </select>
         <button class="btn btn-sm btn-outline" id="btnSecrets" style="display:none;" onclick="openSecrets()">🔑 내 시크릿</button>
+        <button class="btn btn-sm btn-outline" id="btnMcp" style="display:none;" onclick="openMcp()">🔌 MCP 연결</button>
         <button class="btn btn-sm btn-outline" id="btnLogout" style="display:none;" onclick="doLogout()">로그아웃</button>
         <button class="btn btn-sm btn-outline" id="btnLoginTop" onclick="showLogin()">로그인</button>
       </div>
@@ -450,6 +484,17 @@
         await checkAuth();
       }catch(e){ err.textContent='오류: '+e.message; }
     }
+    /* Google is the default login; the password form only appears when the
+       server has break-glass password login enabled. */
+    function applyLoginMethods(d){
+      d=d||{};
+      if(d.enabled) document.getElementById('googleLoginWrap').style.display='';
+      if(d.password_login){
+        document.getElementById('loginForm').style.display='';
+        if(d.enabled) document.querySelector('#googleLoginWrap .login-or').style.display='flex';
+      }
+      if(!d.enabled && !d.password_login) document.getElementById('loginErr').textContent='로그인이 설정되지 않았습니다. 관리자에게 문의하세요.';
+    }
     async function doLogout(){ try{ await fetch(API+'/v1/auth/logout',{method:'POST',credentials:'same-origin',headers:{'X-CSRF-Token':csrf()}}); }catch(e){} _user=null; render(); }
     async function checkAuth(){
       try{ var r=await fetch(API+'/v1/auth/me',{credentials:'same-origin'}); var d=await r.json();
@@ -476,6 +521,7 @@
       document.getElementById('guestNote').style.display = authed?'none':'';
       document.getElementById('btnLogout').style.display = authed?'':'none';
       document.getElementById('btnSecrets').style.display = authed?'':'none';
+      document.getElementById('btnMcp').style.display = authed?'':'none';
       document.getElementById('btnLoginTop').style.display = authed?'none':'';
       // Owner-scope tabs only when logged in; guests see just 공유 서비스.
       // "전체 서비스" is admin-only — regular users see only 공유/내 서비스.
@@ -573,7 +619,8 @@
     var _stats={}, _statHist={}, _trendOpen=null;
     async function loadStats(){
       try{
-        var r=await fetch(API+'/v1/cluster/stats',{credentials:'same-origin'});
+        // Guests may only see usage of shared services.
+        var r=await fetch(API+(_user?'/v1/cluster/stats':'/v1/public/stats'),{credentials:'same-origin'});
         if(!r.ok) return;
         var d=await r.json();
         _stats=(d&&d.stats)||{};
@@ -1077,6 +1124,74 @@
     }
 
     /* my secrets — modal manager (list / add / edit / reveal / delete) */
+    /* ---- MCP connection: personal API tokens + client setup ---- */
+    var _mcpPlainTok='';
+    function mcpUrl(){ return location.origin+'/mcp'; }
+    function openMcp(){ _mcpPlainTok=''; document.getElementById('mcpNewTok').style.display='none'; document.getElementById('mcpOverlay').classList.add('show'); renderMcpGuide(); loadMcpTokens(); }
+    function closeMcp(){ _mcpPlainTok=''; document.getElementById('mcpNewTok').innerHTML=''; document.getElementById('mcpOverlay').classList.remove('show'); }
+    function mcpMsg(t,kind){ var m=document.getElementById('mcpMsg'); m.textContent=t||''; m.style.color=kind==='err'?'var(--danger)':(kind==='ok'?'var(--success)':'var(--text-muted)'); }
+    function renderMcpGuide(){
+      var tok=_mcpPlainTok||'<발급한 토큰>';
+      var cmds={
+        claude:'claude mcp add --transport http ai-orchestrator '+mcpUrl()+' \\\n  --header "Authorization: Bearer '+tok+'"',
+        json:JSON.stringify({mcpServers:{'ai-orchestrator':{url:mcpUrl(),headers:{Authorization:'Bearer '+tok}}}},null,2)
+      };
+      document.querySelectorAll('#mcpOverlay pre[data-mcp]').forEach(function(pre){
+        var text=cmds[pre.getAttribute('data-mcp')]||'';
+        pre.textContent=text;
+        var b=document.createElement('button'); b.type='button'; b.className='btn btn-sm btn-outline copy-btn'; b.textContent='복사';
+        b.onclick=function(){ copyText(text,b); };
+        pre.appendChild(b);
+      });
+    }
+    async function loadMcpTokens(){
+      var box=document.getElementById('mcpTokList');
+      try{
+        var r=await fetch(API+'/v1/user/api-tokens',{credentials:'same-origin'});
+        var d=await r.json();
+        var list=d.tokens||[];
+        if(!list.length){ box.innerHTML='<span class="muted">발급된 토큰이 없습니다.</span>'; return; }
+        var html='<table style="width:100%;border-collapse:collapse;"><tr class="muted" style="text-align:left;"><th>이름</th><th>토큰</th><th>발급</th><th>마지막 사용</th><th></th></tr>';
+        list.forEach(function(t){
+          var last=(t.last_used_at&&t.last_used_at.indexOf('0001')!==0)?t.last_used_at.replace('T',' ').substring(0,16):'-';
+          html+='<tr style="border-top:1px solid var(--border);"><td>'+esc(t.name)+'</td><td><code>'+esc(t.hint)+'…</code></td><td>'+esc((t.created_at||'').substring(0,10))+'</td><td>'+esc(last)+'</td>'+
+            '<td style="text-align:right;"><button class="btn btn-sm btn-danger" data-mcp-revoke="'+attrEsc(t.id)+'" data-mcp-name="'+attrEsc(t.name)+'">폐기</button></td></tr>';
+        });
+        box.innerHTML=html+'</table>';
+        box.querySelectorAll('[data-mcp-revoke]').forEach(function(b){
+          b.onclick=function(){ revokeMcpToken(b.getAttribute('data-mcp-revoke'), b.getAttribute('data-mcp-name')); };
+        });
+      }catch(e){ box.textContent='토큰 목록 조회 실패'; }
+    }
+    async function createMcpToken(){
+      var name=document.getElementById('mcpTokName').value.trim();
+      mcpMsg('발급 중...');
+      try{
+        var r=await fetch(API+'/v1/user/api-tokens',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf()},body:JSON.stringify({name:name})});
+        var d=await r.json();
+        if(!d.success){ mcpMsg('실패: '+(d.message||''),'err'); return; }
+        _mcpPlainTok=d.token;
+        var box=document.getElementById('mcpNewTok');
+        box.innerHTML='<div style="font-weight:600;margin-bottom:0.3rem;">🔑 새 토큰 ('+esc(d.name)+')</div><div class="row"><code id="mcpTokVal" style="flex:1;word-break:break-all;user-select:all;"></code></div>'+
+          '<div class="muted" style="margin-top:0.3rem;">이 창을 닫으면 다시 볼 수 없습니다. 아래 연결 명령에 자동으로 채워졌습니다.</div>';
+        box.querySelector('#mcpTokVal').textContent=d.token;
+        box.querySelector('.row').insertAdjacentHTML('beforeend',copyBtn(d.token,'토큰 복사'));
+        box.style.display='';
+        document.getElementById('mcpTokName').value='';
+        mcpMsg('✓ 발급되었습니다','ok');
+        renderMcpGuide(); loadMcpTokens();
+      }catch(e){ mcpMsg('오류: '+e.message,'err'); }
+    }
+    async function revokeMcpToken(id,name){
+      if(!confirm("'"+name+"' 토큰을 폐기할까요? 이 토큰을 쓰는 개발 도구는 즉시 연결이 끊깁니다.")) return;
+      try{
+        var r=await fetch(API+'/v1/user/api-tokens/'+encodeURIComponent(id),{method:'DELETE',credentials:'same-origin',headers:{'X-CSRF-Token':csrf()}});
+        var d=await r.json();
+        if(!d.success){ mcpMsg('실패: '+(d.message||''),'err'); return; }
+        mcpMsg('폐기되었습니다','ok'); loadMcpTokens();
+      }catch(e){ mcpMsg('오류: '+e.message,'err'); }
+    }
+
     function openSecrets(){ resetSecretForm(); document.getElementById('secretsOverlay').classList.add('show'); loadSecretsList(); }
     function closeSecrets(){ document.getElementById('secretsOverlay').classList.remove('show'); }
     function secretMsg(text,kind){ var m=document.getElementById('secretMsg'); m.textContent=text||''; m.style.color=kind==='err'?'var(--danger)':(kind==='ok'?'var(--success)':'var(--text-muted)'); }
@@ -1177,7 +1292,7 @@
       try{
         var r=await fetch(API+'/v1/auth/google/status',{credentials:'same-origin'});
         var d=await r.json();
-        if(d&&d.enabled) document.getElementById('googleLoginWrap').style.display='';
+        applyLoginMethods(d);
       }catch(e){}
       var m=location.search.match(/[?&]login_error=([^&]+)/);
       if(m){

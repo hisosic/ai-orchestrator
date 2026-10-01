@@ -15,6 +15,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"net"
@@ -82,6 +83,7 @@ func userMutatingAllowed(path string) bool {
 		path == "/v1/cluster/stop",
 		path == "/v1/cluster/delete",
 		path == "/v1/cluster/scale",
+		path == "/v1/cluster/exec", // debug exec in an owned service's container
 		path == "/v1/cluster/container/stop":
 		return true
 	case strings.HasPrefix(path, "/v1/services/") &&
@@ -95,6 +97,55 @@ func userMutatingAllowed(path string) bool {
 // Rules: inter-node token (caller == "") → yes; admin → yes (all services);
 // other authenticated user → only services they own (owner == caller). An
 // empty/missing owner is NOT manageable by a non-admin user.
+// registryRepoOwnedByOther reports whether another user's service runs an
+// image from the given internal-registry repository. Overwriting that repo's
+// tag would swap the image under their service on its next pull, so imports
+// must not reuse it.
+func registryRepoOwnedByOther(r *http.Request, repo string) (bool, string) {
+	if clusterState == nil {
+		return false, ""
+	}
+	for _, svc := range clusterState.ListServices() {
+		img, _ := svc["image"].(string)
+		if !strings.Contains(img, "/"+repo+":") && !strings.HasSuffix(img, "/"+repo) {
+			continue
+		}
+		name, _ := svc["name"].(string)
+		info := clusterState.GetService(name) // ListServices omits owner
+		if info == nil {
+			continue
+		}
+		if ok, owner := canManageService(r, info); !ok {
+			return true, owner
+		}
+	}
+	return false, ""
+}
+
+// rejectForeignService writes a 403 and returns true when serviceName already
+// exists and the caller may not manage it. Every deploy path that creates or
+// replaces a service by name calls this first, since a redeploy replaces the
+// running containers and takes over the owner field.
+func rejectForeignService(w http.ResponseWriter, r *http.Request, serviceName string) bool {
+	if clusterState == nil {
+		return false
+	}
+	info := clusterState.GetService(serviceName)
+	if info == nil {
+		return false
+	}
+	ok, owner := canManageService(r, info)
+	if ok {
+		return false
+	}
+	writeJSON(w, http.StatusForbidden, map[string]any{
+		"success": false,
+		"message": fmt.Sprintf("'%s' 서비스는 다른 사용자(%s)의 서비스입니다. 다른 이름을 사용하세요", serviceName, owner),
+		"code":    "forbidden_owner",
+	})
+	return true
+}
+
 func canManageService(r *http.Request, svcInfo map[string]any) (bool, string) {
 	caller := requesterUsername(r)
 	if caller == "" {
@@ -355,6 +406,7 @@ func NewRouter() http.Handler {
 	r.Delete("/v1/auth/users/{username}", handleDeleteUser)
 	r.Post("/v1/auth/users/{username}/reset-password", handleResetUserPassword)
 	r.Get("/v1/public/services", handlePublicServices)
+	r.Get("/v1/public/stats", handlePublicStats)
 	r.Get("/v1/user/services", handleListUserServices)
 	r.Post("/v1/user/service-share", handleUserServiceShare)
 	r.Post("/v1/user/deploy-database", handleUserDeployDatabase)
@@ -428,6 +480,8 @@ func NewRouter() http.Handler {
 	r.Get("/v1/cluster/stats", handleClusterStats)
 	r.Post("/v1/cluster/stop", handleClusterStop)
 	r.Post("/v1/cluster/delete", handleClusterDeleteService)
+	r.Get("/v1/cluster/inspect", handleClusterInspect)
+	r.Post("/v1/cluster/exec", handleClusterExec)
 	r.Post("/v1/cluster/container/stop", handleClusterContainerStop)
 	r.Delete("/v1/cluster/container/{id}", handleClusterContainerDelete)
 	r.Post("/v1/cluster/deploy", handleClusterDeploy)
@@ -451,6 +505,8 @@ func NewRouter() http.Handler {
 	r.Post("/v1/agent/reconcile-skip", handleAgentReconcileSkip)
 	r.Post("/v1/agent/blockchain/deploy", handleAgentBlockchainDeploy)
 	r.Post("/v1/agent/exec", handleAgentExec)
+	r.Post("/v1/agent/service-inspect", handleAgentServiceInspect)
+	r.Post("/v1/agent/service-exec", handleAgentServiceExec)
 	r.Post("/v1/agent/update-image", handleAgentUpdateImage)
 	r.Post("/v1/agent/upsert-env", handleAgentUpsertEnv)
 	r.Post("/v1/agent/delete-service", handleAgentDeleteService)
@@ -483,6 +539,13 @@ func NewRouter() http.Handler {
 	r.Post("/v1/registry/pull", handleRegistryPull)
 	r.Handle("/v1/registry/v2/*", registryProxy())
 
+	// MCP for developers (personal API token auth, own services only)
+	r.HandleFunc("/mcp", handleMCP)
+	r.Get("/v1/user/api-tokens", handleListAPITokens)
+	r.Post("/v1/user/api-tokens", handleCreateAPIToken)
+	r.Delete("/v1/user/api-tokens/{id}", handleRevokeAPIToken)
+
+	mcpRouter = r
 	return r
 }
 
@@ -1302,9 +1365,17 @@ func sessionAuthMiddleware(next http.Handler) http.Handler {
 		sess := auth.SessionFromRequest(r)
 		isRead := method == http.MethodGet || method == http.MethodHead
 
-		// Unauthenticated visitors default to guest view — reads are allowed,
-		// writes require admin login.
+		// Anonymous visitors may only read the public share listing; every
+		// other API (cluster, services, nodes, stream, ...) needs a login.
 		if isRead {
+			if sess == nil && !strings.HasPrefix(path, "/v1/public/") {
+				writeJSON(w, http.StatusUnauthorized, map[string]any{
+					"success": false,
+					"message": "로그인이 필요합니다",
+					"code":    "unauthenticated",
+				})
+				return
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -1352,7 +1423,20 @@ func sessionAuthMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// passwordLoginEnabled reports whether local username/password login is
+// allowed. Off by default so Google Workspace login is the only way in;
+// ORCHESTRATOR_PASSWORD_LOGIN=true re-enables it for break-glass access.
+func passwordLoginEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("ORCHESTRATOR_PASSWORD_LOGIN")), "true")
+}
+
 func handleLogin(w http.ResponseWriter, r *http.Request) {
+	if !passwordLoginEnabled() {
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"success": false, "message": "비밀번호 로그인은 비활성화되어 있습니다. Google 계정으로 로그인하세요", "code": "password_login_disabled",
+		})
+		return
+	}
 	var body struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -1820,6 +1904,9 @@ func handleUserDeployDatabase(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "서비스명을 입력하세요"})
 		return
 	}
+	if rejectForeignService(w, r, name) {
+		return
+	}
 	engine := strings.ToLower(strings.TrimSpace(body.Engine))
 	dbName := strings.TrimSpace(body.DBName)
 	user := strings.TrimSpace(body.Username)
@@ -2019,6 +2106,14 @@ func handleUserImageImport(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"success": false, "message": "내장 registry가 실행 중이 아닙니다"})
 		return
 	}
+	if taken, owner := registryRepoOwnedByOther(r, repo); taken {
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"success": false,
+			"message": fmt.Sprintf("'%s' 이미지는 다른 사용자(%s)의 서비스가 사용 중입니다. 다른 저장 이름을 지정하세요", repo, owner),
+			"code":    "forbidden_owner",
+		})
+		return
+	}
 	repoTag := repo + ":latest"
 	regImage, pushErr := pushImageToRegistry(ctx, src, repoTag)
 	if pushErr != nil {
@@ -2096,6 +2191,18 @@ func applyDBFields(s map[string]any) {
 			}
 		}
 	}
+}
+
+// writeGatePage renders a minimal standalone page for blocked dashboard access.
+func writeGatePage(w http.ResponseWriter, status int, title, msg string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	fmt.Fprintf(w, `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>%s</title>
+<style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0d1117;color:#e6edf3}
+@media (prefers-color-scheme: light){body{background:#fff;color:#1f2328}}
+main{max-width:420px;padding:1.5rem;text-align:center}a{color:#58a6ff}</style></head>
+<body><main><h1 style="font-size:1.3rem">%s</h1><p>%s</p><p><a href="/">서비스 포털로 이동</a></p></main></body></html>`,
+		html.EscapeString(title), html.EscapeString(title), html.EscapeString(msg))
 }
 
 // handlePublicServices: GET /v1/public/services — services that owners marked
@@ -2576,6 +2683,24 @@ func dashboardETag() string {
 }
 
 func handleDashboard(w http.ResponseWriter, r *http.Request) {
+	// The cluster dashboard is admin-only: never serve it to anonymous or
+	// non-admin visitors, not even as a shell that then loads data.
+	sess := auth.SessionFromRequest(r)
+	if sess == nil {
+		w.Header().Set("Cache-Control", "no-store")
+		if googleOAuthConfigured() {
+			http.Redirect(w, r, "/v1/auth/google/login?redirect=/admin", http.StatusFound)
+			return
+		}
+		writeGatePage(w, http.StatusUnauthorized, "로그인이 필요합니다", "관리자 대시보드는 로그인한 관리자만 볼 수 있습니다.")
+		return
+	}
+	if sess.Role != auth.RoleAdmin {
+		w.Header().Set("Cache-Control", "no-store")
+		writeGatePage(w, http.StatusForbidden, "접근 권한이 없습니다", sess.Username+" 계정은 관리자 대시보드에 접근할 수 없습니다.")
+		return
+	}
+	w.Header().Set("Vary", "Cookie")
 	etag := dashboardETag()
 	w.Header().Set("ETag", etag)
 	// Force revalidation on every reload but allow 304 to skip body.
@@ -5071,6 +5196,10 @@ func handleClusterDeploy(w http.ResponseWriter, r *http.Request) {
 		strategy = "spread"
 	}
 
+	if rejectForeignService(w, r, name) {
+		return
+	}
+
 	// Clean up existing service first.
 	existing := clusterState.GetPlacements(name, "")
 	if len(existing) > 0 {
@@ -5383,6 +5512,28 @@ func handleAgentAdjustReplicas(w http.ResponseWriter, r *http.Request) {
 // per service across all nodes (sums replicas). Read-only, non-sensitive usage
 // numbers — no per-service auth gate.
 func handleClusterStats(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "stats": collectClusterStats()})
+}
+
+// handlePublicStats: GET /v1/public/stats — CPU/memory for shared services
+// only, so anonymous portal visitors can render usage bars on the share list.
+func handlePublicStats(w http.ResponseWriter, r *http.Request) {
+	all := collectClusterStats()
+	out := map[string]any{}
+	if clusterState != nil {
+		for name, st := range all {
+			if info := clusterState.GetService(name); info != nil {
+				if sh, _ := info["shared"].(bool); sh {
+					out[name] = st
+				}
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "stats": out})
+}
+
+// collectClusterStats aggregates per-service CPU/memory across all nodes.
+func collectClusterStats() map[string]any {
 	toF := func(v any) float64 {
 		switch n := v.(type) {
 		case float64:
@@ -5464,7 +5615,7 @@ func handleClusterStats(w http.ResponseWriter, r *http.Request) {
 			"memory_percent":  memPct,
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"success": true, "stats": out})
+	return out
 }
 
 // handleAgentLogs: POST /v1/agent/logs {service_name, tail}. Node-local endpoint

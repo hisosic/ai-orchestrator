@@ -291,12 +291,15 @@ func handleDeployGit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Attribute the deploy to the requesting user (owner check + portal list).
+	if rejectForeignService(w, r, serviceName) {
+		return
+	}
 	setPendingOwner(serviceName, requesterUsername(r))
 
 	authURL := buildAuthenticatedGitURL(cloneURL, token)
 	isPrivate := token != ""
 
-	job := registerDeployJob(serviceName)
+	job := registerDeployJob(serviceName, requesterUsername(r))
 	pub := job.Publisher()
 	privTag := ""
 	if isPrivate {

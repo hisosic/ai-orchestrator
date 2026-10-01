@@ -76,6 +76,9 @@ func handleDeploySource(w http.ResponseWriter, r *http.Request) {
 	}
 	// Attribute the deploy to the requesting user (portal accounts) so owner
 	// checks + "my services" listing work. Consumed in deployToOptimalNode.
+	if rejectForeignService(w, r, serviceName) {
+		return
+	}
 	setPendingOwner(serviceName, requesterUsername(r))
 
 	// Create temp directory
@@ -598,6 +601,9 @@ func handleDeploySourceAsync(w http.ResponseWriter, r *http.Request) {
 	}
 	// Attribute the async deploy to the requesting user (consumed later in
 	// the background deploy via deployToOptimalNode).
+	if rejectForeignService(w, r, serviceName) {
+		return
+	}
 	setPendingOwner(serviceName, requesterUsername(r))
 
 	// Persistent temp dir — the goroutine outlives this handler so we
@@ -629,7 +635,7 @@ func handleDeploySourceAsync(w http.ResponseWriter, r *http.Request) {
 	}
 	dst.Close()
 
-	job := registerDeployJob(serviceName)
+	job := registerDeployJob(serviceName, requesterUsername(r))
 	pub := job.Publisher()
 	pub(DeployEvent{Type: "phase", Phase: "upload", Message: fmt.Sprintf("업로드 완료: %s", filename)})
 

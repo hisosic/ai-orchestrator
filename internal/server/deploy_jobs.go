@@ -53,6 +53,7 @@ type DeployJob struct {
 	ID          string
 	CreatedAt   time.Time
 	ServiceName string
+	Owner       string // requesting user; empty for token/inter-node callers
 
 	mu          sync.Mutex
 	done        bool
@@ -72,12 +73,13 @@ var (
 )
 
 // registerDeployJob creates and registers a new job.
-func registerDeployJob(serviceName string) *DeployJob {
+func registerDeployJob(serviceName, owner string) *DeployJob {
 	id := genDeployJobID()
 	j := &DeployJob{
 		ID:          id,
 		CreatedAt:   time.Now(),
 		ServiceName: serviceName,
+		Owner:       owner,
 		subs:        map[int]chan DeployEvent{},
 	}
 	deployJobsMu.Lock()

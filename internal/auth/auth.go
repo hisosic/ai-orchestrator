@@ -110,6 +110,10 @@ func Init(stateDir string, adminPassword, guestPassword string) error {
 		}
 	}
 
+	if err := loadAPITokens(); err != nil {
+		return fmt.Errorf("load api tokens: %w", err)
+	}
+
 	go sessionCleaner()
 	return nil
 }
@@ -535,9 +539,9 @@ func CreateUser(username, password string, role Role) error {
 // DeleteUser removes a user (admin-only). The last admin cannot be deleted.
 func DeleteUser(username string) error {
 	mu.Lock()
-	defer mu.Unlock()
 	u, ok := users[username]
 	if !ok {
+		mu.Unlock()
 		return errors.New("user not found")
 	}
 	if u.Role == RoleAdmin {
@@ -548,10 +552,18 @@ func DeleteUser(username string) error {
 			}
 		}
 		if adminCount <= 1 {
+			mu.Unlock()
 			return errors.New("cannot delete the last admin user")
 		}
 	}
 	delete(users, username)
+	for k, s := range sessions {
+		if s.Username == username {
+			delete(sessions, k)
+		}
+	}
+	mu.Unlock() // saveToDisk takes its own read lock
+	revokeUserAPITokens(username)
 	return saveToDisk()
 }
 

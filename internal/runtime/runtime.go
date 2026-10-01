@@ -1049,6 +1049,56 @@ func StopContainerByID(ctx context.Context, cli *client.Client, containerID stri
 	return true, fmt.Sprintf("Container '%s' stopped.", containerID), nil
 }
 
+// RunOneReplica creates and starts one more replica named cname from the
+// service's locally stored spec (env, volumes, limits, labels, user) — the
+// same configuration ExecuteScale uses — so containers added by a cluster
+// scale-up match the ones the service was deployed with. image overrides the
+// stored image when set. When the service has no local state, it falls back
+// to a bare container with default routing labels.
+func RunOneReplica(ctx context.Context, cli *client.Client, serviceName, image, cname string) (string, error) {
+	info := state.GetService(serviceName)
+	if info == nil {
+		info = map[string]any{}
+	}
+	if image == "" {
+		image = getString(info, "image")
+	}
+	subdomain := false
+	labels := buildLabels(serviceName, false)
+	if rawLabels, ok := info["extra_labels"].(map[string]any); ok {
+		if v, ok := rawLabels[LabelSubdomain].(string); ok && v == "true" {
+			subdomain = true
+			labels = buildLabels(serviceName, true)
+		}
+		for k, v := range rawLabels {
+			if s, ok := v.(string); ok {
+				labels[k] = s
+			}
+		}
+	}
+	if subdomain {
+		labels[LabelSubdomain] = "true"
+	}
+	var env []string
+	for _, e := range getStringSlice(info, "environment") {
+		if e = strings.TrimSpace(e); e != "" {
+			env = append(env, e)
+		}
+	}
+	mode := getString(info, "volume_mode")
+	if mode == "" {
+		mode = "shared"
+	}
+	mounts := buildMounts(volumesForReplica(getStringSlice(info, "volumes"), cname, mode))
+	exposedPorts, portBindings := buildPortBindings(getStringSlice(info, "ports"))
+	return createAndStartContainer(
+		ctx, cli, image, cname, labels,
+		ParseMemory(getString(info, "memory_limit")), parseCPU(getString(info, "cpu_limit")),
+		env, mounts, exposedPorts, portBindings, getString(info, "user"),
+		EnsureNetwork(ctx, cli), serviceName,
+	)
+}
+
 // RemoveContainerByID stops and removes a container by ID or name. Returns service_name from labels if set.
 func RemoveContainerByID(ctx context.Context, cli *client.Client, containerID string) (bool, string, map[string]any) {
 	inspect, err := cli.ContainerInspect(ctx, containerID)

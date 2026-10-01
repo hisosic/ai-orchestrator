@@ -5914,48 +5914,15 @@ func handleAgentRunOne(w http.ResponseWriter, r *http.Request) {
 	}
 	cname := fmt.Sprintf("%s%d", prefix, idx)
 
-	labels := map[string]string{
-		runtime.LabelOrchestrator: "true",
-		runtime.LabelService:      svcName,
-	}
-	// Default path routing; agent run-one is used by migrate/compose flows
-	// which don't carry a per-service subdomain preference.
-	for k, v := range runtime.TraefikLabels(svcName, runtime.TraefikHTTPPort, false) {
-		labels[k] = v
-	}
-
-	networkID := runtime.EnsureNetwork(ctx, cli)
-
-	config := &container.Config{
-		Image:  image,
-		Labels: labels,
-	}
-	hostConfig := &container.HostConfig{}
-
-	var networkConfig *network.NetworkingConfig
-	if networkID != "" && svcName != "" {
-		networkConfig = &network.NetworkingConfig{
-			EndpointsConfig: map[string]*network.EndpointSettings{
-				runtime.OrchNetwork: {
-					NetworkID: networkID,
-					Aliases:   []string{svcName},
-				},
-			},
-		}
-	}
-
-	resp, err := cli.ContainerCreate(ctx, config, hostConfig, networkConfig, nil, cname)
+	// Build the replica from the service's stored spec (env, volumes,
+	// limits, labels) so scale-ups and restarts don't come up bare.
+	id, err := runtime.RunOneReplica(ctx, cli, svcName, image, cname)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"success": false, "error": err.Error()})
 		return
 	}
 
-	if err := cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"success": false, "error": err.Error()})
-		return
-	}
-
-	cid := resp.ID
+	cid := id
 	if len(cid) > 12 {
 		cid = cid[:12]
 	}

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"ai-container-go/internal/auth"
+	"ai-container-go/internal/models"
 )
 
 func postAs(h http.Handler, path, body, sessionToken string) *httptest.ResponseRecorder {
@@ -101,5 +102,40 @@ func TestPostLoginHopCarriesNoRedirect(t *testing.T) {
 	writePostLoginHop(w, "https://evil.example/")
 	if strings.Contains(w.Body.String(), "evil.example") {
 		t.Fatal("hop page followed an unlisted destination")
+	}
+}
+
+// A service running without a cluster definition (seen only via heartbeat
+// placements) can still be protected — by an admin — and then can't be deleted.
+func TestDeleteProtectionWithoutDefinition(t *testing.T) {
+	h, _ := mcpEnv(t)
+	clusterState.ProcessHeartbeat("node-b", "127.0.0.1:1", models.NodeResources{}, []models.ContainerPlacement{{
+		ContainerID: "0123456789abcdef0123", ContainerName: "orch-ai-presentation-0",
+		ServiceName: "ai-presentation", Image: "hisosic/ai-presentation", NodeName: "node-b", Status: "running",
+	}})
+	if clusterState.GetService("ai-presentation") != nil {
+		t.Fatal("test setup: service should have no definition")
+	}
+	bob, _ := auth.EnsureUserSession("bob@parametacorp.com", auth.RoleUser)
+	alice, _ := auth.EnsureUserSession("alice@parametacorp.com", auth.RoleAdmin)
+
+	if w := postAs(h, "/v1/services/ai-presentation/delete-protection", `{"enabled":true}`, bob.Token); w.Code != http.StatusForbidden {
+		t.Fatalf("non-admin on undefined service: %d %s", w.Code, w.Body.String())
+	}
+	if w := postAs(h, "/v1/services/no-such-svc/delete-protection", `{"enabled":true}`, alice.Token); w.Code != http.StatusNotFound {
+		t.Fatalf("unknown service: %d", w.Code)
+	}
+	if w := postAs(h, "/v1/services/ai-presentation/delete-protection", `{"enabled":true}`, alice.Token); w.Code != http.StatusOK {
+		t.Fatalf("admin protect: %d %s", w.Code, w.Body.String())
+	}
+	if w := postAs(h, "/v1/cluster/delete", `{"service_name":"ai-presentation"}`, alice.Token); w.Code != http.StatusConflict {
+		t.Errorf("delete: %d %s", w.Code, w.Body.String())
+	}
+	if len(clusterState.GetPlacements("ai-presentation", "")) == 0 {
+		t.Fatal("placements were removed")
+	}
+	// The listing reports the flag even without a definition.
+	if !serviceDeleteProtected("ai-presentation") {
+		t.Fatal("flag not visible")
 	}
 }

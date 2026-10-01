@@ -1154,6 +1154,28 @@ func buildFailureFeedback(buildErr error, buildResult *runtime.BuildResult, aiAt
 // extraAliases adds short Docker DNS aliases (e.g. "db" for "myapp-db") so
 // references inside compose files continue to work after deployment.
 func deployToOptimalNode(ctx context.Context, cli *client.Client, image string, serviceName string, containerPort int, envVars []string, extraAliases ...string) deployNodeResult {
+	// A service with persistent volumes must be rebuilt onto the node that
+	// holds its data (deployToRemoteNode/deployLocally remount the volumes).
+	if clusterState != nil {
+		if info := clusterState.GetService(serviceName); info != nil && len(managedVolumeSpecs(serviceVolumeSpecs(info))) > 0 {
+			pinned := pinnedNodeOf(info)
+			if _, err := pinnedDecision(serviceName, pinned, 1); err != nil {
+				return deployNodeResult{OK: false, Message: err.Error()}
+			}
+			localNodeName := os.Getenv("ORCHESTRATOR_NODE_NAME")
+			if localNodeName == "" {
+				localNodeName = "master"
+			}
+			if pinned != localNodeName {
+				rres := deployToRemoteNode(ctx, clusterState.GetNode(pinned), image, serviceName, containerPort, envVars, extraAliases...)
+				recordDeployOwner(serviceName, image, rres.OK)
+				return rres
+			}
+			res := deployLocally(ctx, cli, image, serviceName, containerPort, envVars, extraAliases...)
+			recordDeployOwner(serviceName, image, res.OK)
+			return res
+		}
+	}
 	// Try cluster-aware deployment
 	if sched != nil && clusterState != nil {
 		decisions, err := sched.Schedule(serviceName, image, 1, nil, "least-loaded")
@@ -1249,6 +1271,7 @@ func deployLocally(ctx context.Context, cli *client.Client, image string, servic
 		Environment:        envVars,
 		ExtraAliases:       extraAliases,
 		ExtraLabels:        consumePendingLabels(serviceName),
+		Volumes:            persistentSpecsFor(serviceName),
 	})
 
 	return deployNodeResult{
@@ -1300,6 +1323,9 @@ func deployToRemoteNode(ctx context.Context, node *models.NodeInfo, image string
 	}
 	if labels := consumePendingLabels(serviceName); len(labels) > 0 {
 		payload["extra_labels"] = labels
+	}
+	if vols := persistentSpecsFor(serviceName); len(vols) > 0 {
+		payload["volumes"] = vols
 	}
 	runPayload, _ := json.Marshal(payload)
 	runReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/v1/containers/run", bytes.NewReader(runPayload))

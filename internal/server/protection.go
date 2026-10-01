@@ -2,8 +2,9 @@
 //
 // When a service has delete protection on, every console/API path that
 // deletes the service or removes one of its containers refuses, for every
-// role. The flag lives in cluster state and survives redeploys; the cluster
-// state layer also refuses to drop a protected definition as a backstop.
+// role. The flag is kept per service name in cluster state (so it also covers
+// services running without a cluster definition) and survives redeploys; the
+// cluster state layer also refuses to drop a protected definition.
 // Only the owner (or an admin) can turn it off again from the portal or
 // dashboard; the MCP toolset deliberately has no way to change it.
 package server
@@ -102,18 +103,31 @@ func handleServiceDeleteProtection(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"success": false, "message": "클러스터 모드가 아닙니다"})
 		return
 	}
-	info := clusterState.GetService(name)
-	if info == nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "서비스를 찾을 수 없습니다: " + name})
-		return
-	}
-	if ok, owner := canManageService(r, info); !ok {
-		writeJSON(w, http.StatusForbidden, map[string]any{
-			"success": false,
-			"message": fmt.Sprintf("'%s' 서비스는 소유자(%s)만 삭제 방지를 바꿀 수 있습니다", name, owner),
-			"code":    "forbidden_owner",
-		})
-		return
+	if info := clusterState.GetService(name); info != nil {
+		if ok, owner := canManageService(r, info); !ok {
+			writeJSON(w, http.StatusForbidden, map[string]any{
+				"success": false,
+				"message": fmt.Sprintf("'%s' 서비스는 소유자(%s)만 삭제 방지를 바꿀 수 있습니다", name, owner),
+				"code":    "forbidden_owner",
+			})
+			return
+		}
+	} else {
+		// Running without a cluster definition (e.g. started directly on a
+		// worker): there is no owner to check, so only admins may protect it,
+		// and only if it actually has containers.
+		if len(clusterState.GetPlacements(name, "")) == 0 {
+			writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "서비스를 찾을 수 없습니다: " + name})
+			return
+		}
+		if sess.Role != auth.RoleAdmin {
+			writeJSON(w, http.StatusForbidden, map[string]any{
+				"success": false,
+				"message": fmt.Sprintf("'%s'는 클러스터 정의가 없는 서비스라 관리자만 삭제 방지를 바꿀 수 있습니다", name),
+				"code":    "forbidden",
+			})
+			return
+		}
 	}
 	if !clusterState.SetDeleteProtection(name, *body.Enabled) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "message": "삭제 방지 설정 저장 실패"})

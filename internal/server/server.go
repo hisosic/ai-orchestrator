@@ -507,6 +507,7 @@ func NewRouter() http.Handler {
 	r.Post("/v1/agent/exec", handleAgentExec)
 	r.Post("/v1/agent/service-inspect", handleAgentServiceInspect)
 	r.Post("/v1/agent/service-exec", handleAgentServiceExec)
+	r.Post("/v1/agent/volume-remove", handleAgentVolumeRemove)
 	r.Post("/v1/agent/update-image", handleAgentUpdateImage)
 	r.Post("/v1/agent/upsert-env", handleAgentUpsertEnv)
 	r.Post("/v1/agent/delete-service", handleAgentDeleteService)
@@ -587,6 +588,7 @@ func InitCluster() {
 		clusterState = clusterstate.NewClusterStateManager("")
 		sched = scheduler.NewScheduler(clusterState)
 		migrationCtrl = migrate.NewMigrationController(clusterState)
+		migrationCtrl.Pinned = servicePersistent
 		alertEngine = alerts.NewAlertEngine(clusterState)
 		serviceRegistry = discovery.NewServiceRegistry(clusterState)
 
@@ -1958,8 +1960,27 @@ func handleUserDeployDatabase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Pick a node: explicit > scheduler > local master.
+	// Database files live in a managed volume so restarts and image updates
+	// keep the data; the DB is pinned to the node holding that volume.
+	dataPath := "/var/lib/postgresql/data"
+	if engine == "mysql" {
+		dataPath = "/var/lib/mysql"
+	}
+	plan, err := planPersistence(name, sess.Username, clusterState.GetService(name), []string{dataPath})
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": err.Error()})
+		return
+	}
+
+	// Pick a node: existing data > explicit > scheduler > local master.
 	nodeName := strings.TrimSpace(body.Node)
+	if plan.node != "" {
+		if nodeName != "" && nodeName != plan.node {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": fmt.Sprintf("'%s'의 데이터는 %s 노드에 있어 다른 노드로 옮길 수 없습니다", name, plan.node)})
+			return
+		}
+		nodeName = plan.node
+	}
 	if nodeName == "" && sched != nil {
 		if decisions, err := sched.Schedule(name, image, 1, nil, "least-loaded"); err == nil && len(decisions) > 0 {
 			nodeName = decisions[0].NodeName
@@ -2002,6 +2023,7 @@ func handleUserDeployDatabase(w http.ResponseWriter, r *http.Request) {
 		"use_internal_network": true,
 		"environment":          env,
 		"extra_labels":         extraLabels,
+		"volumes":              plan.specs,
 	})
 	runReq, _ := http.NewRequest(http.MethodPost, baseURL+"/v1/containers/run", bytes.NewReader(runBody))
 	setNodeHeaders(runReq, node)
@@ -2022,10 +2044,12 @@ func handleUserDeployDatabase(w http.ResponseWriter, r *http.Request) {
 	// reconcile recreates it identically.
 	envVars := buildEnvVars(env, secretNames)
 	clusterState.SaveService(name, image, 1, map[string]any{
-		"owner":        sess.Username,
-		"environment":  env,
-		"env_vars":     envVars,
-		"extra_labels": extraLabels,
+		"owner":                sess.Username,
+		"environment":          env,
+		"env_vars":             envVars,
+		"extra_labels":         extraLabels,
+		"volumes":              plan.specs,
+		"schedule_constraints": pinConstraints(nodeName),
 	})
 
 	connStr := ""
@@ -3261,6 +3285,10 @@ func getServicesDataForViewer(showSystem bool, viewer string) []map[string]any {
 			"nodes":         nodeList,
 			"endpoint":      endpoint,
 		}
+		entry["delete_protected"] = serviceDeleteProtected(svcName)
+		if st := serviceVolumeReport(svcName); st != nil {
+			entry["storage"] = st
+		}
 		// Attach owner + masked env_vars from cluster state (handleClusterDeploy
 		// writes here) with a fallback to local services state for master-only
 		// flows that bypass the scheduler.
@@ -3277,9 +3305,6 @@ func getServicesDataForViewer(showSystem bool, viewer string) []map[string]any {
 			}
 			if sh, ok := svcMeta["shared"].(bool); ok {
 				entry["shared"] = sh
-			}
-			if dp, ok := svcMeta["delete_protected"].(bool); ok {
-				entry["delete_protected"] = dp
 			}
 			if evs := maskedEnvVarsForViewer(svcMeta, viewer); len(evs) > 0 {
 				entry["env_vars"] = evs
@@ -3336,6 +3361,10 @@ func getServicesDataForViewer(showSystem bool, viewer string) []map[string]any {
 			"memory_limit":  svc["memory_limit"],
 			"cpu_limit":     svc["cpu_limit"],
 		}
+		entry["delete_protected"] = serviceDeleteProtected(svcName)
+		if st := serviceVolumeReport(svcName); st != nil {
+			entry["storage"] = st
+		}
 		// Owner + masked env from full service record.
 		if full := clusterState.GetService(svcName); full != nil {
 			if owner, ok := full["owner"].(string); ok {
@@ -3343,9 +3372,6 @@ func getServicesDataForViewer(showSystem bool, viewer string) []map[string]any {
 			}
 			if sh, ok := full["shared"].(bool); ok {
 				entry["shared"] = sh
-			}
-			if dp, ok := full["delete_protected"].(bool); ok {
-				entry["delete_protected"] = dp
 			}
 			if evs := maskedEnvVarsForViewer(full, viewer); len(evs) > 0 {
 				entry["env_vars"] = evs
@@ -4675,7 +4701,23 @@ func handleClusterScale(w http.ResponseWriter, r *http.Request) {
 	if replicas > currentCount {
 		// Scale up.
 		newCount := replicas - currentCount
-		decisions, err := sched.Schedule(serviceName, image, newCount, nil, "spread")
+		var decisions []models.ScheduleDecision
+		var err error
+		if svcInfo != nil && len(managedVolumeSpecs(serviceVolumeSpecs(svcInfo))) > 0 {
+			// Data lives on one node: one replica, always on that node.
+			if replicas > 1 {
+				writeJSON(w, http.StatusOK, map[string]any{"success": false, "message": "영구 저장소가 있는 서비스는 복제본 1개로만 실행할 수 있습니다"})
+				return
+			}
+			node := pinnedNodeOf(svcInfo)
+			if node == "" {
+				writeJSON(w, http.StatusOK, map[string]any{"success": false, "message": "영구 저장소의 노드 정보가 없습니다. 서비스를 다시 배포하세요"})
+				return
+			}
+			decisions, err = pinnedDecision(serviceName, node, newCount)
+		} else {
+			decisions, err = sched.Schedule(serviceName, image, newCount, nil, "spread")
+		}
 		if err != nil {
 			writeJSON(w, http.StatusOK, map[string]any{"success": false, "message": fmt.Sprintf("스케줄링 실패: %v", err)})
 			return
@@ -4847,6 +4889,9 @@ func handleClusterStop(w http.ResponseWriter, r *http.Request) {
 func handleClusterDeleteService(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ServiceName string `json:"service_name"`
+		// PurgeData also removes the service's managed data volumes; by
+		// default they are kept so the same owner can redeploy onto them.
+		PurgeData bool `json:"purge_data"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "Invalid request"})
@@ -4875,9 +4920,18 @@ func handleClusterDeleteService(w http.ResponseWriter, r *http.Request) {
 	if rejectProtectedDelete(w, serviceName) {
 		return
 	}
+	var volumeSpecs []string
+	volumeNode := ""
+	if info := clusterState.GetService(serviceName); info != nil {
+		volumeSpecs = managedVolumeSpecs(serviceVolumeSpecs(info))
+		volumeNode = pinnedNodeOf(info)
+	}
 	// Stop + remove containers first, then delete the definition everywhere.
 	clusterStopServiceInternal(serviceName)
-	clusterState.DeleteService(serviceName)
+	if !clusterState.DeleteService(serviceName) {
+		writeJSON(w, http.StatusConflict, map[string]any{"success": false, "message": "'" + serviceName + "' 서비스 정의를 삭제하지 못했습니다 (삭제 방지)", "code": "delete_protected"})
+		return
+	}
 	// Master's own local services.json.
 	state.DeleteService(serviceName)
 	// Propagate the local-state deletion to every worker so the entry doesn't
@@ -4894,10 +4948,26 @@ func handleClusterDeleteService(w http.ResponseWriter, r *http.Request) {
 			resp.Body.Close()
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"success": true,
 		"message": fmt.Sprintf("'%s' 서비스 삭제 완료 (컨테이너 제거 + 정의 삭제)", serviceName),
-	})
+	}
+	if len(volumeSpecs) > 0 {
+		if body.PurgeData {
+			resp["purged_volumes"] = purgeServiceVolumes(serviceName, volumeSpecs)
+			resp["message"] = fmt.Sprintf("'%s' 서비스와 데이터 볼륨 삭제 완료", serviceName)
+			auditRequest(r, "purge volumes "+serviceName, serviceName, "purged")
+		} else {
+			kept := []string{}
+			for _, v := range volumeSpecs {
+				kept = append(kept, volumeNameOfSpec(v))
+			}
+			resp["kept_volumes"] = kept
+			resp["kept_on_node"] = volumeNode
+			resp["message"] = fmt.Sprintf("'%s' 서비스 삭제 완료. 데이터 볼륨 %d개는 %s 노드에 보존됩니다 (필요 없으면 purge_data로 삭제)", serviceName, len(kept), volumeNode)
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleAgentDeleteService removes a service definition from this node's local
@@ -5142,6 +5212,9 @@ func handleClusterDeploy(w http.ResponseWriter, r *http.Request) {
 		// (svc.<base-domain>) instead of the default path routing
 		// (<path-host>/svc/).
 		Subdomain bool `json:"subdomain"`
+		// Container paths to keep across restarts as managed named volumes
+		// (see volumes.go). Pins the service to one node, one replica.
+		PersistentPaths []string `json:"persistent_paths"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "Invalid request"})
@@ -5151,6 +5224,15 @@ func handleClusterDeploy(w http.ResponseWriter, r *http.Request) {
 	image := strings.TrimSpace(body.Image)
 	if image == "" {
 		writeJSON(w, http.StatusOK, map[string]any{"success": false, "message": "이미지 경로를 입력하세요."})
+		return
+	}
+
+	if len(body.Volumes) > 0 && !mayUseRawVolumes(r) {
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"success": false,
+			"message": "서버 경로를 직접 연결하는 volumes는 관리자만 지정할 수 있습니다. 데이터를 유지하려면 persistent_paths(예: [\"/data\"])를 사용하세요",
+			"code":    "forbidden_volumes",
+		})
 		return
 	}
 
@@ -5199,6 +5281,19 @@ func handleClusterDeploy(w http.ResponseWriter, r *http.Request) {
 	if rejectForeignService(w, r, name) {
 		return
 	}
+	plan, err := planPersistence(name, requesterUsername(r), clusterState.GetService(name), body.PersistentPaths)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": err.Error()})
+		return
+	}
+	persistent := len(plan.specs) > 0
+	if persistent && replicas > 1 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"success": false,
+			"message": "영구 저장소가 있는 서비스는 데이터가 한 노드에 있어 복제본 1개로만 실행할 수 있습니다",
+		})
+		return
+	}
 
 	// Clean up existing service first.
 	existing := clusterState.GetPlacements(name, "")
@@ -5230,6 +5325,24 @@ func handleClusterDeploy(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]any{"success": false, "message": fmt.Sprintf("스케줄링 실패: %v", err)})
 			return
 		}
+	}
+
+	// Persistent services run on the node that holds their volumes: the one
+	// they were pinned to, or the scheduler's first pick on the first deploy.
+	if persistent {
+		if plan.node == "" && len(decisions) > 0 {
+			plan.node = decisions[0].NodeName
+		}
+		if plan.node == "" {
+			writeJSON(w, http.StatusOK, map[string]any{"success": false, "message": "영구 저장소를 둘 노드를 정하지 못했습니다"})
+			return
+		}
+		var perr error
+		if decisions, perr = pinnedDecision(name, plan.node, 1); perr != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"success": false, "message": perr.Error()})
+			return
+		}
+		body.Volumes = append(body.Volumes, plan.specs...)
 	}
 
 	// Expand any pre-saved user-secret references into body.Environment BEFORE
@@ -5326,7 +5439,7 @@ func handleClusterDeploy(w http.ResponseWriter, r *http.Request) {
 	// Save cluster service.
 	deployOwner := requesterUsername(r)
 	envVars := buildEnvVars(body.Environment, body.Secrets)
-	clusterState.SaveService(name, image, replicas, map[string]any{
+	saveOpts := map[string]any{
 		"memory_limit": body.Memory,
 		"cpu_limit":    body.CPU,
 		"environment":  body.Environment,
@@ -5335,7 +5448,11 @@ func handleClusterDeploy(w http.ResponseWriter, r *http.Request) {
 		"volumes":      body.Volumes,
 		"ports":        body.Ports,
 		"subdomain":    body.Subdomain,
-	})
+	}
+	if persistent {
+		saveOpts["schedule_constraints"] = pinConstraints(plan.node)
+	}
+	clusterState.SaveService(name, image, replicas, saveOpts)
 
 	allOK := true
 	for _, res := range results {

@@ -2856,7 +2856,10 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
           ? ' <a href="#" data-svc-env-toggle="' + escapeHtml(s.name) + '" style="font-size:0.72rem;color:var(--accent);text-decoration:none;" title="환경변수 보기">env ' + envCount + (secretCount > 0 ? ' (🔒 ' + secretCount + ')' : '') + '</a>'
           : '';
         html += '<tr data-svc-row="' + escapeHtml(s.name) + '">';
-        html += '<td><strong>' + escapeHtml(s.name) + '</strong>' + ownerBadge + envToggle + '</td>';
+        var storageBadge = (s.storage && s.storage.volumes && s.storage.volumes.length)
+          ? ' <span title="영구 저장소: ' + escapeHtml(s.storage.volumes.map(function(v){ return v.path; }).join(', ')) + ' (노드 ' + escapeHtml(s.storage.node || '-') + ' 고정)" style="font-size:0.72rem;">💾</span>'
+          : '';
+        html += '<td><strong>' + escapeHtml(s.name) + '</strong>' + ownerBadge + storageBadge + envToggle + '</td>';
         html += '<td style="font-family:\'JetBrains Mono\',monospace;font-size:0.8rem;">' + escapeHtml(s.image || '—') + '</td>';
         html += '<td><span class="badge badge-' + (running > 0 ? 'running' : 'stopped') + '">' + running + '/' + total + '</span></td>';
         html += '<td><span class="svc-res-bars" data-res-svc="' + escapeHtml(s.name) + '" style="display:inline-flex;gap:3px;height:26px;align-items:flex-end;vertical-align:middle;">'
@@ -2879,7 +2882,7 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
         html += '<button type="button" class="btn btn-sm btn-danger" data-csvc-stop="' + escapeHtml(s.name) + '" style="margin-right:0.25rem;">중지</button>';
         var prot = !!s.delete_protected;
         html += '<button type="button" class="btn btn-sm ' + (prot ? 'btn-success' : 'btn-outline') + '" data-csvc-protect="' + escapeHtml(s.name) + '" data-on="' + (prot ? '1' : '0') + '" title="' + (prot ? '삭제 방지 켜짐 — 클릭하면 해제' : '삭제 방지 켜기') + '" style="margin-right:0.25rem;">🛡' + (prot ? ' 보호됨' : '') + '</button>';
-        html += '<button type="button" class="btn btn-sm btn-danger" data-csvc-delete="' + escapeHtml(s.name) + '"' + (prot ? ' disabled title="삭제 방지가 켜져 있습니다"' : ' title="컨테이너 제거 + 서비스 정의 삭제"') + '>삭제</button>';
+        html += '<button type="button" class="btn btn-sm btn-danger" data-has-storage="' + (s.storage ? '1' : '0') + '" data-csvc-delete="' + escapeHtml(s.name) + '"' + (prot ? ' disabled title="삭제 방지가 켜져 있습니다"' : ' title="컨테이너 제거 + 서비스 정의 삭제"') + '>삭제</button>';
         html += '</td>';
         html += '</tr>';
         // Hidden env-details row, expanded by the toggle link above.
@@ -2965,11 +2968,13 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
         el.addEventListener('click', async function() {
           var svc = this.getAttribute('data-csvc-delete');
           if (!confirm("'" + svc + "' 서비스를 완전히 삭제할까요?\n실행 중인 컨테이너가 모두 제거되고 서비스 정의도 삭제됩니다. (되돌릴 수 없음)")) return;
+          var hasData = this.getAttribute('data-has-storage') === '1';
+          var purge = hasData && confirm("이 서비스의 영구 저장소 데이터도 함께 삭제할까요?\n\n[확인] 데이터까지 영구 삭제 (복구 불가)\n[취소] 데이터는 노드에 보존");
           try {
             var r = await fetch(API + '/v1/cluster/delete', {
               method: 'POST', credentials: 'same-origin',
               headers: {'Content-Type':'application/json', 'X-CSRF-Token': getCsrfToken()},
-              body: JSON.stringify({service_name: svc})
+              body: JSON.stringify({service_name: svc, purge_data: purge})
             });
             var d = await r.json();
             appendLog('서비스 삭제: ' + svc, d);

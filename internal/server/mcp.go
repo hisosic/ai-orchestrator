@@ -179,7 +179,8 @@ func (c *mcpCaller) dispatch(req *rpcRequest) *rpcResponse {
 const mcpInstructions = `AI Container Orchestrator — deploy and debug your own services on the internal cluster.
 This token can only see and change services owned by its user; requests for other users' services are refused.
 Typical flow: get_registry_info (docker push your image) → deploy_image → get_service_status / get_logs / inspect_containers → exec_in_container for debugging → update_image after pushing a new tag.
-Or let the cluster build for you: deploy_from_git → get_deploy_status.`
+Or let the cluster build for you: deploy_from_git → get_deploy_status.
+Containers are recreated on restart/update, so anything written inside them is lost unless its path is listed in deploy_image persistent_paths (e.g. ["/data"]); databases should always use it.`
 
 // ---------------------------------------------------------------------------
 // Tool plumbing
@@ -485,6 +486,8 @@ func init() {
 				"secret_refs": map[string]any{"type": "array", "description": "inject stored secrets: [{secret_id, env_name}]", "items": map[string]any{
 					"type": "object", "properties": map[string]any{"secret_id": strProp("id from list_my_secrets"), "env_name": strProp("env var name")}, "required": []string{"secret_id"},
 				}},
+				"persistent_paths": map[string]any{"type": "array", "items": map[string]any{"type": "string"},
+					"description": "container paths whose data must survive restarts/updates, e.g. [\"/data\"]. Backed by managed volumes; the service is pinned to one node and runs 1 replica. Paths already persisted stay persisted on redeploy."},
 				"memory":    strProp("memory limit, e.g. 512m"),
 				"cpu":       strProp("CPU limit, e.g. 0.5"),
 				"subdomain": map[string]any{"type": "boolean", "description": "route as <name>.<base-domain> instead of path routing"},
@@ -516,6 +519,9 @@ func init() {
 				}
 				if refs, ok := a["secret_refs"].([]any); ok && len(refs) > 0 {
 					body["secret_refs"] = refs
+				}
+				if pp, ok := a["persistent_paths"].([]any); ok && len(pp) > 0 {
+					body["persistent_paths"] = pp
 				}
 				if m := a.str("memory"); m != "" {
 					body["memory"] = m
@@ -577,8 +583,12 @@ func init() {
 			},
 		},
 		"delete_service": {
-			description: "Permanently delete one of your services and its containers. Requires confirm=true.",
-			schema:      schema(map[string]any{"name": strProp("service name"), "confirm": map[string]any{"type": "boolean", "description": "must be true"}}, "name", "confirm"),
+			description: "Permanently delete one of your services and its containers. Requires confirm=true. Persistent data volumes are kept unless purge_data=true. Refused while delete protection is on.",
+			schema: schema(map[string]any{
+				"name":       strProp("service name"),
+				"confirm":    map[string]any{"type": "boolean", "description": "must be true"},
+				"purge_data": map[string]any{"type": "boolean", "description": "also delete the service's persistent data volumes (irreversible)"},
+			}, "name", "confirm"),
 			run: func(c *mcpCaller, a toolArgs) (any, error) {
 				name := a.str("name")
 				if _, err := c.ownService(name); err != nil {
@@ -587,7 +597,7 @@ func init() {
 				if !a.boolean("confirm") {
 					return nil, fmt.Errorf("삭제하려면 confirm=true가 필요합니다")
 				}
-				return c.api("POST", "/v1/cluster/delete", map[string]any{"service_name": name})
+				return c.api("POST", "/v1/cluster/delete", map[string]any{"service_name": name, "purge_data": a.boolean("purge_data")})
 			},
 		},
 		"deploy_from_git": {
@@ -645,6 +655,31 @@ func init() {
 					time.Sleep(2 * time.Second)
 				}
 				return deployJobSummary(job), nil
+			},
+		},
+		"list_volumes": {
+			description: "Persistent storage of your services: which container paths are kept, the backing volume, and the node it lives on.",
+			schema:      schema(map[string]any{}),
+			run: func(c *mcpCaller, a toolArgs) (any, error) {
+				out := []map[string]any{}
+				if clusterState == nil {
+					return out, nil
+				}
+				for _, svc := range clusterState.ListServices() {
+					name, _ := svc["name"].(string)
+					info := clusterState.GetService(name)
+					if info == nil {
+						continue
+					}
+					if owner, _ := info["owner"].(string); owner != c.username {
+						continue
+					}
+					if rep := serviceVolumeReport(name); rep != nil {
+						rep["service"] = name
+						out = append(out, rep)
+					}
+				}
+				return out, nil
 			},
 		},
 		"get_logs": {

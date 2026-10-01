@@ -149,6 +149,17 @@ func (m *ClusterStateManager) initDB() {
 			panic(fmt.Sprintf("clusterstate: migration failed: %v (stmt=%q)", err, stmt))
 		}
 	}
+	// Delete protection is keyed by service name in its own table so it also
+	// covers services that run without a cluster definition (e.g. started
+	// directly on a worker). The services.delete_protected column from the
+	// first version is folded in once and then left unused.
+	m.db.Exec(`CREATE TABLE IF NOT EXISTS delete_protection (
+		service_name TEXT PRIMARY KEY,
+		enabled_at TEXT NOT NULL
+	)`)
+	m.db.Exec(`INSERT OR IGNORE INTO delete_protection (service_name, enabled_at)
+		SELECT name, ? FROM services WHERE COALESCE(delete_protected, 0)=1`, now())
+	m.db.Exec(`UPDATE services SET delete_protected=0 WHERE COALESCE(delete_protected, 0)=1`)
 }
 
 func now() string {
@@ -664,22 +675,47 @@ func (m *ClusterStateManager) SaveService(name, image string, desiredReplicas in
 		volumeMode = "shared"
 	}
 
-	envJSON, _ := json.Marshal(getSlice(opts, "environment"))
-	volJSON, _ := json.Marshal(getSlice(opts, "volumes"))
-	portsJSON, _ := json.Marshal(getSlice(opts, "ports"))
+	// List columns: an option the caller didn't pass becomes NULL so the
+	// ON CONFLICT COALESCE keeps the stored value (e.g. a scale call that
+	// only knows the replica count must not wipe env, ports or volumes).
+	listOpt := func(key string) any {
+		v, ok := opts[key]
+		if !ok {
+			return nil
+		}
+		// GetService returns list columns as their stored JSON text; callers
+		// that round-trip it hand that string back.
+		if raw, isStr := v.(string); isStr {
+			var probe []any
+			if json.Unmarshal([]byte(raw), &probe) == nil {
+				return raw
+			}
+			return nil
+		}
+		b, _ := json.Marshal(getSlice(opts, key))
+		return string(b)
+	}
+	envJSON := listOpt("environment")
+	volJSON := listOpt("volumes")
+	portsJSON := listOpt("ports")
 
 	// env_vars (structured, owner-aware): marshal whatever shape the caller
-	// provided; "[]" if absent so the column stays usable.
-	envVarsJSON := []byte("[]")
+	// provided; NULL if absent so the stored value is kept.
+	var envVarsJSON any
 	if ev, ok := opts["env_vars"]; ok && ev != nil {
 		if b, err := json.Marshal(ev); err == nil {
-			envVarsJSON = b
+			envVarsJSON = string(b)
 		}
 	}
 	owner, _ := opts["owner"].(string)
-	subdomain := 0
-	if v, ok := opts["subdomain"].(bool); ok && v {
-		subdomain = 1
+	// subdomain is tri-state like shared: nil keeps the stored routing mode.
+	var subdomain any
+	if v, ok := opts["subdomain"].(bool); ok {
+		if v {
+			subdomain = 1
+		} else {
+			subdomain = 0
+		}
 	}
 	// shared is tri-state: nil when the caller didn't specify it, so the
 	// ON CONFLICT COALESCE preserves the stored value instead of resetting it.
@@ -693,46 +729,52 @@ func (m *ClusterStateManager) SaveService(name, image string, desiredReplicas in
 	}
 
 	var constraintsJSON sql.NullString
-	if sc, ok := opts["schedule_constraints"]; ok && sc != nil {
+	if raw, ok := opts["schedule_constraints"].(string); ok {
+		if raw != "" && json.Valid([]byte(raw)) {
+			constraintsJSON = sql.NullString{String: raw, Valid: true}
+		}
+	} else if sc, ok := opts["schedule_constraints"]; ok && sc != nil {
 		b, _ := json.Marshal(sc)
 		constraintsJSON = sql.NullString{String: string(b), Valid: true}
 	}
 
 	m.db.Exec(`
 		INSERT INTO services (name, image, desired_replicas, memory_limit, cpu_limit, environment, volumes, ports, user_spec, volume_mode, schedule_constraints, env_vars, owner, subdomain, shared)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 0))
+		VALUES (?, ?, ?, ?, ?, COALESCE(?, '[]'), COALESCE(?, '[]'), COALESCE(?, '[]'), ?, ?, ?, COALESCE(?, '[]'), ?, COALESCE(?, 0), COALESCE(?, 0))
 		ON CONFLICT(name) DO UPDATE SET
 			image=excluded.image,
 			desired_replicas=excluded.desired_replicas,
 			memory_limit=COALESCE(excluded.memory_limit, services.memory_limit),
 			cpu_limit=COALESCE(excluded.cpu_limit, services.cpu_limit),
-			environment=COALESCE(excluded.environment, services.environment),
-			volumes=COALESCE(excluded.volumes, services.volumes),
-			ports=COALESCE(excluded.ports, services.ports),
-			env_vars=excluded.env_vars,
+			environment=COALESCE(?, services.environment),
+			volumes=COALESCE(?, services.volumes),
+			ports=COALESCE(?, services.ports),
+			schedule_constraints=COALESCE(excluded.schedule_constraints, services.schedule_constraints),
+			env_vars=COALESCE(?, services.env_vars),
 			owner=COALESCE(excluded.owner, services.owner),
-			subdomain=excluded.subdomain,
+			subdomain=COALESCE(?, services.subdomain),
 			shared=COALESCE(?, services.shared)
 	`, name, image, desiredReplicas,
 		nullableStr(memoryLimit), nullableStr(cpuLimit),
-		string(envJSON), string(volJSON), string(portsJSON),
+		envJSON, volJSON, portsJSON,
 		nullableStr(userSpec), volumeMode, constraintsJSON,
-		string(envVarsJSON), nullableStr(owner), subdomain, sharedVal, sharedVal)
+		envVarsJSON, nullableStr(owner), subdomain, sharedVal,
+		envJSON, volJSON, portsJSON, envVarsJSON, subdomain, sharedVal)
 }
 
 // GetService retrieves a service by name, or nil if not found.
 func (m *ClusterStateManager) GetService(name string) map[string]any {
-	row := m.db.QueryRow("SELECT name, image, desired_replicas, memory_limit, cpu_limit, environment, volumes, ports, user_spec, volume_mode, schedule_constraints, env_vars, owner, subdomain, shared, delete_protected FROM services WHERE name=?", name)
+	row := m.db.QueryRow("SELECT name, image, desired_replicas, memory_limit, cpu_limit, environment, volumes, ports, user_spec, volume_mode, schedule_constraints, env_vars, owner, subdomain, shared FROM services WHERE name=?", name)
 
 	var sName, sImage string
 	var desiredReplicas int
 	var subdomain int
-	var shared, deleteProtected sql.NullInt64
+	var shared sql.NullInt64
 	var memoryLimit, cpuLimit, environment, volumes, ports, userSpec, volumeMode, scheduleConstraints, envVars, owner sql.NullString
 
 	err := row.Scan(&sName, &sImage, &desiredReplicas, &memoryLimit, &cpuLimit,
 		&environment, &volumes, &ports, &userSpec, &volumeMode, &scheduleConstraints,
-		&envVars, &owner, &subdomain, &shared, &deleteProtected)
+		&envVars, &owner, &subdomain, &shared)
 	if err != nil {
 		return nil
 	}
@@ -752,7 +794,6 @@ func (m *ClusterStateManager) GetService(name string) map[string]any {
 		"owner":                owner.String,
 		"subdomain":            subdomain == 1,
 		"shared":               shared.Valid && shared.Int64 == 1,
-		"delete_protected":     deleteProtected.Valid && deleteProtected.Int64 == 1,
 	}
 	// env_vars: parse JSON back into []map[string]any so the response layer's
 	// masking can iterate it directly.
@@ -791,43 +832,40 @@ func (m *ClusterStateManager) SetServiceShared(name string, shared bool) bool {
 func (m *ClusterStateManager) DeleteService(name string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	res, err := m.db.Exec("DELETE FROM services WHERE name=? AND COALESCE(delete_protected, 0)=0", name)
-	if err != nil {
+	if m.isDeleteProtectedLocked(name) {
 		return false
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		var protected int
-		if m.db.QueryRow("SELECT COALESCE(delete_protected, 0) FROM services WHERE name=?", name).Scan(&protected) == nil && protected == 1 {
-			return false
-		}
-	}
+	m.db.Exec("DELETE FROM services WHERE name=?", name)
 	m.db.Exec("DELETE FROM container_placements WHERE service_name=?", name)
 	return true
 }
 
-// SetDeleteProtection turns delete protection on or off for a service.
+// SetDeleteProtection turns delete protection on or off for a service name.
 func (m *ClusterStateManager) SetDeleteProtection(name string, on bool) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	v := 0
+	var err error
 	if on {
-		v = 1
+		_, err = m.db.Exec("INSERT OR IGNORE INTO delete_protection (service_name, enabled_at) VALUES (?, ?)", name, now())
+	} else {
+		_, err = m.db.Exec("DELETE FROM delete_protection WHERE service_name=?", name)
 	}
-	res, err := m.db.Exec("UPDATE services SET delete_protected=? WHERE name=?", v, name)
-	if err != nil {
-		return false
-	}
-	n, _ := res.RowsAffected()
-	return n == 1
+	return err == nil
 }
 
 // IsDeleteProtected reports whether a service has delete protection on.
 func (m *ClusterStateManager) IsDeleteProtected(name string) bool {
-	var protected int
-	if err := m.db.QueryRow("SELECT COALESCE(delete_protected, 0) FROM services WHERE name=?", name).Scan(&protected); err != nil {
-		return false
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.isDeleteProtectedLocked(name)
+}
+
+func (m *ClusterStateManager) isDeleteProtectedLocked(name string) bool {
+	var n int
+	if err := m.db.QueryRow("SELECT COUNT(*) FROM delete_protection WHERE service_name=?", name).Scan(&n); err != nil {
+		return true // fail closed: never allow a delete we couldn't check
 	}
-	return protected == 1
+	return n > 0
 }
 
 // ListServices returns all service definitions.

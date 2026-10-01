@@ -312,6 +312,8 @@ func buildLabels(serviceName string, subdomain bool) map[string]string {
 }
 
 // buildMounts converts volume specs like "host:container" or "host:container:ro" to Docker mounts.
+// A source that isn't an absolute path ("name:container") is a Docker named
+// volume, created on first use and kept when the container is removed.
 func buildMounts(volumes []string) []mount.Mount {
 	var mounts []mount.Mount
 	for _, v := range volumes {
@@ -326,8 +328,12 @@ func buildMounts(volumes []string) []mount.Mount {
 		hostPath := strings.TrimSpace(parts[0])
 		containerPath := strings.TrimSpace(parts[1])
 		readOnly := len(parts) > 2 && strings.ToLower(parts[2]) == "ro"
+		typ := mount.TypeBind
+		if !strings.HasPrefix(hostPath, "/") {
+			typ = mount.TypeVolume
+		}
 		mounts = append(mounts, mount.Mount{
-			Type:     mount.TypeBind,
+			Type:     typ,
 			Source:   hostPath,
 			Target:   containerPath,
 			ReadOnly: readOnly,

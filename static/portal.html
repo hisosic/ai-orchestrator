@@ -175,6 +175,7 @@
         <button class="btn btn-sm btn-outline" onclick="closeManage()" style="padding:0.2rem 0.5rem;">✕</button>
       </div>
       <div id="mgStatus" class="muted" style="font-size:0.8rem;margin-bottom:0.7rem;"></div>
+      <div id="mgStorage" style="display:none;font-size:0.8rem;margin:-0.3rem 0 0.7rem;"></div>
 
       <!-- Share toggle -->
       <label class="row" style="gap:0.5rem;align-items:center;border:1px solid var(--border);border-radius:var(--radius);padding:0.55rem 0.7rem;margin-bottom:0.7rem;cursor:pointer;">
@@ -361,6 +362,10 @@
           <datalist id="regImages"></datalist>
           <input id="runName" placeholder="서비스명" style="flex:1;min-width:120px;">
         </div>
+        <div class="row" style="margin-bottom:0.5rem;">
+          <input id="runPersist" placeholder="영구 저장 경로 (선택, 쉼표 구분 · 예: /data, /app/uploads)" style="flex:1;min-width:220px;">
+        </div>
+        <p class="muted" style="font-size:0.76rem;margin:-0.2rem 0 0.5rem;">컨테이너는 재시작·업데이트 때 새로 만들어지므로, 지정한 경로만 데이터가 유지됩니다. 영구 저장소가 있으면 한 노드에 고정되어 복제본 1개로 실행됩니다.</p>
         <label class="row" style="gap:0.35rem;font-size:0.82rem;cursor:pointer;margin-bottom:0.4rem;"><input type="checkbox" id="runSubdomain"> 서브도메인으로 연결 (svc.24x365.online) · 기본은 경로 방식(itda.24x365.online/svc)</label>
         <label class="muted" style="font-size:0.82rem;display:block;margin-bottom:0.2rem;">환경변수 (KEY=value, 한 줄에 하나)</label>
         <textarea id="runEnv" rows="3" placeholder="APP_ENV=prod&#10;PORT=8080" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.5rem;border-radius:var(--radius);font-family:monospace;font-size:0.82rem;resize:vertical;"></textarea>
@@ -412,7 +417,7 @@
 
       <!-- Pane: database deploy -->
       <div class="tabpane" data-dpane="db">
-      <p class="muted" style="font-size:0.85rem;margin-top:0;">계정 전용 PostgreSQL / MySQL 데이터베이스를 기동합니다. 기동 후 표시되는 <b>내부 엔드포인트(호스트:포트)</b>로 다른 서비스에서 접속할 수 있습니다.</p>
+      <p class="muted" style="font-size:0.85rem;margin-top:0;">계정 전용 PostgreSQL / MySQL 데이터베이스를 기동합니다. 기동 후 표시되는 <b>내부 엔드포인트(호스트:포트)</b>로 다른 서비스에서 접속할 수 있습니다. 데이터는 영구 저장소에 보관되어 재시작·업데이트 후에도 유지됩니다.</p>
       <div style="border:1px solid var(--border);border-radius:var(--radius);padding:0.8rem;">
         <div class="row" style="margin-bottom:0.5rem;">
           <select id="dbEngine" style="flex:1;min-width:140px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.45rem;border-radius:var(--radius);font-family:inherit;font-size:0.9rem;">
@@ -714,6 +719,7 @@
         var ownerBadge = showOwner ? ' <span class="muted" style="font-size:0.7rem;">· 👤'+esc(s.owner)+'</span>' : '';
         var sharedBadge = s.shared ? ' <span title="공유됨" style="font-size:0.72rem;">🌐</span>' : '';
         if(s.delete_protected) sharedBadge += ' <span title="삭제 방지" style="font-size:0.72rem;">🛡</span>';
+        if(s.storage) sharedBadge += ' <span title="영구 저장소" style="font-size:0.72rem;">💾</span>';
         var head='<div class="svc-head"><span class="svc-name" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+(s.kind==='database'?'🗄️ ':'')+esc(s.name)+sharedBadge+ownerBadge+'</span><span style="display:flex;align-items:center;gap:9px;flex:0 0 auto;">'+resBars+'<span class="badge '+(running>0?'badge-run':'badge-stop')+'">'+running+'/'+(s.replicas||0)+'</span></span></div>';
         if(s.kind==='database'){
           var hp=(s.db_host||'')+':'+(s.db_port||'');
@@ -758,10 +764,15 @@
     }
     async function delSvc(name){
       if(!confirm("'"+name+"' 서비스를 삭제할까요? 컨테이너가 제거되고 정의도 삭제됩니다.")) return;
+      var st=(_svcMap[name]||{}).storage, purge=false;
+      if(st && st.volumes && st.volumes.length){
+        purge=confirm("영구 저장소 데이터("+st.volumes.map(function(v){return v.path;}).join(', ')+")도 함께 삭제할까요?\n\n[확인] 데이터까지 영구 삭제 (복구 불가)\n[취소] 데이터는 "+(st.node||'노드')+"에 보존");
+      }
       try{
-        var r=await fetch(API+'/v1/cluster/delete',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf()},body:JSON.stringify({service_name:name})});
+        var r=await fetch(API+'/v1/cluster/delete',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf()},body:JSON.stringify({service_name:name,purge_data:purge})});
         var d=await r.json();
         if(!d.success) alert('삭제 실패: '+(d.message||''));
+        else if(d.kept_volumes) alert(d.message);
         loadServices();
       }catch(e){ alert('오류: '+e.message); }
     }
@@ -786,6 +797,11 @@
       document.getElementById('mgShareMsg').textContent='';
       document.getElementById('mgProtectMsg').textContent='';
       mgApplyProtect(!!s.delete_protected);
+      var stEl=document.getElementById('mgStorage');
+      if(s.storage && s.storage.volumes && s.storage.volumes.length){
+        stEl.style.display='';
+        stEl.innerHTML='💾 영구 저장소: '+s.storage.volumes.map(function(v){return '<code>'+esc(v.path)+'</code>';}).join(', ')+' <span class="muted">· 노드 '+esc(s.storage.node||'-')+'에 고정 · 복제본 1개</span>';
+      } else { stEl.style.display='none'; stEl.innerHTML=''; }
       var logs=document.getElementById('mgLogs'); logs.style.display='none'; logs.textContent='';
       mgRenderEnv(s.env_vars||[]);
       document.getElementById('manageOverlay').classList.add('show');
@@ -923,8 +939,7 @@
       }catch(e){ m.style.color='var(--danger)'; m.textContent='오류: '+e.message; mgApplyProtect(!on); }
     }
     async function mgDelete(){
-      if(!confirm("'"+_mgName+"' 서비스를 삭제할까요? 컨테이너가 제거되고 정의도 삭제됩니다.")) return;
-      await delSvc(_mgName);
+      await delSvc(_mgName); // delSvc asks for confirmation
       closeManage();
     }
 
@@ -1104,6 +1119,8 @@
         refs.push({secret_id:id, env_name:(ne&&ne.value||'').trim()});
       });
       var body={image:image,name:name,replicas:1};
+      var persist=(document.getElementById('runPersist').value||'').split(',').map(function(s){return s.trim();}).filter(Boolean);
+      if(persist.length) body.persistent_paths=persist;
       if(document.getElementById('runSubdomain') && document.getElementById('runSubdomain').checked) body.subdomain=true;
       if(env.length) body.environment=env;
       if(refs.length) body.secret_refs=refs;

@@ -51,6 +51,9 @@ type MigrationStateProvider interface {
 // MigrationController orchestrates container migration between nodes.
 type MigrationController struct {
 	state MigrationStateProvider
+	// Pinned, when set, reports services that must not leave their node
+	// (e.g. their data lives in a node-local volume); Migrate refuses them.
+	Pinned func(serviceName string) bool
 }
 
 // NewMigrationController creates a new MigrationController.
@@ -172,6 +175,12 @@ func setRemoteReconcileSkip(node *models.NodeInfo, serviceName string, skip bool
 // Migrate starts a container migration from source to destination node.
 // It creates a migration record, validates nodes, and launches the migration in a goroutine.
 func (mc *MigrationController) Migrate(containerID, sourceNode, destinationNode, containerName, serviceName string) map[string]any {
+	if mc.Pinned != nil && serviceName != "" && mc.Pinned(serviceName) {
+		return map[string]any{
+			"success": false,
+			"message": fmt.Sprintf("'%s'는 데이터가 %s 노드의 영구 저장소에 있어 다른 노드로 이동할 수 없습니다", serviceName, sourceNode),
+		}
+	}
 	migrationID := uuid.New().String()[:8]
 	now := time.Now().UTC().Format(time.RFC3339)
 

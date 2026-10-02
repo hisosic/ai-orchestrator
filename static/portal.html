@@ -1178,8 +1178,8 @@
     function renderMcpGuide(){
       var tok=_mcpPlainTok||'<발급한 토큰>';
       var cmds={
-        claude:'claude mcp add --transport http ai-orchestrator '+mcpUrl()+' \\\n  --header "Authorization: Bearer '+tok+'"',
-        json:JSON.stringify({mcpServers:{'ai-orchestrator':{url:mcpUrl(),headers:{Authorization:'Bearer '+tok}}}},null,2)
+        claude:'claude mcp add --transport http itda '+mcpUrl()+' \\\n  --header "Authorization: Bearer '+tok+'"',
+        json:JSON.stringify({mcpServers:{'itda':{url:mcpUrl(),headers:{Authorization:'Bearer '+tok}}}},null,2)
       };
       document.querySelectorAll('#mcpOverlay pre[data-mcp]').forEach(function(pre){
         var text=cmds[pre.getAttribute('data-mcp')]||'';

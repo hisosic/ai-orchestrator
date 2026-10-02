@@ -75,7 +75,8 @@ func TestMCPRequiresToken(t *testing.T) {
 func TestMCPInitializeAndList(t *testing.T) {
 	h, tok := mcpEnv(t)
 	code, out := mcpCall(t, h, tok, "initialize", map[string]any{"protocolVersion": "2025-03-26"})
-	if code != 200 || out["result"].(map[string]any)["protocolVersion"] != "2025-03-26" {
+	if code != 200 || out["result"].(map[string]any)["protocolVersion"] != "2025-03-26" ||
+		out["result"].(map[string]any)["serverInfo"].(map[string]any)["name"] != "itda" {
 		t.Fatalf("initialize: %d %v", code, out)
 	}
 	_, out = mcpCall(t, h, tok, "tools/list", nil)

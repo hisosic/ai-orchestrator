@@ -79,7 +79,7 @@ func handleMCP(w http.ResponseWriter, r *http.Request) {
 	}
 	username, _, ok := auth.ResolveAPIToken(bearerToken(r))
 	if !ok {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="ai-orchestrator"`)
+		w.Header().Set("WWW-Authenticate", `Bearer realm="itda"`)
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "유효한 API 토큰이 필요합니다 (포털 → MCP 연결에서 발급)"})
 		return
 	}
@@ -144,7 +144,7 @@ func (c *mcpCaller) dispatch(req *rpcRequest) *rpcResponse {
 		resp.Result = map[string]any{
 			"protocolVersion": ver,
 			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
-			"serverInfo":      map[string]any{"name": "ai-orchestrator", "version": Version},
+			"serverInfo":      map[string]any{"name": "itda", "version": Version},
 			"instructions":    mcpInstructions,
 		}
 	case "ping":
@@ -176,7 +176,7 @@ func (c *mcpCaller) dispatch(req *rpcRequest) *rpcResponse {
 	return resp
 }
 
-const mcpInstructions = `AI Container Orchestrator — deploy and debug your own services on the internal cluster.
+const mcpInstructions = `itda (AI Container Orchestrator) — deploy and debug your own services on the internal cluster.
 This token can only see and change services owned by its user; requests for other users' services are refused.
 Typical flow: get_registry_info (docker push your image) → deploy_image → get_service_status / get_logs / inspect_containers → exec_in_container for debugging → update_image after pushing a new tag.
 Or let the cluster build for you: deploy_from_git → get_deploy_status.

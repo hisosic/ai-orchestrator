@@ -1207,6 +1207,16 @@ func InspectContainerByID(ctx context.Context, cli *client.Client, containerID s
 	if err != nil {
 		return false, err.Error(), nil
 	}
+	// Environment values carry secrets (API keys, DB passwords, the
+	// orchestrator's own credentials); report variable names only.
+	if inspect.Config != nil {
+		masked := make([]string, 0, len(inspect.Config.Env))
+		for _, e := range inspect.Config.Env {
+			name, _, _ := strings.Cut(e, "=")
+			masked = append(masked, name+"=********")
+		}
+		inspect.Config.Env = masked
+	}
 	return true, "inspect", map[string]any{
 		"id":    inspect.ID,
 		"name":  strings.TrimLeft(inspect.Name, "/"),

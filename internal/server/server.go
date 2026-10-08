@@ -68,6 +68,22 @@ func requesterUsername(r *http.Request) string {
 	return ""
 }
 
+// userReadAllowed reports whether a non-admin session may GET path. Each of
+// these handlers scopes its answer to the caller (own services, own secrets,
+// owner-checked logs/inspect) or returns nothing sensitive.
+func userReadAllowed(path string) bool {
+	for _, p := range []string{"/v1/user/", "/v1/public/", "/v1/auth/", "/v1/services/deploy/"} {
+		if strings.HasPrefix(path, p) {
+			return true
+		}
+	}
+	switch path {
+	case "/v1/cluster/stats", "/v1/cluster/logs", "/v1/cluster/inspect", "/v1/registry/status":
+		return true
+	}
+	return false
+}
+
 // userMutatingAllowed reports whether a RoleUser session may issue a mutating
 // request to the given path. These are the owner-scoped self-service endpoints
 // the portal needs; each handler still verifies the caller owns the target.
@@ -1342,13 +1358,31 @@ func sessionAuthMiddleware(next http.Handler) http.Handler {
 		path := r.URL.Path
 		method := r.Method
 
-		// Unauthenticated endpoints (health, dashboard HTML, login, inter-node).
+		// Node-to-node APIs (agent calls, heartbeats) act on containers and
+		// cluster membership with no user involved: cluster token only. They
+		// are reachable through the public domain, so this must never be open.
+		if strings.HasPrefix(path, "/v1/agent/") || strings.HasPrefix(path, "/v1/cluster/heartbeat") {
+			if !agentTokenOK(r) {
+				writeJSON(w, http.StatusUnauthorized, map[string]any{"success": false, "message": "Unauthorized", "code": "cluster_token_required"})
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+		// Raw registry protocol (pull/push any image): cluster token or admin.
+		if strings.HasPrefix(path, "/v1/registry/v2/") {
+			if sess := auth.SessionFromRequest(r); !agentTokenOK(r) && (sess == nil || sess.Role != auth.RoleAdmin || sess.Internal) {
+				writeJSON(w, http.StatusUnauthorized, map[string]any{"success": false, "message": "Unauthorized"})
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Unauthenticated endpoints (health, page HTML, login).
 		if method == http.MethodOptions ||
 			path == "/" || path == "/dashboard" || path == "/admin" || path == "/portal" || path == "/health" ||
-			strings.HasPrefix(path, "/v1/auth/") ||
-			strings.HasPrefix(path, "/v1/cluster/heartbeat") ||
-			strings.HasPrefix(path, "/v1/agent/") ||
-			strings.HasPrefix(path, "/v1/registry/v2/") {
+			strings.HasPrefix(path, "/v1/auth/") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -1373,11 +1407,26 @@ func sessionAuthMiddleware(next http.Handler) http.Handler {
 		// Anonymous visitors may only read the public share listing; every
 		// other API (cluster, services, nodes, stream, ...) needs a login.
 		if isRead {
-			if sess == nil && !strings.HasPrefix(path, "/v1/public/") {
+			if strings.HasPrefix(path, "/v1/public/") {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if sess == nil {
 				writeJSON(w, http.StatusUnauthorized, map[string]any{
 					"success": false,
 					"message": "로그인이 필요합니다",
 					"code":    "unauthenticated",
+				})
+				return
+			}
+			// Cluster-wide views (containers with their env, nodes, images,
+			// the event stream, ...) are for admins; other accounts read only
+			// what the portal and MCP need, each owner-scoped by its handler.
+			if sess.Role != auth.RoleAdmin && !userReadAllowed(path) {
+				writeJSON(w, http.StatusForbidden, map[string]any{
+					"success": false,
+					"message": "관리자만 조회할 수 있습니다",
+					"code":    "forbidden",
 				})
 				return
 			}

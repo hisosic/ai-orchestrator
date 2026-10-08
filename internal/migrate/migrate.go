@@ -16,6 +16,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -75,8 +76,14 @@ func nodeHeaders(node *models.NodeInfo) map[string]string {
 	headers := map[string]string{
 		"Content-Type": "application/json",
 	}
-	if node.Token != "" {
-		headers["Authorization"] = "Bearer " + node.Token
+	token := node.Token
+	if token == "" {
+		// Workers joined via heartbeat have no per-node token; they accept
+		// the shared cluster token (agent endpoints require it).
+		token = strings.TrimSpace(os.Getenv("ORCHESTRATOR_API_TOKEN"))
+	}
+	if token != "" {
+		headers["Authorization"] = "Bearer " + token
 	}
 	return headers
 }

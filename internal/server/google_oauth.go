@@ -93,7 +93,11 @@ func googleLoginDest(d string) string {
 
 // handleGoogleStatus reports whether Google login is available.
 func handleGoogleStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"enabled": googleOAuthConfigured(), "password_login": passwordLoginEnabled()})
+	resp := map[string]any{"enabled": googleOAuthConfigured(), "password_login": passwordLoginEnabled()}
+	if ph := runtime.PathHost(); ph != "" {
+		resp["public_url"] = "https://" + ph // canonical portal URL (MCP setup, links)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleGoogleLogin redirects the browser to Google's consent screen.

@@ -500,6 +500,7 @@
        server has break-glass password login enabled. */
     function applyLoginMethods(d){
       d=d||{};
+      if(d.public_url) _publicUrl=d.public_url;
       if(d.enabled) document.getElementById('googleLoginWrap').style.display='';
       if(d.password_login){
         document.getElementById('loginForm').style.display='';
@@ -1178,7 +1179,10 @@
 
     /* ---- MCP connection: personal API tokens + client setup ---- */
     var _mcpPlainTok='';
-    function mcpUrl(){ return location.origin+'/mcp'; }
+    // MCP clients should always use the canonical public domain, even when
+    // this page was opened via another domain or an IP.
+    var _publicUrl='';
+    function mcpUrl(){ return (_publicUrl||location.origin)+'/mcp'; }
     function openMcp(){ _mcpPlainTok=''; document.getElementById('mcpNewTok').style.display='none'; document.getElementById('mcpOverlay').classList.add('show'); renderMcpGuide(); loadMcpTokens(); }
     function closeMcp(){ _mcpPlainTok=''; document.getElementById('mcpNewTok').innerHTML=''; document.getElementById('mcpOverlay').classList.remove('show'); }
     function mcpMsg(t,kind){ var m=document.getElementById('mcpMsg'); m.textContent=t||''; m.style.color=kind==='err'?'var(--danger)':(kind==='ok'?'var(--success)':'var(--text-muted)'); }

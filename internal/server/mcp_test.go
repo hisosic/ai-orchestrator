@@ -187,3 +187,20 @@ func TestMCPOwnServiceToolsReachHandlers(t *testing.T) {
 		}
 	}
 }
+
+// Service URLs returned over MCP use the canonical public domain over https,
+// not the internal hop's host.
+func TestMCPServiceURLsUseCanonicalDomain(t *testing.T) {
+	t.Setenv("ORCHESTRATOR_BASE_DOMAIN", "rgrg.im")
+	t.Setenv("ORCHESTRATOR_EXTRA_BASE_DOMAINS", "24x365.online")
+	h, tok := mcpEnv(t)
+	_, out := mcpCall(t, h, tok, "tools/call", map[string]any{"name": "list_my_services"})
+	text, isErr := toolText(t, out)
+	if isErr || !strings.Contains(text, "https://itda.rgrg.im/alice-web/") || strings.Contains(text, "24x365") || strings.Contains(text, "http://") {
+		t.Fatalf("list_my_services URLs: %s", text)
+	}
+	_, out = mcpCall(t, h, tok, "initialize", map[string]any{})
+	if ins, _ := out["result"].(map[string]any)["instructions"].(string); !strings.Contains(ins, "https://itda.rgrg.im") {
+		t.Fatalf("instructions: %s", ins)
+	}
+}

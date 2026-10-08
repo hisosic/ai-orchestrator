@@ -2233,10 +2233,10 @@ func handlePublicServices(w http.ResponseWriter, r *http.Request) {
 	base, pathHost := runtime.DomainForHost(requestHost(r))
 	endpointFor := func(name string) string {
 		if serviceUsesSubdomain(name) && base != "" {
-			return "http://" + name + "." + base + "/"
+			return "https://" + name + "." + base + "/"
 		}
 		if pathHost != "" {
-			return "http://" + pathHost + "/" + name + "/"
+			return "https://" + pathHost + "/" + name + "/"
 		}
 		return ""
 	}
@@ -2335,10 +2335,10 @@ func handleListUserServices(w http.ResponseWriter, r *http.Request) {
 	base, pathHost := runtime.DomainForHost(requestHost(r))
 	endpointFor := func(name string) string {
 		if serviceUsesSubdomain(name) && base != "" {
-			return "http://" + name + "." + base + "/"
+			return "https://" + name + "." + base + "/"
 		}
 		if pathHost != "" {
-			return "http://" + pathHost + "/" + name + "/"
+			return "https://" + pathHost + "/" + name + "/"
 		}
 		return ""
 	}

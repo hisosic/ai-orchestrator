@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"ai-container-go/internal/auth"
+	"ai-container-go/internal/runtime"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -145,7 +146,7 @@ func (c *mcpCaller) dispatch(req *rpcRequest) *rpcResponse {
 			"protocolVersion": ver,
 			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
 			"serverInfo":      map[string]any{"name": "itda", "version": Version},
-			"instructions":    mcpInstructions,
+			"instructions":    mcpInstructions + mcpPortalLine(),
 		}
 	case "ping":
 		resp.Result = map[string]any{}
@@ -181,6 +182,14 @@ This token can only see and change services owned by its user; requests for othe
 Typical flow: get_registry_info (docker push your image) → deploy_image → get_service_status / get_logs / inspect_containers → exec_in_container for debugging → update_image after pushing a new tag.
 Or let the cluster build for you: deploy_from_git → get_deploy_status.
 Containers are recreated on restart/update, so anything written inside them is lost unless its path is listed in deploy_image persistent_paths (e.g. ["/data"]); databases should always use it.`
+
+// mcpPortalLine points clients at the canonical public portal.
+func mcpPortalLine() string {
+	if ph := runtime.PathHost(); ph != "" {
+		return "\nPortal and service URLs: https://" + ph + " (services are at https://" + ph + "/<service>/)."
+	}
+	return ""
+}
 
 // ---------------------------------------------------------------------------
 // Tool plumbing
@@ -319,6 +328,12 @@ func (c *mcpCaller) api(method, path string, body any) (map[string]any, error) {
 	}
 	req := httptest.NewRequest(method, "http://orchestrator.internal"+path, rd)
 	req.RemoteAddr = "127.0.0.1:0"
+	// URLs in responses (service endpoints) are built for the public
+	// domain, not this internal hop.
+	if ph := runtime.PathHost(); ph != "" {
+		req.Header.Set("X-Forwarded-Host", ph)
+		req.Header.Set("X-Forwarded-Proto", "https")
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

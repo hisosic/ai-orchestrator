@@ -69,7 +69,10 @@ func TestGoogleLoginRedirectsToConsent(t *testing.T) {
 			state = c
 		}
 	}
-	if state == nil || !strings.HasSuffix(state.Value, "|/admin") {
+	if state == nil {
+		t.Fatal("no state cookie")
+	}
+	if _, dest := parseStateCookie(state.Value); dest != "/admin" {
 		t.Fatalf("state cookie = %+v", state)
 	}
 }

@@ -19,6 +19,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
@@ -399,6 +400,7 @@ func NewRouter() http.Handler {
 	r.Get("/v1/auth/google/status", handleGoogleStatus)
 	r.Get("/v1/auth/google/login", handleGoogleLogin)
 	r.Get("/v1/auth/google/callback", handleGoogleCallback)
+	r.HandleFunc("/v1/auth/forward", handleAuthForward) // Traefik forwardAuth for user-shared services
 	r.Post("/v1/auth/change-password", handleChangePassword)
 	r.Get("/v1/auth/users", handleListUsers)
 	r.Post("/v1/auth/users", handleCreateUser)
@@ -1156,6 +1158,7 @@ func csrfMiddleware(next http.Handler) http.Handler {
 		}
 		if strings.HasPrefix(path, "/v1/auth/login") ||
 			strings.HasPrefix(path, "/v1/auth/logout") ||
+			path == "/v1/auth/forward" ||
 			strings.HasPrefix(path, "/v1/cluster/heartbeat") ||
 			strings.HasPrefix(path, "/v1/agent/") ||
 			strings.HasPrefix(path, "/v1/registry/v2/") {
@@ -2229,6 +2232,10 @@ func applyDBFields(s map[string]any) {
 // as shared, visible without authentication. Secrets/env are never included.
 func handlePublicServices(w http.ResponseWriter, r *http.Request) {
 	all := getServicesDataForViewer(false, "") // viewer "" → secrets masked anyway
+	viewer := ""
+	if sess := auth.SessionFromRequest(r); sess != nil && !sess.Internal {
+		viewer = sess.Username
+	}
 	// URLs stay on the domain the visitor used (old or new public domain).
 	base, pathHost := runtime.DomainForHost(requestHost(r))
 	endpointFor := func(name string) string {
@@ -2245,6 +2252,15 @@ func handlePublicServices(w http.ResponseWriter, r *http.Request) {
 		if sh, _ := s["shared"].(bool); !sh {
 			continue
 		}
+		name0, _ := s["name"].(string)
+		if s["share_mode"] == "users" {
+			// Shared with specific users: only they (and the owner) see it.
+			if viewer == "" || !canViewSharedService(name0, viewer) {
+				continue
+			}
+			s["shared_with_me"] = true
+		}
+		delete(s, "share_users")
 		name, _ := s["name"].(string)
 		// DB enrichment needs env_vars; run it before stripping them.
 		applyDBFields(s)
@@ -2271,6 +2287,10 @@ func handleUserServiceShare(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Name   string `json:"name"`
 		Shared bool   `json:"shared"`
+		// Mode when shared: "all" (default) or "users" — only the owner and
+		// Users may open the service link.
+		Mode  string   `json:"mode"`
+		Users []string `json:"users"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "Invalid request"})
@@ -2281,7 +2301,19 @@ func handleUserServiceShare(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "서비스명이 필요합니다"})
 		return
 	}
-	if info := clusterState.GetService(name); info != nil {
+	mode := ""
+	if body.Shared {
+		mode = strings.TrimSpace(body.Mode)
+		if mode == "" {
+			mode = "all"
+		}
+		if mode != "all" && mode != "users" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "mode는 all 또는 users 입니다"})
+			return
+		}
+	}
+	info := clusterState.GetService(name)
+	if info != nil {
 		if ok, owner := canManageService(r, info); !ok {
 			writeJSON(w, http.StatusForbidden, map[string]any{
 				"success": false,
@@ -2306,11 +2338,36 @@ func handleUserServiceShare(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if !clusterState.SetServiceShared(name, body.Shared) {
+	var users []string
+	if mode == "users" {
+		if info == nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "클러스터 정의가 없는 서비스는 특정 사용자 공유를 지원하지 않습니다"})
+			return
+		}
+		if serviceUsesSubdomain(name) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "서브도메인으로 연결된 서비스는 특정 사용자 공유를 지원하지 않습니다 (경로 방식만 지원)"})
+			return
+		}
+		owner, _ := info["owner"].(string)
+		var err error
+		if users, err = normalizeShareUsers(body.Users, owner); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": err.Error()})
+			return
+		}
+	}
+	var ok bool
+	if info != nil {
+		ok = clusterState.SetShareSettings(name, mode, users)
+	} else {
+		ok = clusterState.SetServiceShared(name, body.Shared)
+	}
+	if !ok {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "message": "공유 설정 저장 실패"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"success": true, "name": name, "shared": body.Shared})
+	auditRequest(r, "POST /v1/user/service-share", name, fmt.Sprintf("share:%s users:%d", mode, len(users)))
+	go syncTraefikRoutes() // apply (or lift) link protection right away
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "name": name, "shared": body.Shared, "share_mode": mode, "share_users": users})
 }
 
 // handleListUserServices: GET /v1/user/services — only the services owned by
@@ -3309,7 +3366,7 @@ func getServicesDataForViewer(showSystem bool, viewer string) []map[string]any {
 			"endpoint":      endpoint,
 		}
 		entry["delete_protected"] = serviceDeleteProtected(svcName)
-		entry["shared"] = clusterState != nil && clusterState.IsServiceShared(svcName)
+		shareFieldsForOwner(entry, svcName, viewer != "" && viewer == serviceOwnerOf(svcName))
 		if st := serviceVolumeReport(svcName); st != nil {
 			entry["storage"] = st
 		}
@@ -3386,7 +3443,7 @@ func getServicesDataForViewer(showSystem bool, viewer string) []map[string]any {
 			"cpu_limit":     svc["cpu_limit"],
 		}
 		entry["delete_protected"] = serviceDeleteProtected(svcName)
-		entry["shared"] = clusterState != nil && clusterState.IsServiceShared(svcName)
+		shareFieldsForOwner(entry, svcName, viewer != "" && viewer == serviceOwnerOf(svcName))
 		if st := serviceVolumeReport(svcName); st != nil {
 			entry["storage"] = st
 		}
@@ -6064,12 +6121,16 @@ func yamlDoubleQuote(s string) string {
 	return `"` + s + `"`
 }
 
+// traefikDynamicDir is the Traefik file-provider directory shared with the
+// master's Traefik container (a variable so tests can point it elsewhere).
+var traefikDynamicDir = "/traefik-dynamic"
+
 func syncTraefikRoutes() {
 	if clusterState == nil {
 		return
 	}
 
-	configDir := "/traefik-dynamic"
+	configDir := traefikDynamicDir
 	configPath := configDir + "/cluster-routes.yml"
 
 	info, err := os.Stat(configDir)
@@ -6119,6 +6180,7 @@ func syncTraefikRoutes() {
 	}
 	type middlewareCfg struct {
 		stripPrefixes []string
+		forwardAuth   string // forwardAuth address
 	}
 
 	routers := make(map[string]routerCfg)
@@ -6204,6 +6266,61 @@ func syncTraefikRoutes() {
 		services[routeName] = serviceCfg{servers: servers}
 	}
 
+	// Services shared with specific users only: higher-priority copies of
+	// their public routes that first ask the orchestrator whether the
+	// visitor may pass (see share_access.go). Other services never depend
+	// on the orchestrator being up.
+	for _, svcName := range clusterState.RestrictedServices() {
+		if len(svcNodes[svcName]) == 0 {
+			continue
+		}
+		safe := strings.Trim(re.ReplaceAllString(strings.ToLower(svcName), "-"), "-")
+		if safe == "" {
+			continue
+		}
+		masterLocal := false
+		for _, p := range placements {
+			if p.ServiceName == svcName && p.NodeName == masterNodeName && p.Status == "running" {
+				masterLocal = true
+				break
+			}
+		}
+		auth := "access-" + safe
+		target, mws := "cluster-"+safe, []string{auth}
+		if masterLocal {
+			// Docker-provider router/service/strip from the container labels.
+			target, mws = safe+"@docker", []string{auth, safe + "-strip@docker"}
+		} else if _, ok := services[target]; !ok {
+			continue
+		}
+		middlewares[auth] = middlewareCfg{forwardAuth: "http://ai-orchestrator:8000/v1/auth/forward?svc=" + url.QueryEscape(svcName)}
+		if hosts := runtime.PathHosts(); len(hosts) > 0 {
+			routers[auth+"-host"] = routerCfg{
+				rule:        fmt.Sprintf("%s && PathPrefix(`/%s/`)", runtime.HostRule(hosts), svcName),
+				service:     target,
+				entryPoints: []string{"web"},
+				middlewares: mws,
+				priority:    300,
+			}
+		}
+		routers[auth+"-path"] = routerCfg{
+			rule:        fmt.Sprintf("PathPrefix(`/%s/`)", svcName),
+			service:     target,
+			entryPoints: []string{"web"},
+			middlewares: mws,
+			priority:    290,
+		}
+		// Assets requested by the app's pages (routed by Referer) need the
+		// same check; still below other services' own path routes (100).
+		routers[auth+"-referer"] = routerCfg{
+			rule:        fmt.Sprintf("HeadersRegexp(`Referer`, `^https?://[^/]+/%s(/|\\?|$)`)", svcName),
+			service:     target,
+			entryPoints: []string{"web"},
+			middlewares: mws,
+			priority:    60,
+		}
+	}
+
 	// Write as simple YAML.
 	var lines []string
 	lines = append(lines, "# Auto-generated by AI Container Orchestrator", "http:")
@@ -6253,6 +6370,11 @@ func syncTraefikRoutes() {
 		for _, name := range mwKeys {
 			cfg := middlewares[name]
 			lines = append(lines, fmt.Sprintf("    %s:", name))
+			if cfg.forwardAuth != "" {
+				lines = append(lines, "      forwardAuth:")
+				lines = append(lines, fmt.Sprintf("        address: \"%s\"", cfg.forwardAuth))
+				lines = append(lines, "        trustForwardHeader: true")
+			}
 			if len(cfg.stripPrefixes) > 0 {
 				lines = append(lines, "      stripPrefix:")
 				lines = append(lines, "        prefixes:")

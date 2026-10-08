@@ -18,6 +18,7 @@ package server
 
 import (
 	"context"
+	"html"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -88,7 +89,31 @@ func googleLoginDest(d string) string {
 	case "/", "/admin", "/dashboard", "/portal":
 		return d
 	}
+	// A plain same-host path (e.g. a service shared with specific users,
+	// /svc/page) — never another host, so no open redirect.
+	if safeRelativePath(d) && !strings.HasPrefix(d, "/v1/") {
+		return d
+	}
 	return "/portal"
+}
+
+// stateCookieValue packs the CSRF state and the post-login destination;
+// the destination is base64url-encoded because cookie values may not
+// carry characters like ';' or ','.
+func stateCookieValue(state, dest string) string {
+	return state + "|" + base64.RawURLEncoding.EncodeToString([]byte(dest))
+}
+
+// parseStateCookie is the inverse of stateCookieValue; dest is allowlisted.
+func parseStateCookie(v string) (state, dest string) {
+	parts := strings.SplitN(v, "|", 2)
+	dest = "/portal"
+	if len(parts) == 2 {
+		if b, err := base64.RawURLEncoding.DecodeString(parts[1]); err == nil {
+			dest = googleLoginDest(string(b))
+		}
+	}
+	return parts[0], dest
 }
 
 // handleGoogleStatus reports whether Google login is available.
@@ -124,7 +149,7 @@ func handleGoogleLogin(w http.ResponseWriter, r *http.Request) {
 	dest := googleLoginDest(r.URL.Query().Get("redirect"))
 	http.SetCookie(w, &http.Cookie{
 		Name:     googleStateCookie,
-		Value:    state + "|" + dest,
+		Value:    stateCookieValue(state, dest),
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   cookieSecure(r),
@@ -158,12 +183,7 @@ func handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 		googleFail(w, r, "state 쿠키 없음")
 		return
 	}
-	parts := strings.SplitN(c.Value, "|", 2)
-	wantState := parts[0]
-	dest := "/portal"
-	if len(parts) == 2 {
-		dest = googleLoginDest(parts[1])
-	}
+	wantState, dest := parseStateCookie(c.Value)
 	// Clear the state cookie.
 	http.SetCookie(w, &http.Cookie{Name: googleStateCookie, Value: "", Path: "/", MaxAge: -1})
 
@@ -273,13 +293,15 @@ func handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 // server-gated page like /admin would arrive without the session. A
 // navigation started by this page is same-site, so the cookie is sent.
 func writePostLoginHop(w http.ResponseWriter, dest string) {
-	dest = googleLoginDest(dest) // allowlisted, safe to embed
+	dest = googleLoginDest(dest) // allowlisted same-host path
+	attr := html.EscapeString(dest)
+	js, _ := json.Marshal(dest) // escapes <, >, & for a script context
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=%[1]s"><title>로그인 중…</title></head>
+	fmt.Fprintf(w, `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=%s"><title>로그인 중…</title></head>
 <body style="margin:0;background:#0a0f1a;color:#9aa8c4;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh">
-<p>로그인 중… <a href="%[1]s" style="color:#5aa7ff">계속</a></p><script>location.replace(%[1]q)</script></body></html>`, dest)
+<p>로그인 중… <a href="%s" style="color:#5aa7ff">계속</a></p><script>location.replace(%s)</script></body></html>`, attr, attr, js)
 }
 
 // googleFail redirects back to the page the login started from (portal or
@@ -287,10 +309,8 @@ func writePostLoginHop(w http.ResponseWriter, dest string) {
 func googleFail(w http.ResponseWriter, r *http.Request, msg string) {
 	back := "/portal"
 	if c, err := r.Cookie(googleStateCookie); err == nil {
-		if parts := strings.SplitN(c.Value, "|", 2); len(parts) == 2 {
-			if d := googleLoginDest(parts[1]); d == "/admin" || d == "/dashboard" {
-				back = "/admin"
-			}
+		if _, d := parseStateCookie(c.Value); d == "/admin" || d == "/dashboard" {
+			back = "/admin"
 		}
 	}
 	http.Redirect(w, r, back+"?login_error="+url.QueryEscape("Google 로그인 실패: "+msg), http.StatusFound)

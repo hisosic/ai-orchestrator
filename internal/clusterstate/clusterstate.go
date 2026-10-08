@@ -144,6 +144,10 @@ func (m *ClusterStateManager) initDB() {
 		`ALTER TABLE services ADD COLUMN subdomain INTEGER DEFAULT 0`,
 		`ALTER TABLE services ADD COLUMN shared INTEGER DEFAULT 0`,
 		`ALTER TABLE services ADD COLUMN delete_protected INTEGER DEFAULT 0`,
+		// Share scope when shared=1: '' or 'all' = everyone, 'users' = only
+		// the owner and the emails in share_users (enforced at the proxy).
+		`ALTER TABLE services ADD COLUMN share_mode TEXT DEFAULT ''`,
+		`ALTER TABLE services ADD COLUMN share_users TEXT DEFAULT '[]'`,
 	} {
 		if _, err := m.db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			panic(fmt.Sprintf("clusterstate: migration failed: %v (stmt=%q)", err, stmt))
@@ -836,6 +840,73 @@ func (m *ClusterStateManager) SetServiceShared(name string, shared bool) bool {
 		_, err = m.db.Exec("DELETE FROM shared_services WHERE service_name=?", name)
 	}
 	return err == nil
+}
+
+// ShareSettings returns a service's share scope: mode is "" (not shared),
+// "all" or "users"; users lists the allowed emails for "users".
+func (m *ClusterStateManager) ShareSettings(name string) (string, []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var shared int
+	var mode, usersJSON sql.NullString
+	err := m.db.QueryRow("SELECT COALESCE(shared,0), share_mode, share_users FROM services WHERE name=?", name).Scan(&shared, &mode, &usersJSON)
+	if err != nil {
+		var n int
+		m.db.QueryRow("SELECT COUNT(*) FROM shared_services WHERE service_name=?", name).Scan(&n)
+		if n > 0 {
+			return "all", nil
+		}
+		return "", nil
+	}
+	if shared != 1 {
+		return "", nil
+	}
+	if mode.String == "users" {
+		var users []string
+		json.Unmarshal([]byte(usersJSON.String), &users)
+		return "users", users
+	}
+	return "all", nil
+}
+
+// SetShareSettings stores a service's share scope (see ShareSettings). Only
+// for services with a definition; returns false otherwise.
+func (m *ClusterStateManager) SetShareSettings(name, mode string, users []string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	shared := 0
+	if mode == "all" || mode == "users" {
+		shared = 1
+	}
+	if users == nil {
+		users = []string{}
+	}
+	b, _ := json.Marshal(users)
+	res, err := m.db.Exec("UPDATE services SET shared=?, share_mode=?, share_users=? WHERE name=?", shared, mode, string(b), name)
+	if err != nil {
+		return false
+	}
+	n, _ := res.RowsAffected()
+	return n == 1
+}
+
+// RestrictedServices lists services shared with specific users only.
+func (m *ClusterStateManager) RestrictedServices() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rows, err := m.db.Query("SELECT name FROM services WHERE shared=1 AND share_mode='users'")
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var n string
+		if rows.Scan(&n) == nil {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // IsServiceShared reports whether a service is shared, whether or not it has

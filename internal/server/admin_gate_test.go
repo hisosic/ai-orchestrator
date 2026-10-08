@@ -33,7 +33,7 @@ func TestAdminPageRequiresAdminLogin(t *testing.T) {
 	setGoogleEnv(t)
 	w := getAs(h, "/admin?login_error=%3Cscript%3Ex", "")
 	if w.Code != http.StatusUnauthorized || bytesContain(w, "DASHBOARD") ||
-		!bytesContain(w, "/v1/auth/google/login?redirect=/admin") || bytesContain(w, `id="pwForm"`) ||
+		!bytesContain(w, "/v1/auth/google/login?redirect=%2Fadmin") || bytesContain(w, `id="pwForm"`) ||
 		bytesContain(w, "<script>x") {
 		t.Errorf("anonymous+google sign-in page: %d", w.Code)
 	}

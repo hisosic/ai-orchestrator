@@ -12,12 +12,19 @@ import (
 )
 
 type adminGateData struct {
-	Forbidden     bool   // signed in, but not an admin
+	Forbidden     bool   // signed in, but not allowed
 	Username      string // for the forbidden view
 	Google        bool
 	PasswordLogin bool
 	Domain        string
 	Error         string
+
+	// Overrides for gates other than /admin (e.g. a service shared with
+	// specific users). Empty values keep the admin-dashboard wording.
+	Next          string // where to land after login (same-host path)
+	Notice        string // why sign-in is needed
+	ForbiddenText string // shown to signed-in users without access
+	Service       string // service name, for the page title/tagline
 }
 
 func writeAdminGate(w http.ResponseWriter, r *http.Request, status int, d adminGateData) {
@@ -26,6 +33,15 @@ func writeAdminGate(w http.ResponseWriter, r *http.Request, status int, d adminG
 	d.Domain = googleAllowedDomain()
 	if d.Error == "" {
 		d.Error = r.URL.Query().Get("login_error")
+	}
+	if d.Next == "" {
+		d.Next = "/admin"
+	}
+	if d.Notice == "" {
+		d.Notice = "이 대시보드는 관리자만 볼 수 있습니다."
+	}
+	if d.ForbiddenText == "" {
+		d.ForbiddenText = "이 계정은 관리자 대시보드에 접근할 권한이 없습니다."
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
@@ -145,7 +161,7 @@ body { background:#0a0f1a; color:var(--lp-fg); font-family:"Pretendard Variable"
         </svg>
         <span class="login-name">AI Container Orchestrator</span>
       </div>
-      <p class="login-tag">클러스터를 살피고, 서비스를 배포·운영하는 곳</p>
+      <p class="login-tag">{{if .Service}}'{{.Service}}' 서비스는 공유받은 사용자만 볼 수 있습니다{{else}}클러스터를 살피고, 서비스를 배포·운영하는 곳{{end}}</p>
     </div>
 
     <div class="login-form">
@@ -155,8 +171,8 @@ body { background:#0a0f1a; color:var(--lp-fg); font-family:"Pretendard Variable"
         <div class="lf-who">{{.Username}}</div>
       </div>
       <div class="lf-mid">
-        <div class="lf-msg">이 계정은 관리자 대시보드에 접근할 권한이 없습니다.</div>
-        <div class="lf-note">관리자 권한이 필요하면 클러스터 관리자에게 문의하십시오. 내 서비스는 서비스 포털에서 관리할 수 있습니다.</div>
+        <div class="lf-msg">{{.ForbiddenText}}</div>
+        <div class="lf-note">{{if .Service}}접근이 필요하면 서비스 소유자에게 공유를 요청하십시오.{{else}}관리자 권한이 필요하면 클러스터 관리자에게 문의하십시오.{{end}} 내 서비스는 서비스 포털에서 관리할 수 있습니다.</div>
       </div>
       <a class="lf-submit" href="/">서비스 포털로 이동</a>
       <div class="lf-alt"><button type="button" class="lf-link" id="switchAccount">다른 계정으로 로그인</button></div>
@@ -192,11 +208,11 @@ body { background:#0a0f1a; color:var(--lp-fg); font-family:"Pretendard Variable"
       {{if not .PasswordLogin}}
       <div class="lf-mid">
         <div class="lf-msg" id="lfMsg">{{.Error}}</div>
-        <div class="lf-note">이 대시보드는 관리자만 볼 수 있습니다.{{if .Domain}} 회사 Google 계정(@{{.Domain}})으로 로그인하십시오.{{end}}</div>
+        <div class="lf-note">{{.Notice}}{{if .Domain}} 회사 Google 계정(@{{.Domain}})으로 로그인하십시오.{{end}}</div>
         <div class="lf-note">계정이 없거나 권한이 필요하면 클러스터 관리자에게 문의하십시오.</div>
       </div>
       {{end}}
-      <a class="lf-submit lf-google" href="/v1/auth/google/login?redirect=/admin">
+      <a class="lf-submit lf-google" href="/v1/auth/google/login?redirect={{.Next | urlquery}}">
         <span class="lf-gmark"><svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9 3.6l6.7-6.7C35.6 2.6 30.2 0 24 0 14.6 0 6.4 5.4 2.6 13.2l7.8 6.1C12.2 13.6 17.6 9.5 24 9.5z"/><path fill="#4285F4" d="M46.1 24.6c0-1.6-.1-3.1-.4-4.6H24v9.1h12.4c-.5 2.9-2.1 5.3-4.6 7l7.1 5.5c4.2-3.9 6.6-9.6 6.6-16.5z"/><path fill="#FBBC05" d="M10.4 28.7c-.5-1.4-.8-2.9-.8-4.7s.3-3.3.8-4.7l-7.8-6.1C1 16.3 0 20 0 24s1 7.7 2.6 10.8l7.8-6.1z"/><path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.1-5.5c-2 1.3-4.5 2.1-8.8 2.1-6.4 0-11.8-4.1-13.7-9.8l-7.8 6.1C6.4 42.6 14.6 48 24 48z"/></svg></span>
         Google 계정으로 로그인
       </a>
@@ -213,10 +229,19 @@ body { background:#0a0f1a; color:var(--lp-fg); font-family:"Pretendard Variable"
 <script>
 (function(){
   if (location.search.indexOf('login_error=') >= 0) history.replaceState(null, '', location.pathname);
+  {{if and (not .Forbidden) (not .Error)}}
+  // Arriving from another site, the browser withholds the SameSite=Strict
+  // session cookie. Re-request once from this page (a same-site navigation)
+  // so an existing login is picked up instead of asking to sign in again.
+  try {
+    var k = 'gateRetry:' + location.pathname, last = +sessionStorage.getItem(k) || 0;
+    if (Date.now() - last > 15000) { sessionStorage.setItem(k, Date.now()); location.replace(location.href); return; }
+  } catch (e) {}
+  {{end}}
   var sw = document.getElementById('switchAccount');
   if (sw) sw.addEventListener('click', function(){
     fetch('/v1/auth/logout', {method:'POST', credentials:'same-origin'}).finally(function(){
-      location.href = '/v1/auth/google/login?redirect=/admin';
+      location.href = '/v1/auth/google/login?redirect=' + encodeURIComponent({{.Next}});
     });
   });
   var form = document.getElementById('pwForm');

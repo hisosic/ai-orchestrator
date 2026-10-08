@@ -46,6 +46,7 @@
     .res-mem > span { background:linear-gradient(to right,#388bfd,#79c0ff); }
     .svc-head { display:flex; align-items:center; justify-content:space-between; padding:0.6rem 0.8rem; border-bottom:1px solid var(--border); }
     .svc-name { font-weight:600; }
+    .svc-owner { font-size:0.74rem; color:var(--text-muted); padding:0.3rem 0.8rem; border-bottom:1px solid var(--border); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .thumb { position:relative; height:180px; background:var(--surface); }
     .thumb iframe { width:166.66%; height:300px; border:0; transform:scale(0.6); transform-origin:0 0; pointer-events:none; }
     .thumb .overlay { position:absolute; inset:0; cursor:pointer; }
@@ -746,8 +747,9 @@
         var manageBtn = owned?'<button class="btn btn-sm btn-outline" onclick="openManage(\''+attrEsc(s.name)+'\')">⚙ 관리</button>':'';
         var resBars='<div class="res-bars" title="클릭: 리소스 추이 보기" onclick="openTrend(\''+attrEsc(s.name)+'\')" style="display:none;"><div class="res-bar res-cpu"><span style="width:0%"></span></div><div class="res-bar res-mem"><span style="width:0%"></span></div></div>';
         var card=document.createElement('div'); card.className='svc-card'; card.setAttribute('data-svc',s.name);
-        var showOwner = (_svcScope==='all'||_svcScope==='shared') && s.owner;
-        var ownerBadge = showOwner ? ' <span class="muted" style="font-size:0.7rem;">· 👤'+esc(s.owner)+'</span>' : '';
+        // Who deployed it — on its own line so long names can't truncate it.
+        var ownerBadge = '';
+        var ownerLine = '<div class="svc-owner" title="서비스를 등록한 계정">👤 '+(s.owner ? esc(s.owner)+(_user && s.owner===_user.username ? ' <span style="color:var(--accent);">(나)</span>' : '') : '<span class="muted">등록 계정 없음</span>')+'</div>';
         var sharedBadge = s.shared_with_me ? ' <span title="나에게 공유된 서비스" style="font-size:0.7rem;color:var(--accent);">👥 나에게 공유됨</span>'
           : (s.shared ? (s.share_mode==='users' ? ' <span title="특정 사용자에게만 공유" style="font-size:0.72rem;">👥</span>' : ' <span title="전체 공유" style="font-size:0.72rem;">🌐</span>') : '');
         if(s.delete_protected) sharedBadge += ' <span title="삭제 방지" style="font-size:0.72rem;">🛡</span>';
@@ -777,7 +779,7 @@
             infoRow('계정',s.db_user)+
             infoRow('연결문자열',connTpl,connTpl,'연결 문자열 복사 (비밀번호는 직접 입력)')+
             '</div>';
-          card.innerHTML=head+dbBody+dbFoot;
+          card.innerHTML=head+ownerLine+dbBody+dbFoot;
           grid.appendChild(card);
           return;
         }
@@ -789,7 +791,7 @@
           (url?'<a href="'+esc(iurl)+'" target="_blank" style="font-size:0.78rem;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+esc(url)+'</a>'+copyBtn(iurl,'엔드포인트 복사'):'<span class="muted" style="flex:1;font-size:0.78rem;">'+esc(s.image||'')+'</span>')+
           manageBtn+
           '</div>';
-        card.innerHTML=head+thumb+foot;
+        card.innerHTML=head+ownerLine+thumb+foot;
         var iframe=card.querySelector('iframe');
         if(iframe){ var loaded=false; iframe.addEventListener('load',function(){loaded=true;}); setTimeout(function(){ if(!loaded){ var fr=iframe.parentNode; var rb=fr.querySelector('.res-bars'); fr.innerHTML='<div class="err">미리보기 불가 (클릭하여 열기)</div><div class="overlay" onclick="window.open(\''+esc(iurl)+'\',\'_blank\')"></div>'; if(rb) fr.appendChild(rb); } },6000); }
         grid.appendChild(card);
@@ -817,7 +819,7 @@
       var s=_svcMap[name]||{name:name};
       document.getElementById('mgName').textContent=name;
       var running=(s.running!=null?s.running:0), rep=(s.replicas||0);
-      document.getElementById('mgStatus').innerHTML='상태: <b style="color:'+(running>0?'var(--success)':'var(--danger)')+'">'+(running>0?'실행 중':'중지')+'</b> ('+running+'/'+rep+') · 이미지: <span style="font-family:monospace;">'+esc(s.image||'')+'</span>';
+      document.getElementById('mgStatus').innerHTML='상태: <b style="color:'+(running>0?'var(--success)':'var(--danger)')+'">'+(running>0?'실행 중':'중지')+'</b> ('+running+'/'+rep+') · 이미지: <span style="font-family:monospace;">'+esc(s.image||'')+'</span><br>등록 계정: <b>'+esc(s.owner||'없음')+'</b>';
       document.getElementById('mgReplicas').value=(rep||1);
       document.getElementById('mgMemory').value=(s.memory_limit||'');
       document.getElementById('mgCPU').value=(s.cpu_limit||'');

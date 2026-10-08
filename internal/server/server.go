@@ -103,7 +103,7 @@ func userMutatingAllowed(path string) bool {
 		path == "/v1/cluster/container/stop":
 		return true
 	case strings.HasPrefix(path, "/v1/services/") &&
-		(strings.HasSuffix(path, "/update") || strings.HasSuffix(path, "/env") || strings.HasSuffix(path, "/delete-protection")):
+		(strings.HasSuffix(path, "/update") || strings.HasSuffix(path, "/env") || strings.HasSuffix(path, "/delete-protection") || strings.HasSuffix(path, "/path-rules")):
 		return true
 	}
 	return false
@@ -466,6 +466,7 @@ func NewRouter() http.Handler {
 	r.Post("/v1/services/group/{name}/update", handleGroupUpdate)
 	r.Post("/v1/services/{name}/update", handleServiceUpdate)
 	r.Post("/v1/services/{name}/delete-protection", handleServiceDeleteProtection)
+	r.Post("/v1/services/{name}/path-rules", handleServicePathRules)
 	r.Put("/v1/services/{name}/env", handleServiceEnvUpdate)
 	r.Get("/v1/compose-templates", handleComposeTemplateList)
 	r.Post("/v1/compose-templates", handleComposeTemplateSave)
@@ -6230,6 +6231,7 @@ func syncTraefikRoutes() {
 	type middlewareCfg struct {
 		stripPrefixes []string
 		forwardAuth   string // forwardAuth address
+		dropHeaders   []string
 	}
 
 	routers := make(map[string]routerCfg)
@@ -6335,10 +6337,12 @@ func syncTraefikRoutes() {
 			}
 		}
 		auth := "access-" + safe
-		target, mws := "cluster-"+safe, []string{auth}
+		// Drop any client-sent identity header before the check adds the
+		// real one, so apps can trust X-Itda-User behind these routes.
+		target, mws := "cluster-"+safe, []string{"itda-nouser", auth}
 		if masterLocal {
 			// Docker-provider router/service/strip from the container labels.
-			target, mws = safe+"@docker", []string{auth, safe + "-strip@docker"}
+			target, mws = safe+"@docker", []string{"itda-nouser", auth, safe + "-strip@docker"}
 		} else if _, ok := services[target]; !ok {
 			continue
 		}
@@ -6367,6 +6371,15 @@ func syncTraefikRoutes() {
 			entryPoints: []string{"web"},
 			middlewares: mws,
 			priority:    60,
+		}
+	}
+
+	// Every cluster route drops a client-supplied X-Itda-User.
+	middlewares["itda-nouser"] = middlewareCfg{dropHeaders: []string{itdaUserHeader}}
+	for name, rc := range routers {
+		if !strings.HasPrefix(name, "access-") {
+			rc.middlewares = append([]string{"itda-nouser"}, rc.middlewares...)
+			routers[name] = rc
 		}
 	}
 
@@ -6423,6 +6436,15 @@ func syncTraefikRoutes() {
 				lines = append(lines, "      forwardAuth:")
 				lines = append(lines, fmt.Sprintf("        address: \"%s\"", cfg.forwardAuth))
 				lines = append(lines, "        trustForwardHeader: true")
+				lines = append(lines, "        authResponseHeaders:")
+				lines = append(lines, fmt.Sprintf("          - \"%s\"", itdaUserHeader))
+			}
+			if len(cfg.dropHeaders) > 0 {
+				lines = append(lines, "      headers:")
+				lines = append(lines, "        customRequestHeaders:")
+				for _, hd := range cfg.dropHeaders {
+					lines = append(lines, fmt.Sprintf("          %s: \"\"", hd))
+				}
 			}
 			if len(cfg.stripPrefixes) > 0 {
 				lines = append(lines, "      stripPrefix:")

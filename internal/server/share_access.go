@@ -16,11 +16,15 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"path"
 	"regexp"
 	"sort"
 	"strings"
 
 	"ai-container-go/internal/auth"
+	"ai-container-go/internal/clusterstate"
+
+	"github.com/go-chi/chi/v5"
 )
 
 const maxShareUsers = 50
@@ -81,46 +85,234 @@ func canViewSharedService(service, username string) bool {
 }
 
 // handleAuthForward: GET /v1/auth/forward?svc=NAME — Traefik forwardAuth
-// target for user-restricted services. 2xx lets the request through; any
-// other response is returned to the browser as-is.
+// target for protected services (shared with specific users, or with
+// per-path rules). 2xx lets the request through; any other response is
+// returned to the browser as-is. On success the signed-in user's email is
+// returned in X-Itda-User, which Traefik forwards to the app.
 func handleAuthForward(w http.ResponseWriter, r *http.Request) {
 	svc := strings.TrimSpace(r.URL.Query().Get("svc"))
 	if svc == "" || clusterState == nil {
 		http.Error(w, "service required", http.StatusBadRequest)
 		return
 	}
-	mode, _ := clusterState.ShareSettings(svc)
-	if mode != "users" {
-		// Not (or no longer) restricted; the route is dropped on the next sync.
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
 	sess := auth.SessionFromRequest(r)
-	if sess != nil && !sess.Internal && canViewSharedService(svc, sess.Username) {
-		w.Header().Set("X-Itda-User", sess.Username)
+	user := ""
+	if sess != nil && !sess.Internal {
+		user = sess.Username
+	}
+	uri := r.Header.Get("X-Forwarded-Uri")
+
+	allowed := true
+	if mode, _ := clusterState.ShareSettings(svc); mode == "users" && !canViewSharedService(svc, user) {
+		allowed = false
+	}
+	if allowed {
+		if rule := matchPathRule(clusterState.PathRules(svc), appPath(uri, svc)); rule != nil && !pathRuleAllows(rule, svc, user) {
+			allowed = false
+		}
+	}
+	if allowed {
+		if user != "" {
+			w.Header().Set(itdaUserHeader, user)
+		}
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
 	// Land back on the page the visitor asked for after signing in.
-	next := r.Header.Get("X-Forwarded-Uri")
+	next := uri
 	if next == "" || !safeRelativePath(next) {
 		next = "/" + svc + "/"
 	}
 	d := adminGateData{
 		Service:       svc,
 		Next:          next,
-		Notice:        fmt.Sprintf("'%s'는 공유받은 사용자만 볼 수 있습니다.", svc),
-		ForbiddenText: fmt.Sprintf("이 계정은 '%s' 서비스를 공유받지 않았습니다.", svc),
+		Notice:        fmt.Sprintf("'%s'의 이 페이지는 권한이 있는 사용자만 볼 수 있습니다.", svc),
+		ForbiddenText: fmt.Sprintf("이 계정은 '%s'의 이 페이지에 접근할 권한이 없습니다.", svc),
 	}
-	if sess == nil {
+	if user == "" {
 		writeAdminGate(w, r, http.StatusUnauthorized, d)
 		return
 	}
 	d.Forbidden = true
-	d.Username = sess.Username
-	auditLog(sess.Username, string(sess.Role), clientIPString(r), "service_access", svc, "denied")
+	d.Username = user
+	auditLog(user, string(sess.Role), clientIPString(r), "service_access", svc+" "+truncate(uri, 200), "denied")
 	writeAdminGate(w, r, http.StatusForbidden, d)
+}
+
+// itdaUserHeader carries the signed-in user's email to apps behind a
+// protected route. Client-sent copies are stripped on every route.
+const itdaUserHeader = "X-Itda-User"
+
+// normalizePath canonicalizes a request path for rule matching so encoding
+// and spelling variants (%2F, //, /./, \, ;params, letter case) can't slip
+// past a rule: percent-decoded until stable, backslashes as slashes,
+// ;params dropped, cleaned, lower-cased.
+func normalizePath(p string) string {
+	if i := strings.IndexAny(p, "?#"); i >= 0 {
+		p = p[:i]
+	}
+	for i := 0; i < 3; i++ {
+		d, err := url.PathUnescape(p)
+		if err != nil || d == p {
+			break
+		}
+		p = d
+	}
+	p = strings.ReplaceAll(p, "\\", "/")
+	segs := strings.Split(p, "/")
+	for i, sg := range segs {
+		if k := strings.IndexByte(sg, ';'); k >= 0 {
+			segs[i] = sg[:k]
+		}
+	}
+	p = path.Clean("/" + strings.Join(segs, "/"))
+	return strings.ToLower(p)
+}
+
+// appPath turns the forwarded request URI into the path the app sees:
+// /svc/admin/x → /admin/x. Requests routed by Referer (assets the app
+// loads with absolute paths) already carry the app path.
+func appPath(uri, svc string) string {
+	p := normalizePath(uri)
+	prefix := "/" + strings.ToLower(svc)
+	if p == prefix {
+		return "/"
+	}
+	if strings.HasPrefix(p, prefix+"/") {
+		return p[len(prefix):]
+	}
+	return p
+}
+
+// matchPathRule returns the most specific rule covering p, if any.
+func matchPathRule(rules []clusterstate.PathRule, p string) *clusterstate.PathRule {
+	var best *clusterstate.PathRule
+	for i := range rules {
+		rp := rules[i].Path
+		if rp == "/" || p == rp || strings.HasPrefix(p, rp+"/") {
+			if best == nil || len(rp) > len(best.Path) {
+				best = &rules[i]
+			}
+		}
+	}
+	return best
+}
+
+// pathRuleAllows reports whether user (empty = anonymous) passes rule.
+func pathRuleAllows(rule *clusterstate.PathRule, svc, user string) bool {
+	if user == "" {
+		return false
+	}
+	owner := serviceOwnerOf(svc)
+	switch rule.Allow {
+	case "login":
+		return true
+	case "owner":
+		return user == owner
+	case "users":
+		if user == owner {
+			return true
+		}
+		for _, u := range rule.Users {
+			if u == user {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+const maxPathRules = 20
+
+// validatePathRules normalizes and checks rules submitted by the owner.
+func validatePathRules(in []clusterstate.PathRule, owner string) ([]clusterstate.PathRule, error) {
+	seen := map[string]bool{}
+	out := []clusterstate.PathRule{}
+	for _, r := range in {
+		raw := strings.TrimSpace(r.Path)
+		if raw == "" {
+			continue
+		}
+		if !strings.HasPrefix(raw, "/") || len(raw) > 200 {
+			return nil, fmt.Errorf("경로 '%s'는 /로 시작해야 합니다 (예: /admin)", raw)
+		}
+		p := normalizePath(raw)
+		if seen[p] {
+			return nil, fmt.Errorf("경로 '%s'가 중복되었습니다", p)
+		}
+		seen[p] = true
+		rule := clusterstate.PathRule{Path: p, Allow: r.Allow}
+		switch r.Allow {
+		case "owner", "login":
+		case "users":
+			users, err := normalizeShareUsers(r.Users, owner)
+			if err != nil {
+				return nil, fmt.Errorf("경로 '%s': %v", p, err)
+			}
+			rule.Users = users
+		default:
+			return nil, fmt.Errorf("경로 '%s'의 허용 대상은 owner, login, users 중 하나입니다", p)
+		}
+		out = append(out, rule)
+	}
+	if len(out) > maxPathRules {
+		return nil, fmt.Errorf("접근 제한 경로는 최대 %d개까지 설정할 수 있습니다", maxPathRules)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out, nil
+}
+
+// handleServicePathRules: POST /v1/services/{name}/path-rules {rules:[...]}
+// — owner or admin, browser session.
+func handleServicePathRules(w http.ResponseWriter, r *http.Request) {
+	sess := auth.SessionFromRequest(r)
+	if sess == nil || sess.Internal {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"success": false, "message": "로그인이 필요합니다", "code": "unauthenticated"})
+		return
+	}
+	name := strings.TrimSpace(chi.URLParam(r, "name"))
+	var body struct {
+		Rules []clusterstate.PathRule `json:"rules"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "Invalid request"})
+		return
+	}
+	if clusterState == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"success": false, "message": "클러스터 모드가 아닙니다"})
+		return
+	}
+	info := clusterState.GetService(name)
+	if info == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "클러스터 정의가 있는 서비스만 경로 제한을 설정할 수 있습니다: " + name})
+		return
+	}
+	if ok, owner := canManageService(r, info); !ok {
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"success": false,
+			"message": fmt.Sprintf("'%s' 서비스는 소유자(%s)만 접근 제한을 바꿀 수 있습니다", name, owner),
+			"code":    "forbidden_owner",
+		})
+		return
+	}
+	if len(body.Rules) > 0 && serviceUsesSubdomain(name) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "서브도메인으로 연결된 서비스는 경로 제한을 지원하지 않습니다 (경로 방식만 지원)"})
+		return
+	}
+	owner, _ := info["owner"].(string)
+	rules, err := validatePathRules(body.Rules, owner)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": err.Error()})
+		return
+	}
+	if !clusterState.SetPathRules(name, rules) {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "message": "저장 실패"})
+		return
+	}
+	auditRequest(r, "POST /v1/services/"+name+"/path-rules", name, fmt.Sprintf("rules:%d", len(rules)))
+	go syncTraefikRoutes()
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "name": name, "path_rules": rules})
 }
 
 // safePathRe limits post-login destinations to plain same-host paths.
@@ -158,5 +350,10 @@ func shareFieldsForOwner(entry map[string]any, service string, owned bool) {
 	entry["share_mode"] = mode
 	if owned && mode == "users" {
 		entry["share_users"] = users
+	}
+	if owned {
+		if rules := clusterState.PathRules(service); len(rules) > 0 {
+			entry["path_rules"] = rules
+		}
 	}
 }

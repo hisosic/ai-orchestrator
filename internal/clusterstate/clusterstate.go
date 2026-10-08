@@ -148,6 +148,8 @@ func (m *ClusterStateManager) initDB() {
 		// the owner and the emails in share_users (enforced at the proxy).
 		`ALTER TABLE services ADD COLUMN share_mode TEXT DEFAULT ''`,
 		`ALTER TABLE services ADD COLUMN share_users TEXT DEFAULT '[]'`,
+		// Per-path access rules inside a service (JSON []PathRule).
+		`ALTER TABLE services ADD COLUMN path_rules TEXT DEFAULT '[]'`,
 	} {
 		if _, err := m.db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			panic(fmt.Sprintf("clusterstate: migration failed: %v (stmt=%q)", err, stmt))
@@ -890,11 +892,50 @@ func (m *ClusterStateManager) SetShareSettings(name, mode string, users []string
 	return n == 1
 }
 
-// RestrictedServices lists services shared with specific users only.
+// PathRule restricts a path (and everything under it) inside a service.
+// Allow is "owner", "login" (any signed-in account) or "users" (Users plus
+// the owner).
+type PathRule struct {
+	Path  string   `json:"path"`
+	Allow string   `json:"allow"`
+	Users []string `json:"users,omitempty"`
+}
+
+// PathRules returns a service's per-path access rules.
+func (m *ClusterStateManager) PathRules(name string) []PathRule {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var raw sql.NullString
+	if m.db.QueryRow("SELECT path_rules FROM services WHERE name=?", name).Scan(&raw) != nil {
+		return nil
+	}
+	var rules []PathRule
+	json.Unmarshal([]byte(raw.String), &rules)
+	return rules
+}
+
+// SetPathRules replaces a service's per-path access rules.
+func (m *ClusterStateManager) SetPathRules(name string, rules []PathRule) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if rules == nil {
+		rules = []PathRule{}
+	}
+	b, _ := json.Marshal(rules)
+	res, err := m.db.Exec("UPDATE services SET path_rules=? WHERE name=?", string(b), name)
+	if err != nil {
+		return false
+	}
+	n, _ := res.RowsAffected()
+	return n == 1
+}
+
+// RestrictedServices lists services whose links need an access check: shared
+// with specific users only, or carrying per-path rules.
 func (m *ClusterStateManager) RestrictedServices() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	rows, err := m.db.Query("SELECT name FROM services WHERE shared=1 AND share_mode='users'")
+	rows, err := m.db.Query("SELECT name FROM services WHERE (shared=1 AND share_mode='users') OR COALESCE(path_rules,'[]') NOT IN ('', '[]', 'null')")
 	if err != nil {
 		return nil
 	}

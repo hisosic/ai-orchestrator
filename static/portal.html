@@ -193,6 +193,20 @@
         <div class="row" style="justify-content:flex-end;margin-top:0.45rem;"><button class="btn btn-sm" onclick="mgSaveShare()">공유 설정 저장</button></div>
       </div>
 
+      <!-- Per-path access rules -->
+      <div style="border:1px solid var(--border);border-radius:var(--radius);padding:0.55rem 0.7rem;margin-bottom:0.7rem;">
+        <div class="row" style="justify-content:space-between;align-items:center;">
+          <span style="font-weight:600;font-size:0.85rem;">🔒 접근 제한 경로</span>
+          <span id="mgRulesMsg" class="muted" style="font-size:0.76rem;"></span>
+        </div>
+        <div class="muted" style="font-size:0.76rem;margin:0.3rem 0 0.45rem;">지정한 경로와 그 하위 경로는 허용된 사용자만 로그인 후 볼 수 있습니다 (대소문자·인코딩 변형도 같은 경로로 처리). 통과한 요청에는 로그인 사용자 이메일이 <code>X-Itda-User</code> 헤더로 앱에 전달됩니다.</div>
+        <div id="mgRules"></div>
+        <div class="row" style="justify-content:space-between;margin-top:0.4rem;">
+          <button class="btn btn-sm btn-outline" onclick="mgAddRule()">+ 경로 추가</button>
+          <button class="btn btn-sm" onclick="mgSaveRules()">접근 제한 저장</button>
+        </div>
+      </div>
+
       <!-- Delete protection toggle -->
       <label class="row" style="gap:0.5rem;align-items:center;border:1px solid var(--border);border-radius:var(--radius);padding:0.55rem 0.7rem;margin-bottom:0.7rem;cursor:pointer;">
         <input type="checkbox" id="mgProtected" onchange="mgToggleProtect(this.checked)">
@@ -738,6 +752,7 @@
           : (s.shared ? (s.share_mode==='users' ? ' <span title="특정 사용자에게만 공유" style="font-size:0.72rem;">👥</span>' : ' <span title="전체 공유" style="font-size:0.72rem;">🌐</span>') : '');
         if(s.delete_protected) sharedBadge += ' <span title="삭제 방지" style="font-size:0.72rem;">🛡</span>';
         if(s.storage) sharedBadge += ' <span title="영구 저장소" style="font-size:0.72rem;">💾</span>';
+        if(s.path_rules && s.path_rules.length) sharedBadge += ' <span title="접근 제한 경로 '+s.path_rules.length+'개" style="font-size:0.72rem;">🔒</span>';
         var head='<div class="svc-head"><span class="svc-name" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+(s.kind==='database'?'🗄️ ':'')+esc(s.name)+sharedBadge+ownerBadge+'</span><span style="display:flex;align-items:center;gap:9px;flex:0 0 auto;">'+resBars+'<span class="badge '+(running>0?'badge-run':'badge-stop')+'">'+running+'/'+(s.replicas||0)+'</span></span></div>';
         if(s.kind==='database'){
           var hp=(s.db_host||'')+':'+(s.db_port||'');
@@ -812,6 +827,8 @@
       document.getElementById('mgResMsg').textContent='';
       document.getElementById('mgEnvMsg').textContent='';
       mgSetShareUI(s.shared ? (s.share_mode||'all') : '', s.share_users||[]);
+      mgRenderRules(s.path_rules||[]);
+      document.getElementById('mgRulesMsg').textContent='';
       document.getElementById('mgShareMsg').textContent='';
       document.getElementById('mgProtectMsg').textContent='';
       mgApplyProtect(!!s.delete_protected);
@@ -840,6 +857,47 @@
       var mode=mgShareMode();
       document.getElementById('mgShareUsersBox').style.display=(mode==='users')?'':'none';
       document.getElementById('mgShareHint').textContent=SHARE_HINTS[mode]||'';
+    }
+    /* per-path access rules */
+    function mgRenderRules(rules){
+      var box=document.getElementById('mgRules'); box.innerHTML='';
+      (rules||[]).forEach(function(r){ mgAddRule(r); });
+    }
+    function mgAddRule(r){
+      r=r||{path:'',allow:'owner',users:[]};
+      var row=document.createElement('div');
+      row.className='mg-rule';
+      row.style.cssText='border-top:1px dashed var(--border);padding:0.4rem 0;';
+      row.innerHTML='<div class="row" style="gap:0.4rem;">'+
+        '<input data-k="path" placeholder="/admin" style="flex:1;min-width:120px;font-family:monospace;font-size:0.82rem;padding:0.3rem 0.5rem;">'+
+        '<select data-k="allow" style="font-size:0.82rem;padding:0.3rem;"><option value="owner">소유자만</option><option value="login">로그인한 사용자 전체</option><option value="users">지정한 사용자</option></select>'+
+        '<button class="btn btn-sm btn-outline" title="삭제" style="padding:0.2rem 0.5rem;">✕</button></div>'+
+        '<textarea data-k="users" rows="1" placeholder="허용할 이메일 (쉼표 구분)" style="display:none;width:100%;margin-top:0.3rem;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.35rem;border-radius:var(--radius);font-family:inherit;font-size:0.8rem;resize:vertical;"></textarea>';
+      var path=row.querySelector('[data-k=path]'), allow=row.querySelector('[data-k=allow]'), users=row.querySelector('[data-k=users]');
+      path.value=r.path||''; allow.value=r.allow||'owner'; users.value=(r.users||[]).join(', ');
+      var sync=function(){ users.style.display=(allow.value==='users')?'':'none'; };
+      allow.onchange=sync; sync();
+      row.querySelector('button').onclick=function(){ row.remove(); };
+      document.getElementById('mgRules').appendChild(row);
+    }
+    async function mgSaveRules(){
+      var rules=[];
+      document.querySelectorAll('#mgRules .mg-rule').forEach(function(row){
+        var path=row.querySelector('[data-k=path]').value.trim(); if(!path) return;
+        var allow=row.querySelector('[data-k=allow]').value;
+        var rule={path:path,allow:allow};
+        if(allow==='users') rule.users=row.querySelector('[data-k=users]').value.split(/[\s,;]+/).map(function(x){return x.trim();}).filter(Boolean);
+        rules.push(rule);
+      });
+      var m=document.getElementById('mgRulesMsg'); m.style.color='var(--text-muted)'; m.textContent='적용 중...';
+      try{
+        var r=await fetch(API+'/v1/services/'+encodeURIComponent(_mgName)+'/path-rules',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf()},body:JSON.stringify({rules:rules})});
+        var d=await r.json();
+        if(!d.success){ m.style.color='var(--danger)'; m.textContent='실패: '+(d.message||''); return; }
+        m.style.color='var(--success)'; m.textContent=(d.path_rules||[]).length?('✓ '+d.path_rules.length+'개 경로 보호 중'):'✓ 접근 제한 없음';
+        mgRenderRules(d.path_rules||[]);
+        if(_svcMap[_mgName]) _svcMap[_mgName].path_rules=d.path_rules||[];
+      }catch(e){ m.style.color='var(--danger)'; m.textContent='오류: '+e.message; }
     }
     async function mgSaveShare(){
       var mode=mgShareMode();

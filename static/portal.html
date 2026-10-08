@@ -46,7 +46,11 @@
     .res-mem > span { background:linear-gradient(to right,#388bfd,#79c0ff); }
     .svc-head { display:flex; align-items:center; justify-content:space-between; padding:0.6rem 0.8rem; border-bottom:1px solid var(--border); }
     .svc-name { font-weight:600; }
-    .svc-owner { font-size:0.74rem; color:var(--text-muted); padding:0.3rem 0.8rem; border-bottom:1px solid var(--border); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .svc-head { position:relative; }
+    .svc-name { cursor:default; }
+    .svc-tip { display:none; position:absolute; left:0.6rem; top:calc(100% - 4px); z-index:5; max-width:calc(100% - 1.2rem); padding:0.3rem 0.55rem; border-radius:6px;
+      background:var(--text); color:var(--bg); font-size:0.75rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; box-shadow:0 4px 14px rgba(0,0,0,.25); pointer-events:none; }
+    .svc-name:hover + .svc-tip { display:block; }
     .thumb { position:relative; height:180px; background:var(--surface); }
     .thumb iframe { width:166.66%; height:300px; border:0; transform:scale(0.6); transform-origin:0 0; pointer-events:none; }
     .thumb .overlay { position:absolute; inset:0; cursor:pointer; }
@@ -747,15 +751,15 @@
         var manageBtn = owned?'<button class="btn btn-sm btn-outline" onclick="openManage(\''+attrEsc(s.name)+'\')">⚙ 관리</button>':'';
         var resBars='<div class="res-bars" title="클릭: 리소스 추이 보기" onclick="openTrend(\''+attrEsc(s.name)+'\')" style="display:none;"><div class="res-bar res-cpu"><span style="width:0%"></span></div><div class="res-bar res-mem"><span style="width:0%"></span></div></div>';
         var card=document.createElement('div'); card.className='svc-card'; card.setAttribute('data-svc',s.name);
-        // Who deployed it — on its own line so long names can't truncate it.
+        // Who deployed it: shown when hovering the service title.
         var ownerBadge = '';
-        var ownerLine = '<div class="svc-owner" title="서비스를 등록한 계정">👤 '+(s.owner ? esc(s.owner)+(_user && s.owner===_user.username ? ' <span style="color:var(--accent);">(나)</span>' : '') : '<span class="muted">등록 계정 없음</span>')+'</div>';
+        var ownerLine = '<div class="svc-tip">👤 '+(s.owner ? esc(s.owner)+(_user && s.owner===_user.username ? ' <span style="color:var(--accent);">(나)</span>' : '') : '등록 계정 없음')+'</div>';
         var sharedBadge = s.shared_with_me ? ' <span title="나에게 공유된 서비스" style="font-size:0.7rem;color:var(--accent);">👥 나에게 공유됨</span>'
           : (s.shared ? (s.share_mode==='users' ? ' <span title="특정 사용자에게만 공유" style="font-size:0.72rem;">👥</span>' : ' <span title="전체 공유" style="font-size:0.72rem;">🌐</span>') : '');
         if(s.delete_protected) sharedBadge += ' <span title="삭제 방지" style="font-size:0.72rem;">🛡</span>';
         if(s.storage) sharedBadge += ' <span title="영구 저장소" style="font-size:0.72rem;">💾</span>';
         if(s.path_rules && s.path_rules.length) sharedBadge += ' <span title="접근 제한 경로 '+s.path_rules.length+'개" style="font-size:0.72rem;">🔒</span>';
-        var head='<div class="svc-head"><span class="svc-name" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+(s.kind==='database'?'🗄️ ':'')+esc(s.name)+sharedBadge+ownerBadge+'</span><span style="display:flex;align-items:center;gap:9px;flex:0 0 auto;">'+resBars+'<span class="badge '+(running>0?'badge-run':'badge-stop')+'">'+running+'/'+(s.replicas||0)+'</span></span></div>';
+        var head='<div class="svc-head"><span class="svc-name" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+(s.kind==='database'?'🗄️ ':'')+esc(s.name)+sharedBadge+ownerBadge+'</span>'+ownerLine+'<span style="display:flex;align-items:center;gap:9px;flex:0 0 auto;">'+resBars+'<span class="badge '+(running>0?'badge-run':'badge-stop')+'">'+running+'/'+(s.replicas||0)+'</span></span></div>';
         if(s.kind==='database'){
           var hp=(s.db_host||'')+':'+(s.db_port||'');
           var scheme=(s.db_engine==='mysql')?'mysql':'postgresql';
@@ -779,7 +783,7 @@
             infoRow('계정',s.db_user)+
             infoRow('연결문자열',connTpl,connTpl,'연결 문자열 복사 (비밀번호는 직접 입력)')+
             '</div>';
-          card.innerHTML=head+ownerLine+dbBody+dbFoot;
+          card.innerHTML=head+dbBody+dbFoot;
           grid.appendChild(card);
           return;
         }
@@ -791,7 +795,7 @@
           (url?'<a href="'+esc(iurl)+'" target="_blank" style="font-size:0.78rem;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+esc(url)+'</a>'+copyBtn(iurl,'엔드포인트 복사'):'<span class="muted" style="flex:1;font-size:0.78rem;">'+esc(s.image||'')+'</span>')+
           manageBtn+
           '</div>';
-        card.innerHTML=head+ownerLine+thumb+foot;
+        card.innerHTML=head+thumb+foot;
         var iframe=card.querySelector('iframe');
         if(iframe){ var loaded=false; iframe.addEventListener('load',function(){loaded=true;}); setTimeout(function(){ if(!loaded){ var fr=iframe.parentNode; var rb=fr.querySelector('.res-bars'); fr.innerHTML='<div class="err">미리보기 불가 (클릭하여 열기)</div><div class="overlay" onclick="window.open(\''+esc(iurl)+'\',\'_blank\')"></div>'; if(rb) fr.appendChild(rb); } },6000); }
         grid.appendChild(card);

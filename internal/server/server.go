@@ -2281,20 +2281,35 @@ func handleUserServiceShare(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "서비스명이 필요합니다"})
 		return
 	}
-	info := clusterState.GetService(name)
-	if info == nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "서비스를 찾을 수 없습니다"})
+	if info := clusterState.GetService(name); info != nil {
+		if ok, owner := canManageService(r, info); !ok {
+			writeJSON(w, http.StatusForbidden, map[string]any{
+				"success": false,
+				"message": fmt.Sprintf("'%s' 서비스는 소유자(%s)만 공유 설정을 변경할 수 있습니다", name, owner),
+				"code":    "forbidden_owner",
+			})
+			return
+		}
+	} else {
+		// Running without a cluster definition (e.g. started directly on a
+		// worker): no owner to check, so admins only, and only if it runs.
+		if len(clusterState.GetPlacements(name, "")) == 0 {
+			writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "서비스를 찾을 수 없습니다"})
+			return
+		}
+		if sess.Role != auth.RoleAdmin {
+			writeJSON(w, http.StatusForbidden, map[string]any{
+				"success": false,
+				"message": fmt.Sprintf("'%s'는 클러스터 정의가 없는 서비스라 관리자만 공유 설정을 바꿀 수 있습니다", name),
+				"code":    "forbidden",
+			})
+			return
+		}
+	}
+	if !clusterState.SetServiceShared(name, body.Shared) {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "message": "공유 설정 저장 실패"})
 		return
 	}
-	if ok, owner := canManageService(r, info); !ok {
-		writeJSON(w, http.StatusForbidden, map[string]any{
-			"success": false,
-			"message": fmt.Sprintf("'%s' 서비스는 소유자(%s)만 공유 설정을 변경할 수 있습니다", name, owner),
-			"code":    "forbidden_owner",
-		})
-		return
-	}
-	clusterState.SetServiceShared(name, body.Shared)
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "name": name, "shared": body.Shared})
 }
 
@@ -3294,6 +3309,7 @@ func getServicesDataForViewer(showSystem bool, viewer string) []map[string]any {
 			"endpoint":      endpoint,
 		}
 		entry["delete_protected"] = serviceDeleteProtected(svcName)
+		entry["shared"] = clusterState != nil && clusterState.IsServiceShared(svcName)
 		if st := serviceVolumeReport(svcName); st != nil {
 			entry["storage"] = st
 		}
@@ -3370,6 +3386,7 @@ func getServicesDataForViewer(showSystem bool, viewer string) []map[string]any {
 			"cpu_limit":     svc["cpu_limit"],
 		}
 		entry["delete_protected"] = serviceDeleteProtected(svcName)
+		entry["shared"] = clusterState != nil && clusterState.IsServiceShared(svcName)
 		if st := serviceVolumeReport(svcName); st != nil {
 			entry["storage"] = st
 		}

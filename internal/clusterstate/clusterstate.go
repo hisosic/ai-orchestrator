@@ -153,6 +153,12 @@ func (m *ClusterStateManager) initDB() {
 	// covers services that run without a cluster definition (e.g. started
 	// directly on a worker). The services.delete_protected column from the
 	// first version is folded in once and then left unused.
+	// Share flag for services that run without a cluster definition (the
+	// definition's own services.shared column covers the rest).
+	m.db.Exec(`CREATE TABLE IF NOT EXISTS shared_services (
+		service_name TEXT PRIMARY KEY,
+		shared_at TEXT NOT NULL
+	)`)
 	m.db.Exec(`CREATE TABLE IF NOT EXISTS delete_protection (
 		service_name TEXT PRIMARY KEY,
 		enabled_at TEXT NOT NULL
@@ -819,7 +825,27 @@ func (m *ClusterStateManager) SetServiceShared(name string, shared bool) bool {
 	if err != nil {
 		return false
 	}
-	n, _ := res.RowsAffected()
+	if n, _ := res.RowsAffected(); n > 0 {
+		m.db.Exec("DELETE FROM shared_services WHERE service_name=?", name)
+		return true
+	}
+	// No definition: keep the flag by name.
+	if shared {
+		_, err = m.db.Exec("INSERT OR IGNORE INTO shared_services (service_name, shared_at) VALUES (?, ?)", name, now())
+	} else {
+		_, err = m.db.Exec("DELETE FROM shared_services WHERE service_name=?", name)
+	}
+	return err == nil
+}
+
+// IsServiceShared reports whether a service is shared, whether or not it has
+// a cluster definition.
+func (m *ClusterStateManager) IsServiceShared(name string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var n int
+	m.db.QueryRow(`SELECT (SELECT COUNT(*) FROM services WHERE name=? AND shared=1) +
+		(SELECT COUNT(*) FROM shared_services WHERE service_name=?)`, name, name).Scan(&n)
 	return n > 0
 }
 
@@ -837,6 +863,7 @@ func (m *ClusterStateManager) DeleteService(name string) bool {
 	}
 	m.db.Exec("DELETE FROM services WHERE name=?", name)
 	m.db.Exec("DELETE FROM container_placements WHERE service_name=?", name)
+	m.db.Exec("DELETE FROM shared_services WHERE service_name=?", name)
 	return true
 }
 

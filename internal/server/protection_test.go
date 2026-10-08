@@ -139,3 +139,39 @@ func TestDeleteProtectionWithoutDefinition(t *testing.T) {
 		t.Fatal("flag not visible")
 	}
 }
+
+// Sharing a service that runs without a cluster definition: admin only, and
+// it then shows up in the anonymous public listing.
+func TestShareServiceWithoutDefinition(t *testing.T) {
+	h, _ := mcpEnv(t)
+	clusterState.ProcessHeartbeat("node-b", "127.0.0.1:1", models.NodeResources{}, []models.ContainerPlacement{{
+		ContainerID: "abcdef0123456789abcd", ContainerName: "orch-ai-presentation-0",
+		ServiceName: "ai-presentation", Image: "hisosic/ai-presentation", NodeName: "node-b", Status: "running",
+	}})
+	bob, _ := auth.EnsureUserSession("bob@parametacorp.com", auth.RoleUser)
+	alice, _ := auth.EnsureUserSession("alice@parametacorp.com", auth.RoleAdmin)
+
+	if w := postAs(h, "/v1/user/service-share", `{"name":"ai-presentation","shared":true}`, bob.Token); w.Code != http.StatusForbidden {
+		t.Fatalf("non-admin share: %d %s", w.Code, w.Body.String())
+	}
+	if w := postAs(h, "/v1/user/service-share", `{"name":"ai-presentation","shared":true}`, alice.Token); w.Code != http.StatusOK {
+		t.Fatalf("admin share: %d %s", w.Code, w.Body.String())
+	}
+	public := func() string {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("GET", "/v1/public/services", nil))
+		return w.Body.String()
+	}
+	if !strings.Contains(public(), `"name":"ai-presentation"`) {
+		t.Fatalf("not in public listing: %s", public())
+	}
+	if w := postAs(h, "/v1/user/service-share", `{"name":"ai-presentation","shared":false}`, alice.Token); w.Code != http.StatusOK {
+		t.Fatalf("admin unshare: %d", w.Code)
+	}
+	if strings.Contains(public(), `"name":"ai-presentation"`) {
+		t.Fatal("still public after unshare")
+	}
+	if w := postAs(h, "/v1/user/service-share", `{"name":"ghost","shared":true}`, alice.Token); w.Code != http.StatusNotFound {
+		t.Fatalf("unknown service: %d", w.Code)
+	}
+}

@@ -1425,6 +1425,14 @@ func sessionAuthMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// requestHost is the host the client used, as seen through the proxy.
+func requestHost(r *http.Request) string {
+	if h := strings.TrimSpace(r.Header.Get("X-Forwarded-Host")); h != "" {
+		return h
+	}
+	return r.Host
+}
+
 // passwordLoginEnabled reports whether local username/password login is
 // allowed. Off by default so Google Workspace login is the only way in;
 // ORCHESTRATOR_PASSWORD_LOGIN=true re-enables it for break-glass access.
@@ -2221,8 +2229,8 @@ func applyDBFields(s map[string]any) {
 // as shared, visible without authentication. Secrets/env are never included.
 func handlePublicServices(w http.ResponseWriter, r *http.Request) {
 	all := getServicesDataForViewer(false, "") // viewer "" → secrets masked anyway
-	base := runtime.BaseDomain()
-	pathHost := runtime.PathHost()
+	// URLs stay on the domain the visitor used (old or new public domain).
+	base, pathHost := runtime.DomainForHost(requestHost(r))
 	endpointFor := func(name string) string {
 		if serviceUsesSubdomain(name) && base != "" {
 			return "http://" + name + "." + base + "/"
@@ -2308,8 +2316,8 @@ func handleListUserServices(w http.ResponseWriter, r *http.Request) {
 	// Map service → primary public URL honoring its routing mode: default
 	// path routing (<path-host>/svc/), or subdomain (svc.<base-domain>) when
 	// the service opted in. Matches ensurePublicEndpoints / what actually works.
-	base := runtime.BaseDomain()
-	pathHost := runtime.PathHost()
+	// URLs stay on the domain the visitor used (old or new public domain).
+	base, pathHost := runtime.DomainForHost(requestHost(r))
 	endpointFor := func(name string) string {
 		if serviceUsesSubdomain(name) && base != "" {
 			return "http://" + name + "." + base + "/"
@@ -6128,9 +6136,9 @@ func syncTraefikRoutes() {
 		routeName := "cluster-" + safe
 
 		if serviceUsesSubdomain(svcName) && baseDomain != "" {
-			// Subdomain routing (opt-in): svc.baseDomain → worker Traefik.
+			// Subdomain routing (opt-in): svc.<each base domain> → worker Traefik.
 			routers[routeName] = routerCfg{
-				rule:        fmt.Sprintf("Host(`%s.%s`)", svcName, baseDomain),
+				rule:        runtime.HostRule(runtime.SubdomainHosts(svcName)),
 				service:     routeName,
 				entryPoints: []string{"web"},
 			}
@@ -6141,7 +6149,7 @@ func syncTraefikRoutes() {
 			// here (that would double-strip).
 			if pathHost != "" {
 				routers[routeName+"-host"] = routerCfg{
-					rule:        fmt.Sprintf("Host(`%s`) && PathPrefix(`/%s/`)", pathHost, svcName),
+					rule:        fmt.Sprintf("%s && PathPrefix(`/%s/`)", runtime.HostRule(runtime.PathHosts()), svcName),
 					service:     routeName,
 					entryPoints: []string{"web"},
 					priority:    120,

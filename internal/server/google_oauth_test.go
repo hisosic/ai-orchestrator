@@ -73,3 +73,31 @@ func TestGoogleLoginRedirectsToConsent(t *testing.T) {
 		t.Fatalf("state cookie = %+v", state)
 	}
 }
+
+func TestGoogleRedirectPerDomain(t *testing.T) {
+	setGoogleEnv(t)
+	t.Setenv("GOOGLE_OAUTH_REDIRECT_URL", "https://itda.24x365.online/v1/auth/google/callback, https://itda.rgrg.im/v1/auth/google/callback")
+
+	login := func(target string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		handleGoogleLogin(w, httptest.NewRequest("GET", target, nil))
+		return w
+	}
+	// New domain: consent with its own callback, no bounce.
+	w := login("https://itda.rgrg.im/v1/auth/google/login?redirect=/admin")
+	loc, _ := url.Parse(w.Header().Get("Location"))
+	if loc.Host != "accounts.google.com" || loc.Query().Get("redirect_uri") != "https://itda.rgrg.im/v1/auth/google/callback" {
+		t.Fatalf("rgrg login → %s", w.Header().Get("Location"))
+	}
+	// Old domain keeps working.
+	w = login("https://itda.24x365.online/v1/auth/google/login")
+	loc, _ = url.Parse(w.Header().Get("Location"))
+	if loc.Query().Get("redirect_uri") != "https://itda.24x365.online/v1/auth/google/callback" {
+		t.Fatalf("24x365 login → %s", w.Header().Get("Location"))
+	}
+	// Unknown host (direct IP) bounces to the first configured domain.
+	w = login("http://20.20.6.248:8000/v1/auth/google/login?redirect=/admin")
+	if w.Header().Get("Location") != "https://itda.24x365.online/v1/auth/google/login?redirect=/admin" {
+		t.Fatalf("IP login → %s", w.Header().Get("Location"))
+	}
+}

@@ -72,3 +72,20 @@ func TestAnonymousAPIReadsBlocked(t *testing.T) {
 func bytesContain(w *httptest.ResponseRecorder, s string) bool {
 	return strings.Contains(w.Body.String(), s)
 }
+
+func TestPublicURLsFollowRequestDomain(t *testing.T) {
+	t.Setenv("ORCHESTRATOR_ADVERTISE_ADDR", "127.0.0.1:1")
+	t.Setenv("ORCHESTRATOR_BASE_DOMAIN", "24x365.online")
+	t.Setenv("ORCHESTRATOR_EXTRA_BASE_DOMAINS", "rgrg.im")
+	h := setupTestServer(t)
+	clusterState.SaveService("shared-web", "img:1", 1, map[string]any{"owner": "x", "shared": true})
+	for host, want := range map[string]string{"itda.rgrg.im": "itda.rgrg.im/shared-web/", "itda.24x365.online": "itda.24x365.online/shared-web/"} {
+		req := httptest.NewRequest("GET", "/v1/public/services", nil)
+		req.Header.Set("X-Forwarded-Host", host)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		if !strings.Contains(w.Body.String(), want) {
+			t.Errorf("host %s: want %s in %s", host, want, w.Body.String())
+		}
+	}
+}

@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"ai-container-go/internal/auth"
+	"ai-container-go/internal/runtime"
 )
 
 const googleStateCookie = "orch_goog_state"
@@ -42,20 +43,42 @@ func googleOAuthConfigured() bool {
 // googleRedirectURL returns the configured callback URL, or derives one from
 // the incoming request (scheme+host) so it works behind the reverse proxy.
 func googleRedirectURL(r *http.Request) string {
-	if v := strings.TrimSpace(os.Getenv("GOOGLE_OAUTH_REDIRECT_URL")); v != "" {
-		return v
+	// GOOGLE_OAUTH_REDIRECT_URL may list several callbacks (one per public
+	// domain, comma separated); use the one on the host the user is on so the
+	// login round trip stays on that domain. Unknown hosts get the first.
+	var urls []string
+	for _, u := range strings.Split(os.Getenv("GOOGLE_OAUTH_REDIRECT_URL"), ",") {
+		if u = strings.TrimSpace(u); u != "" {
+			urls = append(urls, u)
+		}
+	}
+	if len(urls) > 0 {
+		host := strings.ToLower(requestHost(r))
+		for _, u := range urls {
+			if pu, err := url.Parse(u); err == nil && strings.EqualFold(pu.Host, host) {
+				return u
+			}
+		}
+		return urls[0]
 	}
 	scheme := "https"
 	if p := r.Header.Get("X-Forwarded-Proto"); p != "" {
 		scheme = p
-	} else if r.TLS == nil && !strings.Contains(r.Host, "24x365") {
+	} else if r.TLS == nil && !isPublicPathHost(r.Host) {
 		scheme = "http"
 	}
-	host := r.Header.Get("X-Forwarded-Host")
-	if host == "" {
-		host = r.Host
+	return fmt.Sprintf("%s://%s/v1/auth/google/callback", scheme, requestHost(r))
+}
+
+// isPublicPathHost reports whether host is one of the public domains
+// (served over HTTPS by the edge proxy).
+func isPublicPathHost(host string) bool {
+	for _, h := range runtime.PathHosts() {
+		if strings.EqualFold(h, host) {
+			return true
+		}
 	}
-	return fmt.Sprintf("%s://%s/v1/auth/google/callback", scheme, host)
+	return false
 }
 
 // googleLoginDest validates the post-login landing page against an allowlist

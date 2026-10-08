@@ -153,7 +153,7 @@ func handleServiceEndpoints(w http.ResponseWriter, r *http.Request) {
 	if forceRewrite {
 		externalBase = pubHost
 	}
-	externalBaseDomain := runtime.BaseDomain() // e.g. "24x365.online"
+	externalBaseDomains := runtime.BaseDomains() // e.g. "24x365.online", "rgrg.im"
 	var wg sync.WaitGroup
 	for i := range all {
 		wg.Add(1)
@@ -164,10 +164,12 @@ func handleServiceEndpoints(w http.ResponseWriter, r *http.Request) {
 				ep.ResponseMs = 0
 				return
 			}
-			if externalBaseDomain != "" && strings.Contains(ep.URL, externalBaseDomain) {
-				ep.Reachable = true
-				ep.ResponseMs = 0
-				return
+			for _, d := range externalBaseDomains {
+				if strings.Contains(ep.URL, d) {
+					ep.Reachable = true
+					ep.ResponseMs = 0
+					return
+				}
 			}
 			ep.Reachable, ep.ResponseMs = checkEndpoint(ep.URL)
 		}(&all[i])
@@ -340,7 +342,7 @@ func ensurePublicEndpoints(all []ServiceEndpoint, pubScheme, pubHost string, for
 		bySvc[ep.Service] = append(bySvc[ep.Service], ep)
 	}
 
-	baseDomain := runtime.BaseDomain()
+	baseDomain, pathHost := runtime.DomainForHost(pubHost)
 
 	// publicURLFor builds the canonical public URL for a service honoring its
 	// routing mode: subdomain (svc.<base-domain>) when the service opted in,
@@ -349,7 +351,7 @@ func ensurePublicEndpoints(all []ServiceEndpoint, pubScheme, pubHost string, for
 		if serviceUsesSubdomain(svc) && baseDomain != "" {
 			return fmt.Sprintf("%s://%s.%s/", pubScheme, svc, baseDomain)
 		}
-		host := runtime.PathHost()
+		host := pathHost
 		if host == "" {
 			host = pubHost
 		}

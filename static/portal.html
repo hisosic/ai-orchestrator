@@ -366,7 +366,7 @@
           <input id="runPersist" placeholder="영구 저장 경로 (선택, 쉼표 구분 · 예: /data, /app/uploads)" style="flex:1;min-width:220px;">
         </div>
         <p class="muted" style="font-size:0.76rem;margin:-0.2rem 0 0.5rem;">컨테이너는 재시작·업데이트 때 새로 만들어지므로, 지정한 경로만 데이터가 유지됩니다. 영구 저장소가 있으면 한 노드에 고정되어 복제본 1개로 실행됩니다.</p>
-        <label class="row" style="gap:0.35rem;font-size:0.82rem;cursor:pointer;margin-bottom:0.4rem;"><input type="checkbox" id="runSubdomain"> 서브도메인으로 연결 (svc.24x365.online) · 기본은 경로 방식(itda.24x365.online/svc)</label>
+        <label class="row" style="gap:0.35rem;font-size:0.82rem;cursor:pointer;margin-bottom:0.4rem;"><input type="checkbox" id="runSubdomain"> 서브도메인으로 연결 (<span class="dom-sub">svc.도메인</span>) · 기본은 경로 방식(<span class="dom-path">현재 주소/svc</span>)</label>
         <label class="muted" style="font-size:0.82rem;display:block;margin-bottom:0.2rem;">환경변수 (KEY=value, 한 줄에 하나)</label>
         <textarea id="runEnv" rows="3" placeholder="APP_ENV=prod&#10;PORT=8080" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.5rem;border-radius:var(--radius);font-family:monospace;font-size:0.82rem;resize:vertical;"></textarea>
         <div class="row" style="margin-top:0.5rem;">
@@ -1169,6 +1169,13 @@
     }
 
     /* my secrets — modal manager (list / add / edit / reveal / delete) */
+    /* Routing hints follow the domain this page was opened on. */
+    (function(){
+      var h=location.hostname, base=h.replace(/^itda\./,'');
+      document.querySelectorAll('.dom-sub').forEach(function(e){ e.textContent='svc.'+base; });
+      document.querySelectorAll('.dom-path').forEach(function(e){ e.textContent=h+'/svc'; });
+    })();
+
     /* ---- MCP connection: personal API tokens + client setup ---- */
     var _mcpPlainTok='';
     function mcpUrl(){ return location.origin+'/mcp'; }

@@ -159,6 +159,82 @@ func PathHost() string {
 	return ""
 }
 
+// ExtraBaseDomains are additional public domains served alongside the
+// primary one (ORCHESTRATOR_EXTRA_BASE_DOMAINS, comma separated), e.g. while
+// moving to a new domain. Each gets the path host "itda.<domain>" and, for
+// subdomain-routed services, "<svc>.<domain>".
+func ExtraBaseDomains() []string {
+	var out []string
+	seen := map[string]bool{strings.ToLower(BaseDomain()): true}
+	for _, d := range strings.Split(os.Getenv("ORCHESTRATOR_EXTRA_BASE_DOMAINS"), ",") {
+		d = strings.ToLower(strings.Trim(strings.TrimSpace(d), "."))
+		if d != "" && !seen[d] {
+			seen[d] = true
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// BaseDomains returns the primary base domain followed by the extra ones.
+func BaseDomains() []string {
+	var out []string
+	if bd := BaseDomain(); bd != "" {
+		out = append(out, bd)
+	}
+	return append(out, ExtraBaseDomains()...)
+}
+
+// PathHosts returns every host that serves path routing (<host>/svc/): the
+// primary PathHost plus "itda.<domain>" for each extra domain.
+func PathHosts() []string {
+	var out []string
+	if ph := PathHost(); ph != "" {
+		out = append(out, ph)
+	}
+	for _, d := range ExtraBaseDomains() {
+		out = append(out, "itda."+d)
+	}
+	return out
+}
+
+// DomainForHost picks the (base domain, path host) pair a request arrived
+// on, so URLs shown to the user stay on that domain. Unknown hosts (IP
+// access, internal names) get the primary pair.
+func DomainForHost(host string) (string, string) {
+	host = strings.ToLower(host)
+	if i := strings.LastIndexByte(host, ':'); i > 0 && !strings.Contains(host[i:], "]") {
+		host = host[:i]
+	}
+	for _, d := range ExtraBaseDomains() {
+		if host == d || strings.HasSuffix(host, "."+d) {
+			return d, "itda." + d
+		}
+	}
+	return BaseDomain(), PathHost()
+}
+
+// HostRule renders a Traefik v2 rule matching any of hosts.
+func HostRule(hosts []string) string {
+	parts := make([]string, 0, len(hosts))
+	for _, h := range hosts {
+		parts = append(parts, fmt.Sprintf("Host(`%s`)", h))
+	}
+	if len(parts) == 1 {
+		return parts[0]
+	}
+	return "(" + strings.Join(parts, " || ") + ")"
+}
+
+// SubdomainHosts returns "<svc>.<domain>" for every base domain.
+func SubdomainHosts(serviceName string) []string {
+	var out []string
+	for _, d := range BaseDomains() {
+		out = append(out, serviceName+"."+d)
+	}
+	return out
+}
+
 // TraefikLabels returns Traefik ingress labels for a service.
 //
 // Default = PATH routing: Host(<path-host>) && PathPrefix(/svc/) with a
@@ -179,8 +255,8 @@ func TraefikLabels(serviceName string, port int, subdomain bool) map[string]stri
 
 	// Subdomain routing (opt-in): svc.<base-domain>
 	if subdomain {
-		if bd := BaseDomain(); bd != "" {
-			labels[fmt.Sprintf("traefik.http.routers.%s.rule", safe)] = fmt.Sprintf("Host(`%s.%s`)", serviceName, bd)
+		if hosts := SubdomainHosts(serviceName); len(hosts) > 0 {
+			labels[fmt.Sprintf("traefik.http.routers.%s.rule", safe)] = HostRule(hosts)
 			return labels
 		}
 	}
@@ -193,8 +269,8 @@ func TraefikLabels(serviceName string, port int, subdomain bool) map[string]stri
 	// Bind the path route to the public path host when configured so
 	// <path-host>/svc/ works; the svc.local host route is kept for internal
 	// name-based access.
-	if ph := PathHost(); ph != "" {
-		labels[fmt.Sprintf("traefik.http.routers.%s-host.rule", safe)] = fmt.Sprintf("Host(`%s`) && PathPrefix(`/%s/`)", ph, pathPrefix)
+	if phs := PathHosts(); len(phs) > 0 {
+		labels[fmt.Sprintf("traefik.http.routers.%s-host.rule", safe)] = fmt.Sprintf("%s && PathPrefix(`/%s/`)", HostRule(phs), pathPrefix)
 		labels[fmt.Sprintf("traefik.http.routers.%s-host.service", safe)] = safe
 		labels[fmt.Sprintf("traefik.http.routers.%s-host.middlewares", safe)] = fmt.Sprintf("%s-strip", safe)
 		labels[fmt.Sprintf("traefik.http.routers.%s-host.priority", safe)] = "120"

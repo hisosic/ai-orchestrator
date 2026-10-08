@@ -1,0 +1,570 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>itda 사용 가이드 — MCP로 배포하기</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230d1424'/%3E%3Cpath d='M16 5l9 5v12l-9 5-9-5V10z' fill='none' stroke='%235aa7ff' stroke-width='2' stroke-linejoin='round'/%3E%3Cpath d='M7 10l9 5 9-5M16 15v12' fill='none' stroke='%235aa7ff' stroke-width='2' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+<style>
+:root {
+  --bg:#070b16; --panel:#0e1626; --panel2:#131f33; --line:#28364f; --fg:#e9eefb; --mut:#9aa8c4; --dim:#6f7f9e;
+  --acc:#2f80ff; --acc2:#5aa7ff; --ok:#3ddc84; --warn:#ffb547; --bad:#ff6b7a; --vio:#8b6cff;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+  font-family: "Pretendard Variable", Pretendard, "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif; }
+body { overflow: hidden; }
+code, pre, .mono { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+/* 1280x720 stage scaled to fit the viewport */
+#stage { position: fixed; left: 50%; top: 50%; width: 1280px; height: 720px; transform-origin: 0 0; }
+.slide { position: absolute; inset: 0; padding: 64px 80px 72px; display: none; flex-direction: column;
+  background: radial-gradient(1100px 600px at 92% 110%, rgba(56,132,255,.16), transparent 60%),
+              radial-gradient(800px 500px at 105% 10%, rgba(139,108,255,.12), transparent 60%), var(--bg);
+  border-radius: 6px; overflow: hidden; }
+.slide.active { display: flex; }
+.slide h1 { font-size: 54px; line-height: 1.15; margin: 0 0 18px; letter-spacing: -1px; }
+.slide h2 { font-size: 36px; margin: 0 0 8px; letter-spacing: -.5px; }
+.kicker { color: var(--acc2); font-weight: 700; font-size: 15px; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 10px; }
+.lead { color: var(--mut); font-size: 20px; line-height: 1.6; margin: 0 0 26px; }
+.muted { color: var(--mut); }
+.grow { flex: 1; min-height: 0; }
+.row { display: flex; gap: 22px; }
+.col { flex: 1; min-width: 0; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 20px 22px; }
+.card h3 { margin: 0 0 8px; font-size: 19px; }
+.card p, .card li { color: var(--mut); font-size: 15.5px; line-height: 1.6; margin: 0; }
+.card ul { margin: 6px 0 0; padding-left: 18px; }
+.card .ico { font-size: 26px; margin-bottom: 8px; }
+.hl { border-color: rgba(47,128,255,.7); box-shadow: 0 0 0 1px rgba(47,128,255,.35), 0 10px 40px -18px rgba(47,128,255,.6); }
+.tag { display: inline-block; font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 99px; background: rgba(47,128,255,.16); color: var(--acc2); margin-right: 6px; }
+.tag.ok { background: rgba(61,220,132,.14); color: var(--ok); }
+.tag.warn { background: rgba(255,181,71,.14); color: var(--warn); }
+.tag.vio { background: rgba(139,108,255,.16); color: #b5a3ff; }
+
+pre { position: relative; margin: 0; background: #0a1020; border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px;
+  font-size: 14.5px; line-height: 1.6; color: #cdd6f4; white-space: pre-wrap; word-break: break-all; }
+pre .c { color: #6f7f9e; } pre .k { color: #8fb8ff; } pre .s { color: #a6e3a1; } pre .v { color: #f9c97a; }
+pre .copy { position: absolute; top: 8px; right: 8px; font: 600 12px/1 inherit; font-family: inherit; color: var(--mut);
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 7px; padding: 6px 9px; cursor: pointer; }
+pre .copy:hover { color: var(--fg); }
+code.i { background: rgba(127,140,170,.16); padding: 1px 6px; border-radius: 5px; font-size: .92em; }
+
+.step { display: inline-flex; align-items: center; gap: 10px; font-weight: 800; color: var(--acc2); font-size: 16px; margin-bottom: 8px; }
+.step b { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; background: var(--acc); color: #fff; font-size: 15px; }
+
+/* chat mock */
+.chat { display: flex; flex-direction: column; gap: 12px; }
+.msg { max-width: 92%; padding: 12px 16px; border-radius: 14px; font-size: 15.5px; line-height: 1.55; }
+.msg.me { align-self: flex-end; background: var(--acc); color: #fff; border-bottom-right-radius: 4px; }
+.msg.ai { align-self: flex-start; background: var(--panel2); border: 1px solid var(--line); border-bottom-left-radius: 4px; color: var(--fg); }
+.msg .tool { display: block; font-size: 12.5px; color: var(--acc2); margin-bottom: 4px; font-family: "JetBrains Mono", ui-monospace, monospace; }
+
+table { width: 100%; border-collapse: collapse; font-size: 15px; }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--mut); font-weight: 600; font-size: 13.5px; }
+td code { font-size: 13.5px; color: #8fb8ff; }
+
+.flow { display: flex; align-items: stretch; gap: 10px; }
+.flow .card { flex: 1; }
+.arrow { align-self: center; color: var(--dim); font-size: 22px; }
+
+/* cover */
+.cover { justify-content: center; }
+.cover .brand { display: flex; align-items: center; gap: 14px; margin-bottom: 28px; }
+.cover .brand svg { width: 52px; height: 52px; }
+.cover .brand span { font-size: 22px; font-weight: 700; color: var(--mut); }
+.cover h1 { font-size: 72px; }
+.cover .waves { position: absolute; left: 0; right: 0; bottom: 0; height: 55%; pointer-events: none; opacity: .9; }
+.dots { position: absolute; left: -40%; right: -40%; bottom: 0; height: 120%; transform: perspective(900px) rotateX(64deg); transform-origin: 50% 100%;
+  background-image: radial-gradient(rgba(150,200,255,.75) 1.4px, transparent 1.8px); background-size: 28px 28px;
+  -webkit-mask-image: linear-gradient(transparent 0, rgba(0,0,0,.3) 55%, #000 85%); mask-image: linear-gradient(transparent 0, rgba(0,0,0,.3) 55%, #000 85%); pointer-events: none; opacity: .5; }
+
+/* chrome */
+#bar { position: fixed; left: 0; top: 0; height: 3px; background: linear-gradient(90deg, var(--acc), var(--vio)); transition: width .25s ease; z-index: 5; }
+#nav { position: fixed; right: 18px; bottom: 14px; display: flex; gap: 8px; align-items: center; z-index: 5; color: var(--mut); font-size: 13px; }
+#nav button { background: rgba(14,22,38,.85); color: var(--fg); border: 1px solid var(--line); border-radius: 9px; width: 36px; height: 32px; cursor: pointer; font-size: 15px; }
+#nav button:hover { border-color: var(--acc); }
+#nav button:focus-visible, pre .copy:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
+.foot { position: absolute; left: 80px; bottom: 26px; color: var(--dim); font-size: 13px; }
+</style>
+</head>
+<body>
+<div id="bar"></div>
+<div id="stage">
+
+<!-- 1. Cover -->
+<section class="slide cover">
+  <div class="dots" aria-hidden="true"></div>
+  <svg class="waves" viewBox="0 0 1200 400" preserveAspectRatio="none" aria-hidden="true">
+    <defs>
+      <linearGradient id="wa" x1="0" x2="1"><stop offset="0" stop-color="#7c5cff" stop-opacity="0"/><stop offset=".4" stop-color="#7c5cff" stop-opacity=".55"/><stop offset=".75" stop-color="#3fa9ff" stop-opacity=".5"/><stop offset="1" stop-color="#3fa9ff" stop-opacity="0"/></linearGradient>
+      <linearGradient id="wb" x1="0" x2="1"><stop offset="0" stop-color="#2ee6ff" stop-opacity="0"/><stop offset=".5" stop-color="#2ee6ff" stop-opacity=".45"/><stop offset="1" stop-color="#7c5cff" stop-opacity="0"/></linearGradient>
+    </defs>
+    <path d="M0 120 C 260 70 400 170 640 132 C 880 94 1000 30 1200 60" fill="none" stroke="url(#wa)" stroke-width="1.4" opacity=".6"/>
+    <path d="M0 200 C 200 120 330 270 520 220 C 720 166 860 60 1200 120" fill="none" stroke="url(#wa)" stroke-width="2"/>
+    <path d="M0 290 C 220 220 380 340 600 295 C 830 248 980 170 1200 215" fill="none" stroke="url(#wb)" stroke-width="1.6"/>
+  </svg>
+  <div class="brand">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 3.8l10.5 5.9v12.6L16 28.2 5.5 22.3V9.7z" fill="none" stroke="#2f80ff" stroke-width="2" stroke-linejoin="round"/><path d="M5.5 9.7L16 15.6l10.5-5.9M16 15.6v12.6" fill="none" stroke="#2f80ff" stroke-width="2" stroke-linejoin="round"/></svg>
+    <span>itda · AI Container Orchestrator</span>
+  </div>
+  <div class="kicker">사용 가이드</div>
+  <h1>말 한마디로 배포하는<br>사내 컨테이너 플랫폼</h1>
+  <p class="lead" style="max-width:760px;">Claude Code·Cursor 같은 AI 개발 도구를 itda MCP에 연결하면,<br>이미지 push부터 배포·업데이트·디버깅까지 대화로 끝낼 수 있습니다.</p>
+  <div><span class="tag">https://itda.rgrg.im</span><span class="tag vio">MCP · itda</span><span class="tag ok">@parametacorp.com</span></div>
+</section>
+
+<!-- 2. What is itda -->
+<section class="slide">
+  <div class="kicker">Overview</div>
+  <h2>itda는 무엇인가요?</h2>
+  <p class="lead">사내 서버 3대로 이루어진 컨테이너 클러스터에 내 서비스를 올리고, 바로 사내 도메인으로 공개하는 플랫폼입니다.</p>
+  <div class="row grow">
+    <div class="col card"><div class="ico">🚀</div><h3>배포</h3><p>이미지·Git 저장소·소스 압축 파일·DB까지. 배포하면 <code class="i">itda.rgrg.im/서비스명/</code> 주소가 바로 생깁니다.</p></div>
+    <div class="col card hl"><div class="ico">🤖</div><h3>MCP 연결</h3><p>AI 개발 도구에서 "배포해줘", "왜 죽었는지 봐줘"라고 말하면 itda가 대신 실행합니다. <b>오늘의 핵심</b>입니다.</p></div>
+    <div class="col card"><div class="ico">💾</div><h3>운영</h3><p>영구 저장소, 시크릿 주입, 로그·컨테이너 진단, 삭제 방지, 다른 사용자와 공유까지.</p></div>
+  </div>
+  <div class="row" style="margin-top:22px;">
+    <div class="col card"><h3>구성</h3><p>서버 3대(master · node-b · node-c) · 내장 Docker registry <code class="i">20.20.6.248:5000</code> · 관리 콘솔 <code class="i">/admin</code></p></div>
+    <div class="col card"><h3>로그인</h3><p>회사 Google 계정(@parametacorp.com)만 사용합니다. 처음 로그인하면 계정이 자동으로 만들어집니다.</p></div>
+  </div>
+</section>
+
+<!-- 3. Getting started -->
+<section class="slide">
+  <div class="kicker">Getting started</div>
+  <h2>접속하고 둘러보기</h2>
+  <p class="lead">브라우저에서 포털에 들어가 Google로 로그인합니다. (기존 주소 itda.24x365.online도 계속 사용할 수 있습니다)</p>
+  <div class="row grow">
+    <div class="col card">
+      <h3>서비스 포털 — <code class="i">https://itda.rgrg.im</code></h3>
+      <ul>
+        <li><b>공유 서비스</b>: 로그인 없이 누구나 볼 수 있는 서비스 목록</li>
+        <li><b>내 서비스</b>: 내가 배포한 서비스의 상태·주소·리소스</li>
+        <li><b>배포</b>: 소스 업로드 · Git · 이미지 · 데이터베이스</li>
+        <li><b>🔑 내 시크릿</b>: API 키·비밀번호를 암호화해 보관</li>
+        <li><b>🔌 MCP 연결</b>: AI 도구용 토큰 발급과 연결 방법</li>
+      </ul>
+    </div>
+    <div class="col card">
+      <h3>서비스 관리 창</h3>
+      <ul>
+        <li>시작·중지·재시작·복제본 수 조절</li>
+        <li>이미지 업데이트, CPU·메모리 제한, 환경변수</li>
+        <li>로그 보기</li>
+        <li>🌐 공유 · 🛡 삭제 방지 · 💾 영구 저장소 확인</li>
+      </ul>
+      <p style="margin-top:14px;">관리 콘솔(<code class="i">/admin</code>)은 관리자 전용입니다.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 4. Ways to deploy -->
+<section class="slide">
+  <div class="kicker">Deploy options</div>
+  <h2>배포 방법 한눈에 보기</h2>
+  <p class="lead">어떤 방법으로 올려도 결과는 같습니다. 반복 작업이 많다면 MCP가 가장 빠릅니다.</p>
+  <table>
+    <tr><th style="width:22%">방법</th><th style="width:38%">이럴 때</th><th>어디서</th></tr>
+    <tr><td>📦 소스 업로드</td><td>Dockerfile이 없어도 됨 (자동 생성·빌드)</td><td>포털 → 배포 → 소스 업로드</td></tr>
+    <tr><td>🐙 Git 저장소</td><td>GitHub 등 HTTPS 저장소를 바로 빌드</td><td>포털, 또는 MCP <code>deploy_from_git</code></td></tr>
+    <tr><td>🚀 이미지</td><td>내 PC에서 빌드한 이미지를 push해서 실행</td><td>포털, 또는 MCP <code>deploy_image</code></td></tr>
+    <tr><td>🗄️ 데이터베이스</td><td>PostgreSQL · MySQL (데이터 자동 보존)</td><td>포털 → 배포 → 데이터베이스</td></tr>
+    <tr style="background:rgba(47,128,255,.08)"><td><b>🤖 MCP</b></td><td><b>위 작업 + 업데이트·디버깅을 대화로</b></td><td><b>Claude Code · Cursor 등</b></td></tr>
+  </table>
+</section>
+
+<!-- 5. Why MCP -->
+<section class="slide">
+  <div class="kicker">MCP</div>
+  <h2>MCP로 배포한다는 것</h2>
+  <p class="lead">MCP(Model Context Protocol)는 AI 도구가 외부 시스템의 기능을 직접 호출하게 해 주는 표준입니다. itda는 18개 도구를 MCP로 제공합니다.</p>
+  <div class="row grow">
+    <div class="col chat card" style="justify-content:center;">
+      <div class="msg me">이 프로젝트 빌드해서 itda에 my-api로 올려줘</div>
+      <div class="msg ai"><span class="tool">get_registry_info → docker push → deploy_image</span>내부 registry에 push하고 <b>my-api</b>를 배포했습니다.<br>주소: https://itda.rgrg.im/my-api/</div>
+      <div class="msg me">자꾸 재시작되는데 왜 그래?</div>
+      <div class="msg ai"><span class="tool">inspect_containers · get_logs</span>메모리 부족(OOM)으로 종료됐습니다. 메모리 제한을 512m로 올려 다시 배포할까요?</div>
+    </div>
+    <div class="col" style="display:flex;flex-direction:column;gap:16px;">
+      <div class="card"><h3>✅ 내 서비스만</h3><p>토큰은 발급한 계정의 서비스만 조회·수정합니다. 관리자 토큰도 예외가 없습니다.</p></div>
+      <div class="card"><h3>✅ 포털과 같은 규칙</h3><p>MCP 요청도 포털과 같은 권한 검사·감사 로그를 거칩니다.</p></div>
+      <div class="card"><h3>✅ 위험한 작업은 확인</h3><p>삭제는 <code class="i">confirm=true</code>가 필요하고, 삭제 방지는 MCP로 끌 수 없습니다.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- 6. Step 1 token -->
+<section class="slide">
+  <div class="step"><b>1</b> 토큰 발급</div>
+  <h2>포털에서 개인 액세스 토큰 만들기</h2>
+  <p class="lead">토큰은 내 계정의 열쇠입니다. 개발 도구(노트북)마다 하나씩 만들어 두면 관리가 쉽습니다.</p>
+  <div class="row grow">
+    <div class="col card">
+      <ol style="color:var(--mut);font-size:17px;line-height:2;margin:0;padding-left:22px;">
+        <li>https://itda.rgrg.im 접속 → Google 로그인</li>
+        <li>오른쪽 위 <b style="color:var(--fg)">🔌 MCP 연결</b> 클릭</li>
+        <li>토큰 이름 입력 (예: <code class="i">macbook-claude</code>) → <b style="color:var(--fg)">발급</b></li>
+        <li>표시된 <code class="i">omcp_…</code> 토큰 복사</li>
+      </ol>
+    </div>
+    <div class="col" style="display:flex;flex-direction:column;gap:16px;">
+      <div class="card"><h3>⚠️ 한 번만 보여 줍니다</h3><p>창을 닫으면 다시 볼 수 없습니다. 잃어버리면 새로 발급하세요.</p></div>
+      <div class="card"><h3>🧹 폐기</h3><p>같은 창의 목록에서 <b>폐기</b>를 누르면 즉시 끊깁니다. 마지막 사용 시각도 보입니다.</p></div>
+      <div class="card"><h3>🔒 보관</h3><p>토큰은 비밀번호처럼 다루세요. 저장소·채팅에 올리지 마세요. 계정당 최대 10개.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- 7. Step 2 connect -->
+<section class="slide">
+  <div class="step"><b>2</b> 개발 도구 연결</div>
+  <h2>itda MCP 서버 등록</h2>
+  <p class="lead">포털의 🔌 MCP 연결 창에는 토큰이 채워진 명령이 그대로 나옵니다. 복사해서 실행하면 끝입니다.</p>
+  <div class="row grow">
+    <div class="col">
+      <h3 style="margin:0 0 10px;">Claude Code (터미널)</h3>
+<pre>claude mcp add --transport http itda \
+  https://itda.rgrg.im/mcp \
+  --header "Authorization: Bearer <span class="v">omcp_...</span>"</pre>
+      <p class="muted" style="font-size:15px;line-height:1.6;margin-top:14px;">등록 후 Claude Code에서 <code class="i">/mcp</code>로 연결 상태를 확인하고, "itda whoami 해줘"라고 물어보면 내 계정이 나옵니다.</p>
+    </div>
+    <div class="col">
+      <h3 style="margin:0 0 10px;">Cursor · 기타 (mcp.json)</h3>
+<pre>{
+  <span class="k">"mcpServers"</span>: {
+    <span class="k">"itda"</span>: {
+      <span class="k">"url"</span>: <span class="s">"https://itda.rgrg.im/mcp"</span>,
+      <span class="k">"headers"</span>: {
+        <span class="k">"Authorization"</span>: <span class="s">"Bearer <span class="v">omcp_...</span>"</span>
+      }
+    }
+  }
+}</pre>
+    </div>
+  </div>
+</section>
+
+<!-- 8. Step 3 image -->
+<section class="slide">
+  <div class="step"><b>3</b> 이미지 준비</div>
+  <h2>내 PC에서 빌드해서 내부 registry에 push</h2>
+  <p class="lead">"registry 정보 알려줘"라고 하면 MCP <code class="i">get_registry_info</code>가 아래 명령을 내 계정 이름에 맞춰 만들어 줍니다.</p>
+  <div class="row grow">
+    <div class="col">
+<pre><span class="c"># 최초 1회: HTTP registry 허용 (Docker Desktop → Settings → Docker Engine)</span>
+{ <span class="k">"insecure-registries"</span>: [<span class="s">"20.20.6.248:5000"</span>] }
+
+<span class="c"># 클러스터는 x86(amd64) — Apple Silicon이면 --platform 필수</span>
+docker build --platform linux/amd64 \
+  -t 20.20.6.248:5000/<span class="v">jslee-myapp</span>:v1 .
+
+docker push 20.20.6.248:5000/<span class="v">jslee-myapp</span>:v1</pre>
+    </div>
+    <div class="col" style="display:flex;flex-direction:column;gap:14px;max-width:400px;">
+      <div class="card"><h3>📛 이름 앞에 계정명</h3><p>registry는 모두가 같이 씁니다. <code class="i">계정명-앱이름</code>으로 붙여야 다른 사람 이미지와 겹치지 않습니다.</p></div>
+      <div class="card"><h3>🌐 사내망 · VPN</h3><p>push는 사내망에서만 됩니다. 외부 도메인으로는 push할 수 없습니다.</p></div>
+      <div class="card"><h3>🔑 비밀값은 이미지에 넣지 않기</h3><p>API 키·비밀번호는 시크릿으로 주입합니다 (12쪽).</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- 9. Step 4 deploy -->
+<section class="slide">
+  <div class="step"><b>4</b> 배포</div>
+  <h2>"배포해줘"라고 말하기</h2>
+  <p class="lead">AI 도구가 <code class="i">deploy_image</code>를 호출합니다. 같은 이름으로 다시 부르면 내 서비스를 새 설정으로 교체합니다.</p>
+  <div class="row grow">
+    <div class="col chat">
+      <div class="msg me">20.20.6.248:5000/jslee-myapp:v1 이미지를 jslee-myapp으로 배포해줘. PORT=8080 환경변수 넣고, /data는 재시작해도 유지되게.</div>
+      <div class="msg ai"><span class="tool">deploy_image</span>배포 완료 · node-b · 복제본 1<br>주소: <b>https://itda.rgrg.im/jslee-myapp/</b></div>
+    </div>
+    <div class="col">
+<pre><span class="c">// deploy_image 인자</span>
+{
+  <span class="k">"name"</span>: <span class="s">"jslee-myapp"</span>,
+  <span class="k">"image"</span>: <span class="s">"20.20.6.248:5000/jslee-myapp:v1"</span>,
+  <span class="k">"env"</span>: { <span class="k">"PORT"</span>: <span class="s">"8080"</span> },
+  <span class="k">"persistent_paths"</span>: [<span class="s">"/data"</span>],
+  <span class="k">"secret_refs"</span>: [{ <span class="k">"secret_id"</span>: <span class="s">"…"</span>, <span class="k">"env_name"</span>: <span class="s">"DB_PASSWORD"</span> }],
+  <span class="k">"memory"</span>: <span class="s">"512m"</span>, <span class="k">"cpu"</span>: <span class="s">"0.5"</span>,
+  <span class="k">"replicas"</span>: 1
+}</pre>
+      <p class="muted" style="font-size:14.5px;line-height:1.6;margin-top:12px;">주소는 <code class="i">itda.rgrg.im/서비스명/</code> 경로 방식입니다. 앱은 컨테이너의 <b>80번 포트</b>에서 응답해야 하고, CSS·JS는 상대 경로로 불러와야 합니다.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 10. Git deploy -->
+<section class="slide">
+  <div class="kicker">Alternative</div>
+  <h2>Git 저장소에서 바로 배포</h2>
+  <p class="lead">PC에서 빌드할 필요가 없습니다. 클러스터가 clone → 빌드 → push → 배포까지 하고, 빌드가 실패하면 AI가 Dockerfile을 고쳐 다시 시도합니다.</p>
+  <div class="flow">
+    <div class="card"><h3>deploy_from_git</h3><p><code class="i">git_url</code> (HTTPS) · <code class="i">branch</code> · <code class="i">name</code> · 비공개 저장소는 <code class="i">secret_id</code>로 토큰 전달</p></div>
+    <div class="arrow">→</div>
+    <div class="card"><h3>deploy_id 반환</h3><p>빌드는 백그라운드에서 진행됩니다.</p></div>
+    <div class="arrow">→</div>
+    <div class="card"><h3>get_deploy_status</h3><p><code class="i">wait_seconds</code>(최대 90)로 기다리며 단계·빌드 로그를 확인합니다.</p></div>
+  </div>
+  <div class="row grow" style="margin-top:22px;">
+    <div class="col chat">
+      <div class="msg me">https://github.com/acme/todo-api main 브랜치를 jslee-todo로 배포하고 끝날 때까지 지켜봐줘</div>
+      <div class="msg ai"><span class="tool">deploy_from_git → get_deploy_status(wait 90s)</span>build ✓ · push ✓ · deploy ✓ · health ✓<br>https://itda.rgrg.im/jslee-todo/</div>
+    </div>
+    <div class="col card"><h3>💡 팁</h3><p>git으로 처음 만든 서비스에 영구 저장소가 필요하면, 한 번 <code class="i">deploy_image</code>로 같은 이미지를 <code class="i">persistent_paths</code>와 함께 다시 배포하세요. 그 뒤로는 git으로 다시 빌드해도 데이터가 따라갑니다.</p></div>
+  </div>
+</section>
+
+<!-- 11. Persistence -->
+<section class="slide">
+  <div class="kicker">Data</div>
+  <h2>재시작해도 데이터가 남게 — persistent_paths</h2>
+  <p class="lead">컨테이너는 재시작·업데이트 때마다 새로 만들어집니다. 지정한 경로만 데이터가 유지됩니다.</p>
+  <div class="row grow">
+    <div class="col card">
+      <h3>이렇게 동작합니다</h3>
+      <ul>
+        <li>경로마다 관리형 볼륨이 만들어져 연결됩니다.</li>
+        <li>서비스는 데이터가 있는 <b>한 노드에 고정</b>되고 <b>복제본은 1개</b>입니다.</li>
+        <li>재시작 · 이미지 업데이트 · 다시 배포 · 자동 복구 모두 같은 노드, 같은 데이터로 올라옵니다.</li>
+        <li>포털에서 만든 PostgreSQL·MySQL은 자동으로 적용됩니다.</li>
+      </ul>
+    </div>
+    <div class="col card">
+      <h3>삭제할 때</h3>
+      <ul>
+        <li><code class="i">delete_service</code>는 기본으로 데이터를 <b>남깁니다</b> (어느 노드에 남았는지 알려 줌).</li>
+        <li>데이터까지 지우려면 <code class="i">purge_data=true</code> — 되돌릴 수 없습니다.</li>
+        <li><code class="i">list_volumes</code>로 내 저장소와 노드를 확인합니다.</li>
+      </ul>
+      <p style="margin-top:12px;"><span class="tag warn">주의</span> 노드 하나의 디스크에 있으므로 그 노드가 멈추면 서비스도 멈춥니다. 중요한 데이터는 따로 백업하세요.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 12. Secrets -->
+<section class="slide">
+  <div class="kicker">Secrets</div>
+  <h2>비밀값은 시크릿으로 주입</h2>
+  <p class="lead">API 키·DB 비밀번호는 포털에 한 번 저장하고, 배포할 때 이름(id)만 넘깁니다. 값은 서버에서 암호화되어 있다가 컨테이너에만 들어갑니다.</p>
+  <div class="flow">
+    <div class="card"><h3>① 포털 🔑 내 시크릿</h3><p>이름과 값을 저장합니다. 값은 본인만 다시 볼 수 있습니다.</p></div>
+    <div class="arrow">→</div>
+    <div class="card"><h3>② list_my_secrets</h3><p>이름과 id만 보여 줍니다. 값은 MCP로 절대 나오지 않습니다.</p></div>
+    <div class="arrow">→</div>
+    <div class="card"><h3>③ deploy_image</h3><p><code class="i">secret_refs: [{secret_id, env_name}]</code> 로 환경변수에 주입합니다.</p></div>
+  </div>
+  <div class="row grow" style="margin-top:22px;">
+    <div class="col chat">
+      <div class="msg me">내 시크릿 중 openai-key를 OPENAI_API_KEY로 넣어서 jslee-bot 다시 배포해줘</div>
+      <div class="msg ai"><span class="tool">list_my_secrets → deploy_image(secret_refs)</span>OPENAI_API_KEY를 주입해 jslee-bot을 다시 배포했습니다. (값은 대화에 표시되지 않습니다)</div>
+    </div>
+  </div>
+</section>
+
+<!-- 13. Operate -->
+<section class="slide">
+  <div class="kicker">Operate</div>
+  <h2>업데이트 · 스케일 · 재시작 · 삭제</h2>
+  <p class="lead">새 버전을 push한 뒤 한 문장이면 됩니다.</p>
+  <div class="row grow">
+    <div class="col" style="display:flex;flex-direction:column;gap:14px;">
+      <div class="card"><h3><code class="i">update_image</code></h3><p>새 태그로 교체하거나, 태그를 비우면 같은 태그를 다시 받아 재시작합니다.</p></div>
+      <div class="card"><h3><code class="i">scale_service</code></h3><p>복제본 수 0~10 (0 = 중지). 영구 저장소가 있으면 1까지.</p></div>
+      <div class="card"><h3><code class="i">restart_service</code></h3><p>모두 내렸다가 같은 수로 다시 올립니다. 환경변수·볼륨은 그대로입니다.</p></div>
+      <div class="card"><h3><code class="i">delete_service</code></h3><p><code class="i">confirm=true</code> 필수. 🛡 삭제 방지가 켜져 있으면 거부됩니다.</p></div>
+    </div>
+    <div class="col chat">
+      <div class="msg me">jslee-myapp v2 push했어. 업데이트해줘</div>
+      <div class="msg ai"><span class="tool">update_image</span>20.20.6.248:5000/jslee-myapp:v2 로 교체했습니다.</div>
+      <div class="msg me">트래픽 많으니 3개로 늘려줘</div>
+      <div class="msg ai"><span class="tool">scale_service</span>복제본 1 → 3 (node-b, node-c, master)</div>
+    </div>
+  </div>
+</section>
+
+<!-- 14. Debug -->
+<section class="slide">
+  <div class="kicker">Debug</div>
+  <h2>문제가 생기면 물어보세요</h2>
+  <p class="lead">AI 도구가 상태 → 로그 → 컨테이너 진단 → 컨테이너 안 명령 실행 순서로 직접 조사합니다.</p>
+  <div class="row grow">
+    <div class="col" style="display:flex;flex-direction:column;gap:12px;">
+      <div class="card"><h3><code class="i">get_service_status</code></h3><p>복제본·이미지·주소·CPU/메모리를 한 번에</p></div>
+      <div class="card"><h3><code class="i">get_logs</code></h3><p>모든 노드의 복제본 로그 (tail 최대 2000줄)</p></div>
+      <div class="card"><h3><code class="i">inspect_containers</code></h3><p>종료 코드 · OOM · 재시작 횟수 · 헬스체크 결과</p></div>
+      <div class="card"><h3><code class="i">exec_in_container</code></h3><p>컨테이너 안에서 <code class="i">sh -c</code> 실행 (최대 120초, 출력 64KB, 감사 로그 기록)</p></div>
+    </div>
+    <div class="col chat">
+      <div class="msg me">jslee-myapp이 502 나는데 확인해줘</div>
+      <div class="msg ai"><span class="tool">inspect_containers</span>restart_count 14, exit_code 1 — 계속 재시작 중입니다.</div>
+      <div class="msg ai"><span class="tool">get_logs(tail 100)</span>"connect ECONNREFUSED jslee-db:5432" — DB에 접속하지 못합니다.</div>
+      <div class="msg ai"><span class="tool">exec_in_container: env | grep DB</span>DB_HOST가 비어 있습니다. DB_HOST=jslee-db 를 넣어 다시 배포할까요?</div>
+    </div>
+  </div>
+</section>
+
+<!-- 15. Tool list -->
+<section class="slide">
+  <div class="kicker">Reference</div>
+  <h2>itda MCP 도구 18개</h2>
+  <div class="row grow" style="margin-top:12px;">
+    <div class="col">
+      <table>
+        <tr><th>배포</th><th></th></tr>
+        <tr><td><code>get_registry_info</code></td><td>registry 주소와 build·push 명령</td></tr>
+        <tr><td><code>import_image</code></td><td>공개 이미지를 내부 registry로 가져오기</td></tr>
+        <tr><td><code>deploy_image</code></td><td>이미지로 배포·다시 배포</td></tr>
+        <tr><td><code>deploy_from_git</code></td><td>Git 저장소 빌드 후 배포</td></tr>
+        <tr><td><code>get_deploy_status</code></td><td>빌드·배포 진행 상황</td></tr>
+        <tr><td><code>update_image</code></td><td>새 태그로 교체 / 재pull</td></tr>
+        <tr><td><code>scale_service</code></td><td>복제본 수 조절</td></tr>
+        <tr><td><code>restart_service</code></td><td>재시작</td></tr>
+        <tr><td><code>delete_service</code></td><td>삭제 (confirm, purge_data)</td></tr>
+      </table>
+    </div>
+    <div class="col">
+      <table>
+        <tr><th>조회 · 디버그</th><th></th></tr>
+        <tr><td><code>whoami</code></td><td>토큰 계정과 registry</td></tr>
+        <tr><td><code>list_my_services</code></td><td>내 서비스 목록</td></tr>
+        <tr><td><code>get_service_status</code></td><td>서비스 상세 상태</td></tr>
+        <tr><td><code>list_registry_images</code></td><td>registry 이미지 목록</td></tr>
+        <tr><td><code>list_my_secrets</code></td><td>내 시크릿 이름·id</td></tr>
+        <tr><td><code>list_volumes</code></td><td>내 영구 저장소</td></tr>
+        <tr><td><code>get_logs</code></td><td>로그</td></tr>
+        <tr><td><code>inspect_containers</code></td><td>컨테이너 진단</td></tr>
+        <tr><td><code>exec_in_container</code></td><td>컨테이너 안 명령 실행</td></tr>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- 16. Safety -->
+<section class="slide">
+  <div class="kicker">Safety</div>
+  <h2>안심하고 써도 되는 이유</h2>
+  <div class="row grow" style="margin-top:14px;">
+    <div class="col" style="display:flex;flex-direction:column;gap:16px;">
+      <div class="card"><h3>👤 내 서비스만</h3><p>토큰·포털 모두 소유자만 수정할 수 있습니다. 다른 사람과 같은 이름으로 배포하거나, 다른 사람이 쓰는 이미지를 덮어쓰는 것도 막혀 있습니다.</p></div>
+      <div class="card"><h3>🛡 삭제 방지</h3><p>켜 두면 포털·관리 콘솔·MCP 어디서도 서비스와 컨테이너를 지울 수 없습니다. 해제는 로그인한 브라우저에서 소유자만 가능합니다.</p></div>
+    </div>
+    <div class="col" style="display:flex;flex-direction:column;gap:16px;">
+      <div class="card"><h3>🌐 공유는 선택</h3><p>공유를 켠 서비스만 로그인 없이 포털 첫 화면에 보입니다. 환경변수·시크릿은 절대 공개되지 않습니다.</p></div>
+      <div class="card"><h3>📝 감사 로그</h3><p>배포·삭제·컨테이너 명령 실행·보호 설정 변경이 모두 기록됩니다.</p></div>
+      <div class="card"><h3>🧱 서버 경로 연결 금지</h3><p>일반 사용자는 서버 디렉터리·docker.sock을 컨테이너에 연결할 수 없습니다. 데이터는 <code class="i">persistent_paths</code>로만.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- 17. Troubleshooting -->
+<section class="slide">
+  <div class="kicker">FAQ</div>
+  <h2>자주 겪는 문제</h2>
+  <table style="margin-top:10px;">
+    <tr><th style="width:34%">증상</th><th>해결</th></tr>
+    <tr><td>MCP 연결 시 <code>401</code></td><td>토큰이 틀렸거나 폐기됨 → 포털에서 새로 발급해 다시 등록</td></tr>
+    <tr><td><code>http: server gave HTTP response to HTTPS client</code></td><td>Docker의 <code>insecure-registries</code>에 <code>20.20.6.248:5000</code> 추가 후 Docker 재시작</td></tr>
+    <tr><td>push가 멈추거나 연결 실패</td><td>사내망/VPN에 연결되어 있는지 확인</td></tr>
+    <tr><td>컨테이너가 바로 죽고 <code>exec format error</code></td><td>Apple Silicon에서 빌드함 → <code>--platform linux/amd64</code>로 다시 빌드</td></tr>
+    <tr><td>"다른 사용자의 서비스입니다"</td><td>이미 쓰는 이름 → <code>계정명-앱이름</code>처럼 다른 이름 사용</td></tr>
+    <tr><td>"복제본 1개로만 실행"</td><td>영구 저장소가 있는 서비스는 한 노드·한 복제본으로 동작</td></tr>
+    <tr><td>페이지는 뜨는데 CSS·JS가 깨짐</td><td>경로 방식(<code>/서비스명/</code>)에서는 자원을 상대 경로로 불러와야 함</td></tr>
+    <tr><td>삭제가 409로 거부됨</td><td>🛡 삭제 방지가 켜져 있음 → 포털에서 해제 후 삭제</td></tr>
+  </table>
+</section>
+
+<!-- 18. Summary -->
+<section class="slide">
+  <div class="kicker">Recap</div>
+  <h2>오늘부터 이렇게 시작하세요</h2>
+  <div class="flow" style="margin:18px 0 26px;">
+    <div class="card"><div class="step"><b>1</b> 토큰</div><p>포털 → 🔌 MCP 연결 → 발급</p></div>
+    <div class="arrow">→</div>
+    <div class="card"><div class="step"><b>2</b> 연결</div><p><code class="i">claude mcp add … itda …</code></p></div>
+    <div class="arrow">→</div>
+    <div class="card"><div class="step"><b>3</b> push</div><p>amd64로 빌드해 <code class="i">20.20.6.248:5000</code></p></div>
+    <div class="arrow">→</div>
+    <div class="card"><div class="step"><b>4</b> 배포</div><p>"jslee-myapp으로 배포해줘"</p></div>
+  </div>
+  <h3 style="margin:0 0 10px;font-size:18px;">첫 대화로 이렇게 말해 보세요</h3>
+<pre>itda MCP로 이 프로젝트를 linux/amd64로 빌드해서 내부 registry에 push하고,
+"&lt;내계정&gt;-&lt;앱이름&gt;"으로 배포해줘. /data는 유지되게 하고,
+배포가 끝나면 상태와 최근 로그 50줄을 보여줘.</pre>
+  <p class="muted" style="margin-top:20px;font-size:15px;">문의: 클러스터 관리자 · 포털 https://itda.rgrg.im · 이 가이드도 itda 위에서 서비스되고 있습니다 🙂</p>
+</section>
+
+</div>
+
+<nav id="nav" aria-label="슬라이드 이동">
+  <span id="count"></span>
+  <button type="button" id="prev" aria-label="이전 슬라이드">←</button>
+  <button type="button" id="next" aria-label="다음 슬라이드">→</button>
+</nav>
+
+<script>
+(function () {
+  var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+  var stage = document.getElementById('stage');
+  var cur = 0;
+
+  function fit() {
+    var s = Math.min(window.innerWidth / 1280, window.innerHeight / 720);
+    stage.style.transform = 'scale(' + s + ') translate(-50%, -50%)';
+  }
+  function show(i) {
+    cur = Math.max(0, Math.min(slides.length - 1, i));
+    slides.forEach(function (el, k) { el.classList.toggle('active', k === cur); });
+    document.getElementById('count').textContent = (cur + 1) + ' / ' + slides.length;
+    document.getElementById('bar').style.width = ((cur + 1) / slides.length * 100) + '%';
+    if (location.hash !== '#' + (cur + 1)) history.replaceState(null, '', '#' + (cur + 1));
+  }
+  // footer page numbers
+  slides.forEach(function (el, k) {
+    if (k === 0) return;
+    var f = document.createElement('div');
+    f.className = 'foot';
+    f.textContent = 'itda 사용 가이드 · ' + (k + 1);
+    el.appendChild(f);
+  });
+  // copy buttons on code blocks
+  document.querySelectorAll('pre').forEach(function (pre) {
+    var b = document.createElement('button');
+    b.type = 'button'; b.className = 'copy'; b.textContent = '복사';
+    b.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var text = pre.innerText.replace(/복사$|✓$/, '').trim();
+      var done = function () { b.textContent = '✓'; setTimeout(function () { b.textContent = '복사'; }, 1200); };
+      if (navigator.clipboard) navigator.clipboard.writeText(text).then(done, done); else done();
+    });
+    pre.appendChild(b);
+  });
+
+  document.getElementById('prev').addEventListener('click', function () { show(cur - 1); });
+  document.getElementById('next').addEventListener('click', function () { show(cur + 1); });
+  document.addEventListener('keydown', function (e) {
+    if (['ArrowRight', 'PageDown', ' ', 'Enter'].indexOf(e.key) >= 0) { e.preventDefault(); show(cur + 1); }
+    else if (['ArrowLeft', 'PageUp', 'Backspace'].indexOf(e.key) >= 0) { e.preventDefault(); show(cur - 1); }
+    else if (e.key === 'Home') show(0);
+    else if (e.key === 'End') show(slides.length - 1);
+  });
+  // swipe on touch devices
+  var sx = null;
+  document.addEventListener('touchstart', function (e) { sx = e.touches[0].clientX; }, { passive: true });
+  document.addEventListener('touchend', function (e) {
+    if (sx === null) return;
+    var dx = e.changedTouches[0].clientX - sx; sx = null;
+    if (Math.abs(dx) > 50) show(cur + (dx < 0 ? 1 : -1));
+  });
+  window.addEventListener('resize', fit);
+  window.addEventListener('hashchange', function () { show((parseInt(location.hash.slice(1), 10) || 1) - 1); });
+  fit();
+  show((parseInt(location.hash.slice(1), 10) || 1) - 1);
+})();
+</script>
+</body>
+</html>

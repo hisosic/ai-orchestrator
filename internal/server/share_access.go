@@ -27,14 +27,16 @@ const maxShareUsers = 50
 
 var emailRe = regexp.MustCompile(`^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$`)
 
-// normalizeShareUsers validates and de-duplicates the allowed emails.
+// normalizeShareUsers validates and de-duplicates the allowed emails. The
+// owner may be listed too (harmless: owners always have access), so sharing
+// with just yourself is a way to make the link private.
 func normalizeShareUsers(in []string, owner string) ([]string, error) {
 	dom := googleAllowedDomain()
 	seen := map[string]bool{}
 	var out []string
 	for _, e := range in {
 		e = strings.ToLower(strings.TrimSpace(e))
-		if e == "" || e == owner || seen[e] {
+		if e == "" || seen[e] {
 			continue
 		}
 		if !emailRe.MatchString(e) {

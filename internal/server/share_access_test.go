@@ -46,6 +46,10 @@ func TestShareWithSpecificUsers(t *testing.T) {
 	if w := postAs(h, "/v1/user/service-share", `{"name":"bob-api","shared":true,"mode":"users","users":["carol@parametacorp.com"]}`, carol.Token); w.Code != http.StatusForbidden {
 		t.Fatalf("non-owner: %d", w.Code)
 	}
+	// Listing only yourself is accepted (a private, protected link).
+	if w := postAs(h, "/v1/user/service-share", `{"name":"bob-api","shared":true,"mode":"users","users":["bob@parametacorp.com"]}`, bob.Token); w.Code != http.StatusOK {
+		t.Fatalf("owner-only share: %d %s", w.Code, w.Body.String())
+	}
 	if w := postAs(h, "/v1/user/service-share", `{"name":"bob-api","shared":true,"mode":"users","users":["Carol@parametacorp.com "," carol@parametacorp.com"]}`, bob.Token); w.Code != http.StatusOK {
 		t.Fatalf("owner share: %d %s", w.Code, w.Body.String())
 	}

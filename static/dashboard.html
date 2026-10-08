@@ -521,7 +521,7 @@
     </div>
 
     <!-- Login Overlay (opened on demand via the header "로그인" button) -->
-    <div id="loginOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:9999;align-items:center;justify-content:center;" onclick="if(event.target===this) hideLoginOverlay()">
+    <div id="loginOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:9999;align-items:center;justify-content:center;" onclick="if(backdropClick(event,this)) hideLoginOverlay()">
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:2rem;width:360px;max-width:90%;position:relative;">
         <button type="button" onclick="hideLoginOverlay()" style="position:absolute;top:0.5rem;right:0.7rem;background:none;border:none;color:var(--text-muted);font-size:1.3rem;cursor:pointer;">&times;</button>
         <h2 style="margin:0 0 0.5rem 0;font-size:1.2rem;">관리자 로그인</h2>
@@ -589,7 +589,7 @@
     </header>
 
     <!-- Service Update Modal — choose target image/tag -->
-    <div id="updateSvcOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:9999;align-items:center;justify-content:center;" onclick="if(event.target===this) hideUpdateSvcModal()">
+    <div id="updateSvcOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:9999;align-items:center;justify-content:center;" onclick="if(backdropClick(event,this)) hideUpdateSvcModal()">
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:2rem;width:480px;max-width:90%;position:relative;">
         <button type="button" onclick="hideUpdateSvcModal()" style="position:absolute;top:0.5rem;right:0.7rem;background:none;border:none;color:var(--text-muted);font-size:1.3rem;cursor:pointer;">&times;</button>
         <h2 style="margin:0 0 0.5rem 0;font-size:1.2rem;">서비스 업데이트</h2>
@@ -623,7 +623,7 @@
     </div>
 
     <!-- Service Logs Modal -->
-    <div id="svcLogsOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:9999;align-items:center;justify-content:center;" onclick="if(event.target===this) hideSvcLogs()">
+    <div id="svcLogsOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:9999;align-items:center;justify-content:center;" onclick="if(backdropClick(event,this)) hideSvcLogs()">
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:1.5rem;width:860px;max-width:94%;position:relative;">
         <button type="button" onclick="hideSvcLogs()" style="position:absolute;top:0.5rem;right:0.7rem;background:none;border:none;color:var(--text-muted);font-size:1.3rem;cursor:pointer;">&times;</button>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.6rem;gap:1rem;">
@@ -638,7 +638,7 @@
     </div>
 
     <!-- Quick Run Modal (called from image list 기동 button) -->
-    <div id="quickRunOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:9999;align-items:center;justify-content:center;" onclick="if(event.target===this) hideQuickRunModal()">
+    <div id="quickRunOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:9999;align-items:center;justify-content:center;" onclick="if(backdropClick(event,this)) hideQuickRunModal()">
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:2rem;width:420px;max-width:90%;position:relative;">
         <button type="button" onclick="hideQuickRunModal()" style="position:absolute;top:0.5rem;right:0.7rem;background:none;border:none;color:var(--text-muted);font-size:1.3rem;cursor:pointer;">&times;</button>
         <h2 style="margin:0 0 0.5rem 0;font-size:1.2rem;">이미지 바로 기동</h2>
@@ -701,7 +701,7 @@
     </div>
 
     <!-- Change Password Modal -->
-    <div id="changePwOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:9999;align-items:center;justify-content:center;" onclick="if(event.target===this) hideChangePwModal()">
+    <div id="changePwOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:9999;align-items:center;justify-content:center;" onclick="if(backdropClick(event,this)) hideChangePwModal()">
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:2rem;width:380px;max-width:90%;position:relative;">
         <button type="button" onclick="hideChangePwModal()" style="position:absolute;top:0.5rem;right:0.7rem;background:none;border:none;color:var(--text-muted);font-size:1.3rem;cursor:pointer;">&times;</button>
         <h2 style="margin:0 0 0.5rem 0;font-size:1.2rem;">비밀번호 변경</h2>
@@ -1119,6 +1119,13 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
   </div>
 
   <script>
+    /* Backdrop clicks close a dialog only when the press also started on the
+       backdrop: selecting text in a field and releasing the mouse outside
+       the dialog must not close it (and lose what was typed). */
+    var _pressTarget = null;
+    document.addEventListener('mousedown', function(e){ _pressTarget = e.target; }, true);
+    function backdropClick(e, el){ return e.target === el && _pressTarget === el; }
+
     const API = '';
     let refreshTimer = null;
     let clusterNodes = [];
@@ -1264,7 +1271,7 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
         '</div>';
       document.body.appendChild(overlay);
       function close() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); refreshDeploySecretsDropdown(); }
-      overlay.addEventListener('click', function(e) { if (e.target === overlay) close(); });
+      overlay.addEventListener('click', function(e) { if (backdropClick(e, overlay)) close(); });
       overlay.querySelector('.modal-close').addEventListener('click', close);
       overlay.querySelector('#mySecretsClose').addEventListener('click', close);
 
@@ -1447,7 +1454,7 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
         '</div></div>';
       document.body.appendChild(overlay);
       function close() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }
-      overlay.addEventListener('click', function(e) { if (e.target === overlay) close(); });
+      overlay.addEventListener('click', function(e) { if (backdropClick(e, overlay)) close(); });
       overlay.querySelector('.modal-close').addEventListener('click', close);
       overlay.querySelector('#envEditCancel').addEventListener('click', close);
 
@@ -1599,7 +1606,7 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
         '</div>';
       document.body.appendChild(overlay);
       function close() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }
-      overlay.addEventListener('click', function(e) { if (e.target === overlay) close(); });
+      overlay.addEventListener('click', function(e) { if (backdropClick(e, overlay)) close(); });
       overlay.querySelector('.modal-close').addEventListener('click', close);
       overlay.querySelector('#userMgmtClose').addEventListener('click', close);
       // Google-only mode: accounts are created on first Google login and
@@ -2295,7 +2302,7 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
       document.body.appendChild(overlay);
 
       function close() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }
-      overlay.addEventListener('click', function(e) { if (e.target === overlay) close(); });
+      overlay.addEventListener('click', function(e) { if (backdropClick(e, overlay)) close(); });
       overlay.querySelector('.modal-close').addEventListener('click', close);
       overlay.querySelector('#modalNodeCancel').addEventListener('click', close);
 
@@ -2430,7 +2437,7 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
       document.body.appendChild(overlay);
 
       function close() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }
-      overlay.addEventListener('click', function(e) { if (e.target === overlay) close(); });
+      overlay.addEventListener('click', function(e) { if (backdropClick(e, overlay)) close(); });
       overlay.querySelector('.modal-close').addEventListener('click', close);
       overlay.querySelector('#migModalCancel').addEventListener('click', close);
       overlay.querySelector('#migModalConfirm').addEventListener('click', async function() {
@@ -2493,7 +2500,7 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
       document.body.appendChild(overlay);
 
       function close() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }
-      overlay.addEventListener('click', function(e) { if (e.target === overlay) close(); });
+      overlay.addEventListener('click', function(e) { if (backdropClick(e, overlay)) close(); });
       overlay.querySelector('.modal-close').addEventListener('click', close);
       overlay.querySelector('#delModalCancel').addEventListener('click', close);
       overlay.querySelector('#delModalConfirm').addEventListener('click', async function() {
@@ -4011,7 +4018,7 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
         if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
       }
       overlay.addEventListener('click', function(e) {
-        if (e.target === overlay) close();
+        if (backdropClick(e, overlay)) close();
       });
       var btn = overlay.querySelector('.inspect-modal-close');
       if (btn) btn.addEventListener('click', close);

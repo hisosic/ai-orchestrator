@@ -100,7 +100,7 @@
 
   <!-- Secrets manager overlay -->
   <!-- MCP connection (personal API tokens) -->
-  <div class="overlay-modal" id="mcpOverlay" onclick="if(event.target===this)closeMcp()">
+  <div class="overlay-modal" id="mcpOverlay" onclick="if(backdropClick(event,this))closeMcp()">
     <div class="modal" style="width:680px;max-width:94%;max-height:90vh;overflow:auto;">
       <div class="row" style="justify-content:space-between;margin-bottom:0.4rem;"><h2 style="margin:0;">🔌 MCP 연결</h2><button class="btn btn-sm btn-outline" onclick="closeMcp()">닫기</button></div>
       <p class="muted" style="font-size:0.84rem;margin-top:0;">Claude Code·Cursor 같은 AI 개발 도구를 연결해 <b>내 서비스</b>를 배포·업데이트·디버깅할 수 있습니다. 토큰은 발급한 계정의 서비스에만 접근하며, 다른 사용자의 서비스는 조회·수정할 수 없습니다.</p>
@@ -132,7 +132,7 @@
     </div>
   </div>
 
-  <div class="overlay-modal" id="secretsOverlay" onclick="if(event.target===this)closeSecrets()">
+  <div class="overlay-modal" id="secretsOverlay" onclick="if(backdropClick(event,this))closeSecrets()">
     <div class="modal" style="width:560px;">
       <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:0.5rem;">
         <h2 style="margin:0;">🔑 내 시크릿</h2>
@@ -157,7 +157,7 @@
   </div>
 
   <!-- Resource trend overlay -->
-  <div class="overlay-modal" id="trendOverlay" onclick="if(event.target===this)closeTrend()">
+  <div class="overlay-modal" id="trendOverlay" onclick="if(backdropClick(event,this))closeTrend()">
     <div class="modal" style="width:460px;max-width:94%;">
       <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:0.7rem;">
         <h2 style="margin:0;font-size:1.1rem;">📈 리소스 추이 — <span id="trendName" style="font-family:monospace;"></span></h2>
@@ -168,7 +168,7 @@
   </div>
 
   <!-- Service management overlay -->
-  <div class="overlay-modal" id="manageOverlay" onclick="if(event.target===this)closeManage()">
+  <div class="overlay-modal" id="manageOverlay" onclick="if(backdropClick(event,this))closeManage()">
     <div class="modal" style="width:640px;max-width:94%;">
       <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:0.4rem;">
         <h2 style="margin:0;font-size:1.15rem;">⚙ <span id="mgName"></span></h2>
@@ -455,6 +455,13 @@
   </div>
 
   <script>
+    /* Backdrop clicks close a dialog only when the press also started on the
+       backdrop: selecting text in a field and releasing the mouse outside
+       the dialog must not close it (and lose what was typed). */
+    var _pressTarget = null;
+    document.addEventListener('mousedown', function(e){ _pressTarget = e.target; }, true);
+    function backdropClick(e, el){ return e.target === el && _pressTarget === el; }
+
     var API = '';
     var _user = null;
 

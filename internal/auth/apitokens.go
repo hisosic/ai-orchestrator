@@ -234,7 +234,7 @@ func IssueInternalSession(username string, role Role) (*Session, error) {
 	}
 	s := &Session{Token: token, Username: u.Username, Role: role, ExpiresAt: time.Now().Add(internalSessionTTL), Internal: true}
 	mu.Lock()
-	sessions[token] = s
+	sessions[sessionKey(token)] = s
 	mu.Unlock()
 	return s, nil
 }
@@ -242,6 +242,6 @@ func IssueInternalSession(username string, role Role) (*Session, error) {
 // EndSession removes a single session.
 func EndSession(token string) {
 	mu.Lock()
-	delete(sessions, token)
+	delete(sessions, sessionKey(token))
 	mu.Unlock()
 }

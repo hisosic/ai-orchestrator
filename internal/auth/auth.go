@@ -7,6 +7,7 @@ package auth
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -51,19 +52,78 @@ type User struct {
 }
 
 type Session struct {
-	Token     string
-	Username  string
-	Role      Role
-	ExpiresAt time.Time
-	Internal  bool // issued for an API-token (MCP) call, not a browser login
+	Token     string    `json:"-"` // plaintext, only known at creation
+	Username  string    `json:"username"`
+	Role      Role      `json:"role"`
+	ExpiresAt time.Time `json:"expires_at"`
+	Internal  bool      `json:"-"` // issued for an API-token (MCP) call, not a browser login
 }
 
 var (
 	mu       sync.RWMutex
 	users    = map[string]*User{}
-	sessions = map[string]*Session{}
+	sessions = map[string]*Session{} // keyed by sessionKey(token)
 	filePath string
 )
+
+// sessionKey is the map/persistence key for a session token: its SHA-256,
+// so the sessions file on disk never holds a usable cookie value.
+func sessionKey(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+func sessionsPath() string { return filepath.Join(filepath.Dir(filePath), "sessions.json") }
+
+// saveSessionsLocked persists browser sessions so logins survive restarts
+// and redeploys. Caller holds mu (write).
+func saveSessionsLocked() {
+	if filePath == "" {
+		return
+	}
+	now := time.Now()
+	out := map[string]*Session{}
+	for k, s := range sessions {
+		if !s.Internal && now.Before(s.ExpiresAt) {
+			out[k] = s
+		}
+	}
+	data, err := json.Marshal(out)
+	if err != nil {
+		return
+	}
+	tmp := sessionsPath() + ".tmp"
+	if os.WriteFile(tmp, data, 0o600) == nil {
+		os.Rename(tmp, sessionsPath())
+	}
+}
+
+func loadSessions() {
+	data, err := os.ReadFile(sessionsPath())
+	if err != nil {
+		return
+	}
+	var in map[string]*Session
+	if json.Unmarshal(data, &in) != nil {
+		return
+	}
+	now := time.Now()
+	mu.Lock()
+	defer mu.Unlock()
+	for k, s := range in {
+		if s == nil || !now.Before(s.ExpiresAt) {
+			continue
+		}
+		// Drop sessions of users that no longer exist; refresh the role in
+		// case it changed while the server was down.
+		u := users[s.Username]
+		if u == nil {
+			continue
+		}
+		s.Role = u.Role
+		sessions[k] = s
+	}
+}
 
 // Init loads users from disk (creating seed admin+guest on first run).
 // stateDir is the directory where users.json lives (e.g. /data).
@@ -111,6 +171,7 @@ func Init(stateDir string, adminPassword, guestPassword string) error {
 		}
 	}
 
+	loadSessions()
 	if err := loadAPITokens(); err != nil {
 		return fmt.Errorf("load api tokens: %w", err)
 	}
@@ -228,7 +289,8 @@ func Login(username, password string) (*Session, error) {
 		ExpiresAt: time.Now().Add(sessionTTL),
 	}
 	mu.Lock()
-	sessions[token] = s
+	sessions[sessionKey(token)] = s
+	saveSessionsLocked()
 	mu.Unlock()
 	return s, nil
 }
@@ -272,7 +334,8 @@ func EnsureUserSession(username string, role Role) (*Session, error) {
 	}
 	s := &Session{Token: token, Username: u.Username, Role: u.Role, ExpiresAt: time.Now().Add(sessionTTL)}
 	mu.Lock()
-	sessions[token] = s
+	sessions[sessionKey(token)] = s
+	saveSessionsLocked()
 	mu.Unlock()
 	return s, nil
 }
@@ -411,6 +474,7 @@ func InvalidateUserSessions(username string) {
 			delete(sessions, k)
 		}
 	}
+	saveSessionsLocked()
 }
 
 // Logout removes a session by token. Safe to call with an unknown token.
@@ -419,7 +483,8 @@ func Logout(token string) {
 		return
 	}
 	mu.Lock()
-	delete(sessions, token)
+	delete(sessions, sessionKey(token))
+	saveSessionsLocked()
 	mu.Unlock()
 }
 
@@ -431,17 +496,24 @@ func GetSession(token string) *Session {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	s := sessions[token]
+	k := sessionKey(token)
+	s := sessions[k]
 	if s == nil {
 		return nil
 	}
 	if time.Now().After(s.ExpiresAt) {
-		delete(sessions, token)
+		delete(sessions, k)
+		if !s.Internal {
+			saveSessionsLocked()
+		}
 		return nil
 	}
 	// Sliding refresh if close to expiring.
 	if time.Until(s.ExpiresAt) < sessionIdleMargin {
 		s.ExpiresAt = time.Now().Add(sessionTTL)
+		if !s.Internal {
+			saveSessionsLocked()
+		}
 	}
 	return s
 }
@@ -563,6 +635,7 @@ func DeleteUser(username string) error {
 			delete(sessions, k)
 		}
 	}
+	saveSessionsLocked()
 	mu.Unlock() // saveToDisk takes its own read lock
 	revokeUserAPITokens(username)
 	return saveToDisk()
@@ -582,10 +655,15 @@ func sessionCleaner() {
 	for range ticker.C {
 		now := time.Now()
 		mu.Lock()
+		removed := false
 		for k, s := range sessions {
 			if now.After(s.ExpiresAt) {
 				delete(sessions, k)
+				removed = true
 			}
+		}
+		if removed {
+			saveSessionsLocked()
 		}
 		mu.Unlock()
 	}

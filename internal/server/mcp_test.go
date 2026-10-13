@@ -204,3 +204,37 @@ func TestMCPServiceURLsUseCanonicalDomain(t *testing.T) {
 		t.Fatalf("instructions: %s", ins)
 	}
 }
+
+// MCP deploys keep /data by default; ephemeral/replicas opt out.
+func TestMCPDeployDefaultsToPersistentData(t *testing.T) {
+	h, tok := mcpEnv(t) // alice (admin) via token
+
+	call := func(args map[string]any) {
+		_, out := mcpCall(t, h, tok, "tools/call", map[string]any{"name": "deploy_image", "arguments": args})
+		toolText(t, out) // ignore node-run failure; we check the saved definition
+	}
+	paths := func(name string) []string {
+		info := clusterState.GetService(name)
+		if info == nil {
+			return nil
+		}
+		return persistentPathsOf(info)
+	}
+
+	call(map[string]any{"name": "d-default", "image": "nginx:alpine"})
+	if got := paths("d-default"); len(got) != 1 || got[0] != "/data" {
+		t.Errorf("default deploy paths = %v, want [/data]", got)
+	}
+	call(map[string]any{"name": "d-ephemeral", "image": "nginx:alpine", "ephemeral": true})
+	if got := paths("d-ephemeral"); len(got) != 0 {
+		t.Errorf("ephemeral deploy paths = %v, want none", got)
+	}
+	call(map[string]any{"name": "d-multi", "image": "nginx:alpine", "replicas": 3})
+	if got := paths("d-multi"); len(got) != 0 {
+		t.Errorf("multi-replica deploy paths = %v, want none", got)
+	}
+	call(map[string]any{"name": "d-custom", "image": "nginx:alpine", "persistent_paths": []any{"/app/uploads"}})
+	if got := paths("d-custom"); len(got) != 1 || got[0] != "/app/uploads" {
+		t.Errorf("custom paths = %v, want [/app/uploads]", got)
+	}
+}

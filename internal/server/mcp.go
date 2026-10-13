@@ -181,7 +181,7 @@ const mcpInstructions = `itda (AI Container Orchestrator) — deploy and debug y
 This token can only see and change services owned by its user; requests for other users' services are refused.
 Typical flow: get_registry_info (docker push your image) → deploy_image → get_service_status / get_logs / inspect_containers → exec_in_container for debugging → update_image after pushing a new tag.
 Or let the cluster build for you: deploy_from_git → get_deploy_status.
-Containers are recreated on restart/update, so anything written inside them is lost unless its path is listed in deploy_image persistent_paths (e.g. ["/data"]); databases should always use it.`
+Containers are recreated on restart/update, but /data is kept by default (deploy_image), so write data under /data; use persistent_paths for other dirs, or ephemeral:true for throwaway services. Deleting a service keeps its data unless delete_service purge_data:true.`
 
 // mcpPortalLine points clients at the canonical public portal.
 func mcpPortalLine() string {
@@ -492,7 +492,7 @@ func init() {
 			},
 		},
 		"deploy_image": {
-			description: "Deploy a container image as a new service you own, or redeploy one of your services (replaces its containers). Use internal registry refs from get_registry_info / import_image.",
+			description: "Deploy a container image as a new service you own, or redeploy one of your services (replaces its containers). Use internal registry refs from get_registry_info / import_image. Data under /data is kept across restarts/updates by default (managed volume; the service is pinned to one node and runs 1 replica). Pass persistent_paths to keep other paths too, or ephemeral:true for a throwaway service with no stored data. Deleting keeps the data unless delete_service is called with purge_data:true.",
 			schema: schema(map[string]any{
 				"name":     strProp("service name (letters, digits, -)"),
 				"image":    strProp("image reference, e.g. 20.20.6.248:5000/me-app:v1"),
@@ -502,7 +502,8 @@ func init() {
 					"type": "object", "properties": map[string]any{"secret_id": strProp("id from list_my_secrets"), "env_name": strProp("env var name")}, "required": []string{"secret_id"},
 				}},
 				"persistent_paths": map[string]any{"type": "array", "items": map[string]any{"type": "string"},
-					"description": "container paths whose data must survive restarts/updates, e.g. [\"/data\"]. Backed by managed volumes; the service is pinned to one node and runs 1 replica. Paths already persisted stay persisted on redeploy."},
+					"description": "extra container paths to keep across restarts/updates, e.g. [\"/app/uploads\"]. /data is kept by default; list others here. Backed by managed volumes; the service is pinned to one node and runs 1 replica. Paths already persisted stay persisted on redeploy."},
+				"ephemeral": map[string]any{"type": "boolean", "description": "true = no stored data at all (skip the default /data volume); use for throwaway/stateless services. Ignored if persistent_paths is given."},
 				"memory":    strProp("memory limit, e.g. 512m"),
 				"cpu":       strProp("CPU limit, e.g. 0.5"),
 				"subdomain": map[string]any{"type": "boolean", "description": "route as <name>.<base-domain> instead of path routing"},
@@ -535,8 +536,19 @@ func init() {
 				if refs, ok := a["secret_refs"].([]any); ok && len(refs) > 0 {
 					body["secret_refs"] = refs
 				}
-				if pp, ok := a["persistent_paths"].([]any); ok && len(pp) > 0 {
-					body["persistent_paths"] = pp
+				// Persist /data by default so a restart or image update doesn't wipe
+				// the service's data. Opt out with ephemeral:true. Skipped for
+				// multi-replica deploys (a managed volume pins to one node / 1
+				// replica) and when the service already has managed volumes.
+				paths := []any{}
+				if pp, ok := a["persistent_paths"].([]any); ok {
+					paths = append(paths, pp...)
+				}
+				if len(paths) == 0 && !a.boolean("ephemeral") && replicas == 1 && len(persistentSpecsFor(name)) == 0 {
+					paths = append(paths, "/data")
+				}
+				if len(paths) > 0 {
+					body["persistent_paths"] = paths
 				}
 				if m := a.str("memory"); m != "" {
 					body["memory"] = m

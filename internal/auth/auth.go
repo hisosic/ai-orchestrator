@@ -136,6 +136,16 @@ func Init(stateDir string, adminPassword, guestPassword string) error {
 	}
 	filePath = filepath.Join(stateDir, "users.json")
 
+	// Start from a clean in-memory state and load from this dir, so Init
+	// fully reflects stateDir (a real restart; also keeps tests isolated).
+	mu.Lock()
+	users = map[string]*User{}
+	sessions = map[string]*Session{}
+	mu.Unlock()
+	tokMu.Lock()
+	tokens = map[string]*APIToken{}
+	tokMu.Unlock()
+
 	if err := loadFromDisk(); err != nil {
 		return err
 	}

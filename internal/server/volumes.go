@@ -3,9 +3,12 @@
 // Users ask for container paths to keep (persistent_paths: ["/data"]); the
 // orchestrator turns each into a Docker named volume
 //
-//	orch-data-<service>-<path-slug>-<owner-hash>
+//	orch-data-<owner>-<service>-<id>-<owner-hash>
 //
-// mounted at that path. Named volumes live on one node's disk, so a service
+// where <id> is a slug of the container path, or — when the user names the
+// volume explicitly (named_volumes: [{name, path}]) — a slug of that name.
+// The name reads as account_service_volume, is unique per owner, and is
+// mounted at the requested path. Named volumes live on one node's disk, so a service
 // with managed volumes is pinned to the node it first ran on (stored as a
 // single-node affinity) and limited to one replica; restarts, image updates,
 // scale 0→1 and auto-heal all land on that node and remount the same data.
@@ -42,15 +45,73 @@ const (
 
 var nonSlug = regexp.MustCompile(`[^a-z0-9]+`)
 
+func slugify(s, fallback string) string {
+	slug := strings.Trim(nonSlug.ReplaceAllString(strings.ToLower(s), "-"), "-")
+	if slug == "" {
+		slug = fallback
+	}
+	if len(slug) > 40 {
+		slug = strings.Trim(slug[:40], "-")
+	}
+	return slug
+}
+
+// managedVolumeName builds the name of a service's managed volume for a given
+// identifier (a slug of the container path, or of a user-chosen volume name).
+// The name reads as orch-data-<owner>-<service>-<id>-<owner-hash>: grouped by
+// account and service, and unique per owner so a later reuse of the service
+// name never reattaches the previous owner's data.
+func managedVolumeName(service, owner, id string) string {
+	acct := slugify(safeRepoPrefix(owner), "user")
+	sum := sha256.Sum256([]byte(owner))
+	return fmt.Sprintf("%s%s-%s-%s-%s", managedVolumePrefix, acct, service, slugify(id, "root"), hex.EncodeToString(sum[:])[:8])
+}
+
 // persistentVolumeName is the named volume backing containerPath of a
 // service owned by owner.
 func persistentVolumeName(service, owner, containerPath string) string {
-	slug := strings.Trim(nonSlug.ReplaceAllString(strings.ToLower(containerPath), "-"), "-")
-	if slug == "" {
-		slug = "root"
+	return managedVolumeName(service, owner, containerPath)
+}
+
+// namedVolume is a user-named managed volume: a volume name plus the container
+// path it mounts at.
+type namedVolume struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+}
+
+// normalizeNamedVolumes validates user-named volumes: each needs a name and a
+// valid container path, and paths must not repeat.
+func normalizeNamedVolumes(in []namedVolume) ([]namedVolume, error) {
+	seenPath := map[string]bool{}
+	seenName := map[string]bool{}
+	var out []namedVolume
+	for _, v := range in {
+		name := strings.TrimSpace(v.Name)
+		if name == "" {
+			return nil, fmt.Errorf("볼륨 이름을 지정하세요")
+		}
+		if slugify(name, "") == "" {
+			return nil, fmt.Errorf("볼륨 이름 '%s'에는 영문/숫자가 포함되어야 합니다", name)
+		}
+		paths, err := normalizePersistentPaths([]string{v.Path})
+		if err != nil {
+			return nil, err
+		}
+		if len(paths) == 0 {
+			return nil, fmt.Errorf("볼륨 '%s'의 마운트 경로(예: /data)를 지정하세요", name)
+		}
+		p := paths[0]
+		if seenPath[p] {
+			return nil, fmt.Errorf("마운트 경로 '%s'가 중복됩니다", p)
+		}
+		if seenName[slugify(name, "")] {
+			return nil, fmt.Errorf("볼륨 이름 '%s'가 중복됩니다", name)
+		}
+		seenPath[p], seenName[slugify(name, "")] = true, true
+		out = append(out, namedVolume{Name: name, Path: p})
 	}
-	sum := sha256.Sum256([]byte(owner))
-	return fmt.Sprintf("%s%s-%s-%s", managedVolumePrefix, service, slug, hex.EncodeToString(sum[:])[:8])
+	return out, nil
 }
 
 // normalizePersistentPaths validates requested container paths.
@@ -172,11 +233,15 @@ type persistencePlan struct {
 	node  string   // pinned node ("" = not persistent or not yet placed)
 }
 
-// planPersistence merges newly requested paths with the service's existing
-// managed volumes (existing names are kept so data carries over) and works
-// out the pinned node.
-func planPersistence(service, owner string, existing map[string]any, requested []string) (persistencePlan, error) {
+// planPersistence merges newly requested paths and user-named volumes with the
+// service's existing managed volumes (existing names are kept so data carries
+// over) and works out the pinned node.
+func planPersistence(service, owner string, existing map[string]any, requested []string, named []namedVolume) (persistencePlan, error) {
 	paths, err := normalizePersistentPaths(requested)
+	if err != nil {
+		return persistencePlan{}, err
+	}
+	nvs, err := normalizeNamedVolumes(named)
 	if err != nil {
 		return persistencePlan{}, err
 	}
@@ -202,7 +267,17 @@ func planPersistence(service, owner string, existing map[string]any, requested [
 	for _, p := range paths {
 		if !have[p] {
 			plan.specs = append(plan.specs, persistentVolumeName(service, owner, p)+":"+p)
+			have[p] = true
 		}
+	}
+	for _, v := range nvs {
+		if !have[v.Path] {
+			plan.specs = append(plan.specs, managedVolumeName(service, owner, v.Name)+":"+v.Path)
+			have[v.Path] = true
+		}
+	}
+	if n := len(managedVolumeSpecs(plan.specs)); n > maxPersistentPaths {
+		return persistencePlan{}, fmt.Errorf("영구 저장소는 최대 %d개까지 지정할 수 있습니다", maxPersistentPaths)
 	}
 	return plan, nil
 }
@@ -277,10 +352,12 @@ func handleAgentVolumeRemove(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	prefix := managedVolumePrefix + body.ServiceName + "-"
+	// Names come from the orchestrator (the deleted service's own stored, owner-
+	// checked specs). Guard anyway: only orchestrator-managed volumes whose name
+	// carries this service as a segment may be removed.
 	removed := []string{}
 	for _, name := range body.Names {
-		if !strings.HasPrefix(name, prefix) {
+		if !strings.HasPrefix(name, managedVolumePrefix) || !strings.Contains(name, "-"+body.ServiceName+"-") {
 			continue
 		}
 		if err := cli.VolumeRemove(ctx, name, false); err == nil {

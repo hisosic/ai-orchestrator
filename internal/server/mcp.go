@@ -492,7 +492,7 @@ func init() {
 			},
 		},
 		"deploy_image": {
-			description: "Deploy a container image as a new service you own, or redeploy one of your services (replaces its containers). Use internal registry refs from get_registry_info / import_image. Data under /data is kept across restarts/updates by default (managed volume; the service is pinned to one node and runs 1 replica). Pass persistent_paths to keep other paths too, or ephemeral:true for a throwaway service with no stored data. Deleting keeps the data unless delete_service is called with purge_data:true.",
+			description: "Deploy a container image as a new service you own, or redeploy one of your services (replaces its containers). Use internal registry refs from get_registry_info / import_image. Data under /data is kept across restarts/updates by default (managed volume; the service is pinned to one node and runs 1 replica). Pass persistent_paths to keep other paths too, named_volumes to mount volumes with names you choose, or ephemeral:true for a throwaway service with no stored data. Deleting keeps the data unless delete_service is called with purge_data:true.",
 			schema: schema(map[string]any{
 				"name":     strProp("service name (letters, digits, -)"),
 				"image":    strProp("image reference, e.g. 20.20.6.248:5000/me-app:v1"),
@@ -503,7 +503,13 @@ func init() {
 				}},
 				"persistent_paths": map[string]any{"type": "array", "items": map[string]any{"type": "string"},
 					"description": "extra container paths to keep across restarts/updates, e.g. [\"/app/uploads\"]. /data is kept by default; list others here. Backed by managed volumes; the service is pinned to one node and runs 1 replica. Paths already persisted stay persisted on redeploy."},
-				"ephemeral": map[string]any{"type": "boolean", "description": "true = no stored data at all (skip the default /data volume); use for throwaway/stateless services. Ignored if persistent_paths is given."},
+				"named_volumes": map[string]any{"type": "array",
+					"description": "managed volumes with a name you choose, e.g. [{\"name\":\"uploads\",\"path\":\"/app/uploads\"}]. Each becomes a volume orch-data-<account>-<service>-<name>-<hash> mounted at path. Giving named_volumes (or persistent_paths) replaces the default /data; add /data here too if you still want it.",
+					"items": map[string]any{"type": "object", "properties": map[string]any{
+						"name": strProp("volume name (letters, digits, -)"),
+						"path": strProp("container mount path, e.g. /app/uploads"),
+					}, "required": []string{"name", "path"}}},
+				"ephemeral": map[string]any{"type": "boolean", "description": "true = no stored data at all (skip the default /data volume); use for throwaway/stateless services. Ignored if persistent_paths or named_volumes is given."},
 				"memory":    strProp("memory limit, e.g. 512m"),
 				"cpu":       strProp("CPU limit, e.g. 0.5"),
 				"subdomain": map[string]any{"type": "boolean", "description": "route as <name>.<base-domain> instead of path routing"},
@@ -536,15 +542,21 @@ func init() {
 				if refs, ok := a["secret_refs"].([]any); ok && len(refs) > 0 {
 					body["secret_refs"] = refs
 				}
+				// User-named managed volumes (name you choose → account_service_name).
+				named, _ := a["named_volumes"].([]any)
+				if len(named) > 0 {
+					body["named_volumes"] = named
+				}
 				// Persist /data by default so a restart or image update doesn't wipe
-				// the service's data. Opt out with ephemeral:true. Skipped for
-				// multi-replica deploys (a managed volume pins to one node / 1
-				// replica) and when the service already has managed volumes.
+				// the service's data. Opt out with ephemeral:true, or by naming your
+				// own volumes. Skipped for multi-replica deploys (a managed volume
+				// pins to one node / 1 replica) and when the service already has
+				// managed volumes.
 				paths := []any{}
 				if pp, ok := a["persistent_paths"].([]any); ok {
 					paths = append(paths, pp...)
 				}
-				if len(paths) == 0 && !a.boolean("ephemeral") && replicas == 1 && len(persistentSpecsFor(name)) == 0 {
+				if len(paths) == 0 && len(named) == 0 && !a.boolean("ephemeral") && replicas == 1 && len(persistentSpecsFor(name)) == 0 {
 					paths = append(paths, "/data")
 				}
 				if len(paths) > 0 {

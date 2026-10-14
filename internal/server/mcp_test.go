@@ -237,4 +237,17 @@ func TestMCPDeployDefaultsToPersistentData(t *testing.T) {
 	if got := paths("d-custom"); len(got) != 1 || got[0] != "/app/uploads" {
 		t.Errorf("custom paths = %v, want [/app/uploads]", got)
 	}
+
+	// A user-named volume mounts at its path (no default /data) and is named
+	// orch-data-<account>-<service>-<name>-<hash>.
+	call(map[string]any{"name": "d-named", "image": "nginx:alpine",
+		"named_volumes": []any{map[string]any{"name": "uploads", "path": "/app/data"}}})
+	if got := paths("d-named"); len(got) != 1 || got[0] != "/app/data" {
+		t.Fatalf("named-volume paths = %v, want [/app/data]", got)
+	}
+	specs := managedVolumeSpecs(serviceVolumeSpecs(clusterState.GetService("d-named")))
+	want := managedVolumeName("d-named", "alice@parametacorp.com", "uploads") + ":/app/data"
+	if len(specs) != 1 || specs[0] != want {
+		t.Fatalf("named-volume spec = %v, want %q", specs, want)
+	}
 }

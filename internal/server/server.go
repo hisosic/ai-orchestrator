@@ -2027,7 +2027,7 @@ func handleUserDeployDatabase(w http.ResponseWriter, r *http.Request) {
 	if engine == "mysql" {
 		dataPath = "/var/lib/mysql"
 	}
-	plan, err := planPersistence(name, sess.Username, clusterState.GetService(name), []string{dataPath})
+	plan, err := planPersistence(name, sess.Username, clusterState.GetService(name), []string{dataPath}, nil)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": err.Error()})
 		return
@@ -5347,6 +5347,9 @@ func handleClusterDeploy(w http.ResponseWriter, r *http.Request) {
 		// Container paths to keep across restarts as managed named volumes
 		// (see volumes.go). Pins the service to one node, one replica.
 		PersistentPaths []string `json:"persistent_paths"`
+		// User-named managed volumes: each {name, path} becomes a volume
+		// orch-data-<owner>-<service>-<name>-<hash> mounted at path.
+		NamedVolumes []namedVolume `json:"named_volumes"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "Invalid request"})
@@ -5413,7 +5416,7 @@ func handleClusterDeploy(w http.ResponseWriter, r *http.Request) {
 	if rejectForeignService(w, r, name) {
 		return
 	}
-	plan, err := planPersistence(name, requesterUsername(r), clusterState.GetService(name), body.PersistentPaths)
+	plan, err := planPersistence(name, requesterUsername(r), clusterState.GetService(name), body.PersistentPaths, body.NamedVolumes)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": err.Error()})
 		return

@@ -13,7 +13,8 @@ import (
 func TestPersistentVolumeNaming(t *testing.T) {
 	a := persistentVolumeName("web", "alice@x.com", "/var/lib/mysql")
 	b := persistentVolumeName("web", "bob@x.com", "/var/lib/mysql")
-	if !strings.HasPrefix(a, "orch-data-web-var-lib-mysql-") || a == b {
+	// Name reads as orch-data-<account>-<service>-<path-slug>-<owner-hash>.
+	if !strings.HasPrefix(a, "orch-data-alice-web-var-lib-mysql-") || a == b {
 		t.Fatalf("names: %s / %s (must be per-owner)", a, b)
 	}
 	for _, bad := range [][]string{{"data"}, {"/"}, {"/a/../etc"}, {"/a:b"}, {"/1", "/2", "/3", "/4", "/5", "/6"}} {
@@ -23,6 +24,35 @@ func TestPersistentVolumeNaming(t *testing.T) {
 	}
 	if got, err := normalizePersistentPaths([]string{"/data/", " /data", "/app/uploads"}); err != nil || len(got) != 2 || got[0] != "/data" {
 		t.Fatalf("normalize: %v %v", got, err)
+	}
+}
+
+func TestNamedVolumeNaming(t *testing.T) {
+	// A user-named volume reads as orch-data-<account>-<service>-<name>-<hash>
+	// and mounts at the requested path.
+	n := managedVolumeName("api", "jslee@parametacorp.com", "uploads")
+	if !strings.HasPrefix(n, "orch-data-jslee-api-uploads-") {
+		t.Fatalf("named volume = %s", n)
+	}
+
+	got, err := normalizeNamedVolumes([]namedVolume{{Name: "Up Loads", Path: "/app/uploads/"}})
+	if err != nil || len(got) != 1 || got[0].Path != "/app/uploads" {
+		t.Fatalf("normalize named: %v %v", got, err)
+	}
+	for _, bad := range []namedVolume{
+		{Name: "", Path: "/data"},    // no name
+		{Name: "x", Path: "data"},    // relative path
+		{Name: "x", Path: "/"},       // root
+		{Name: "###", Path: "/data"}, // name with no alnum
+		{Name: "x", Path: "/a:b"},    // path with colon
+	} {
+		if _, err := normalizeNamedVolumes([]namedVolume{bad}); err == nil {
+			t.Errorf("accepted bad named volume %+v", bad)
+		}
+	}
+	// Duplicate mount paths are rejected.
+	if _, err := normalizeNamedVolumes([]namedVolume{{Name: "a", Path: "/data"}, {Name: "b", Path: "/data"}}); err == nil {
+		t.Error("accepted duplicate mount path")
 	}
 }
 

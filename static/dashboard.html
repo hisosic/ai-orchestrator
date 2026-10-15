@@ -5740,6 +5740,24 @@ GOLOOP_LOG_WRITER_MAXSIZE=100</textarea>
       connectSSE();
     })();
 
+    // Fallback so the service list never goes stale when the SSE stream drops
+    // (e.g. the master restarts during a deploy) or the tab was backgrounded.
+    // The portal polls every 30s; the admin relied only on SSE, which is why a
+    // frozen SSE made services show in the portal but not here. updateServicesInPlace
+    // preserves scale inputs and only re-renders when the service set changes.
+    async function syncServicesFallback() {
+      try {
+        var r = await fetch(API + '/v1/services', { credentials: 'same-origin' });
+        if (!r.ok) return;
+        var data = await r.json();
+        if (Array.isArray(data)) updateServicesInPlace(data);
+      } catch (e) {}
+    }
+    setInterval(syncServicesFallback, 30000);
+    document.addEventListener('visibilitychange', function() {
+      if (!document.hidden) syncServicesFallback();
+    });
+
     // Async form handlers must use addEventListener + preventDefault rather
     // than inline onsubmit="return asyncFn(event)" — async functions return
     // a Promise which browsers treat as truthy and submit the form anyway,

@@ -3,7 +3,15 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>서비스 포털</title>
+  <title>itda 서비스 포털</title>
+  <meta name="description" content="itda 서비스 포털 — 회사 Google 계정으로 로그인해 컨테이너 이미지를 배포하고, 서비스 상태·로그·공유를 한 곳에서 관리합니다.">
+  <link rel="canonical" href="https://itda.rgrg.im/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="itda">
+  <meta property="og:title" content="itda 서비스 포털">
+  <meta property="og:description" content="컨테이너 이미지를 배포하고 서비스를 관리하는 사내 셀프서비스 포털.">
+  <meta property="og:url" content="https://itda.rgrg.im/">
+  <meta name="twitter:card" content="summary">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚀</text></svg>">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700&display=swap" rel="stylesheet">
@@ -88,8 +96,8 @@
       <h2>로그인</h2>
       <p class="muted" style="font-size:0.85rem;margin-top:0;">회사 Google 계정(@parametacorp.com)으로 로그인하면 내 서비스를 배포·관리할 수 있습니다.</p>
       <form id="loginForm" style="display:none;" onsubmit="event.preventDefault(); doLogin(); return false;">
-        <div style="margin-bottom:0.6rem;"><input id="loginUser" placeholder="아이디" autocomplete="username" style="width:100%;"></div>
-        <div style="margin-bottom:0.6rem;"><input id="loginPass" type="password" placeholder="비밀번호" autocomplete="current-password" style="width:100%;"></div>
+        <div style="margin-bottom:0.6rem;"><input aria-label="아이디" id="loginUser" placeholder="아이디" autocomplete="username" style="width:100%;"></div>
+        <div style="margin-bottom:0.6rem;"><input aria-label="비밀번호" id="loginPass" type="password" placeholder="비밀번호" autocomplete="current-password" style="width:100%;"></div>
         <button class="btn" type="submit" style="width:100%;">로그인</button>
       </form>
       <div id="loginErr" style="color:var(--danger);font-size:0.82rem;min-height:1.1em;margin-top:0.5rem;"></div>
@@ -103,8 +111,6 @@
     </div>
   </div>
 
-  <!-- Secrets manager overlay -->
-  <!-- MCP connection (personal API tokens) -->
   <div class="overlay-modal" id="mcpOverlay" onclick="if(backdropClick(event,this))closeMcp()">
     <div class="modal" style="width:680px;max-width:94%;max-height:90vh;overflow:auto;">
       <div class="row" style="justify-content:space-between;margin-bottom:0.4rem;"><h2 style="margin:0;">🔌 MCP 연결</h2><button class="btn btn-sm btn-outline" onclick="closeMcp()">닫기</button></div>
@@ -112,7 +118,7 @@
 
       <div class="pg-step" style="margin-top:0.4rem;"><b>1. 액세스 토큰 발급</b>
         <div class="row" style="margin-top:0.35rem;">
-          <input id="mcpTokName" placeholder="토큰 이름 (예: macbook-claude)" maxlength="60" style="flex:1;min-width:180px;">
+          <input aria-label="토큰 이름" id="mcpTokName" placeholder="토큰 이름 (예: macbook-claude)" maxlength="60" style="flex:1;min-width:180px;">
           <button class="btn btn-sm" onclick="createMcpToken()">발급</button>
         </div>
         <div id="mcpNewTok" style="display:none;margin-top:0.5rem;padding:0.6rem 0.7rem;border:1px solid var(--warn);border-radius:var(--radius);font-size:0.82rem;"></div>
@@ -149,8 +155,8 @@
         <div style="font-weight:600;font-size:0.85rem;margin-bottom:0.4rem;" id="secretFormTitle">➕ 새 시크릿 추가</div>
         <input type="hidden" id="secretEditId" value="">
         <div class="row" style="gap:0.4rem;margin-bottom:0.4rem;">
-          <input id="secretKey" placeholder="key (예: DB_PASSWORD)" style="flex:1;min-width:140px;">
-          <input id="secretVal" placeholder="value" style="flex:1.4;min-width:160px;">
+          <input aria-label="시크릿 key" id="secretKey" placeholder="key (예: DB_PASSWORD)" style="flex:1;min-width:140px;">
+          <input aria-label="시크릿 value" id="secretVal" placeholder="value" style="flex:1.4;min-width:160px;">
         </div>
         <div class="row" style="gap:0.4rem;align-items:center;">
           <button class="btn btn-sm" id="secretSaveBtn" onclick="saveSecret()">저장</button>
@@ -228,7 +234,7 @@
           <button class="btn btn-sm btn-outline" onclick="mgRestart()">↻ 재시작</button>
           <span style="flex:1;"></span>
           <span class="muted" style="font-size:0.8rem;">복제본</span>
-          <input id="mgReplicas" type="number" min="0" max="10" value="1" style="width:64px;">
+          <input aria-label="복제본 수" id="mgReplicas" type="number" min="0" max="10" value="1" style="width:64px;">
           <button class="btn btn-sm btn-outline" onclick="mgScale()">적용</button>
         </div>
         <div id="mgPowerMsg" class="muted" style="font-size:0.78rem;margin-top:0.4rem;min-height:1em;"></div>
@@ -239,14 +245,14 @@
         <div style="font-weight:600;font-size:0.85rem;margin-bottom:0.5rem;">리소스 / 이미지</div>
         <div class="row" style="gap:0.4rem;align-items:center;flex-wrap:wrap;margin-bottom:0.5rem;">
           <span class="muted" style="font-size:0.8rem;">메모리</span>
-          <input id="mgMemory" placeholder="예: 512m" style="width:90px;">
+          <input aria-label="메모리 제한" id="mgMemory" placeholder="예: 512m" style="width:90px;">
           <span class="muted" style="font-size:0.8rem;">CPU</span>
-          <input id="mgCPU" placeholder="예: 0.5" style="width:80px;">
+          <input aria-label="CPU 제한" id="mgCPU" placeholder="예: 0.5" style="width:80px;">
           <button class="btn btn-sm btn-outline" onclick="mgApplyLimits()">제한 적용 &amp; 재배포</button>
         </div>
         <div class="row" style="gap:0.4rem;align-items:center;flex-wrap:wrap;">
           <span class="muted" style="font-size:0.8rem;">이미지</span>
-          <input id="mgImage" placeholder="repo:tag (비우면 현재 태그 재pull)" style="flex:1;min-width:200px;font-family:monospace;font-size:0.8rem;">
+          <input aria-label="배포 이미지" id="mgImage" placeholder="repo:tag (비우면 현재 태그 재pull)" style="flex:1;min-width:200px;font-family:monospace;font-size:0.8rem;">
           <button class="btn btn-sm btn-outline" onclick="mgUpdateImage()">이미지 업데이트(롤링)</button>
         </div>
         <div id="mgResMsg" class="muted" style="font-size:0.78rem;margin-top:0.4rem;min-height:1em;"></div>
@@ -270,7 +276,7 @@
         <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:0.4rem;">
           <span style="font-weight:600;font-size:0.85rem;">로그</span>
           <span>
-            <select id="mgTail" style="font-size:0.78rem;padding:0.2rem;"><option value="100">최근 100줄</option><option value="200" selected>200줄</option><option value="500">500줄</option></select>
+            <select aria-label="로그 줄 수" id="mgTail" style="font-size:0.78rem;padding:0.2rem;"><option value="100">최근 100줄</option><option value="200" selected>200줄</option><option value="500">500줄</option></select>
             <button class="btn btn-sm btn-outline" onclick="mgLoadLogs()" style="padding:0.15rem 0.5rem;">조회</button>
           </span>
         </div>
@@ -288,7 +294,7 @@
       <h1>🚀 서비스 포털</h1>
       <div class="row">
         <span id="userBadge" class="muted"></span>
-        <select id="themeSelect" onchange="setTheme(this.value)" title="테마">
+        <select aria-label="테마" id="themeSelect" onchange="setTheme(this.value)" title="테마">
           <option value="system">시스템</option><option value="light">라이트</option><option value="dark">다크</option>
         </select>
         <button class="btn btn-sm btn-outline" id="btnSecrets" style="display:none;" onclick="openSecrets()">🔑 내 시크릿</button>
@@ -327,10 +333,10 @@
         <div style="font-size:1.6rem;">📦</div>
         <div>여기로 파일을 드래그하거나 클릭하여 선택</div>
         <div class="muted" id="fileLabel" style="font-size:0.82rem;margin-top:0.3rem;">선택된 파일 없음</div>
-        <input type="file" id="fileInput" accept=".zip,.gz,.tgz,.tar" style="display:none;">
+        <input aria-label="업로드 파일 선택" type="file" id="fileInput" accept=".zip,.gz,.tgz,.tar" style="display:none;">
       </div>
       <div class="row" style="margin-top:0.75rem;">
-        <input id="svcName" placeholder="서비스명 (비우면 자동)" style="flex:1;min-width:160px;">
+        <input aria-label="서비스명" id="svcName" placeholder="서비스명 (비우면 자동)" style="flex:1;min-width:160px;">
         <label class="row" style="gap:0.35rem;font-size:0.85rem;cursor:pointer;"><input type="checkbox" id="autoDeploy" checked> 자동 빌드 &amp; 배포</label>
         <button class="btn btn-sm btn-outline" onclick="previewDockerfile()">📝 Dockerfile 미리보기</button>
         <button class="btn" id="btnDeploy" onclick="deploySource()">실행</button>
@@ -354,15 +360,15 @@
       <div class="tabpane" data-dpane="git">
         <p class="muted" style="font-size:0.85rem;margin-top:0;">public/private Git 저장소를 clone하여 동일 파이프라인(Dockerfile 감지/AI생성 → 빌드 → 배포)으로 배포합니다.</p>
         <div class="row" style="margin-bottom:0.4rem;">
-          <input id="gitUrl" placeholder="https://github.com/owner/repo" style="flex:2;min-width:220px;">
-          <input id="gitBranch" placeholder="branch (선택)" style="flex:0.6;min-width:90px;">
-          <input id="gitName" placeholder="서비스명 (자동)" style="flex:0.8;min-width:110px;">
+          <input aria-label="Git 저장소 URL" id="gitUrl" placeholder="https://github.com/owner/repo" style="flex:2;min-width:220px;">
+          <input aria-label="브랜치" id="gitBranch" placeholder="branch (선택)" style="flex:0.6;min-width:90px;">
+          <input aria-label="서비스명" id="gitName" placeholder="서비스명 (자동)" style="flex:0.8;min-width:110px;">
         </div>
         <div class="row" style="margin-bottom:0.4rem;">
           <span class="muted" style="font-size:0.82rem;">🔒 Private:</span>
-          <input id="gitToken" type="password" placeholder="Access Token (PAT)" style="flex:1.4;min-width:180px;" autocomplete="off">
+          <input aria-label="Access Token" id="gitToken" type="password" placeholder="Access Token (PAT)" style="flex:1.4;min-width:180px;" autocomplete="off">
           <span class="muted" style="font-size:0.82rem;">또는 시크릿:</span>
-          <select id="gitTokenSecret" style="flex:1;min-width:130px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.45rem;border-radius:var(--radius);font-family:inherit;font-size:0.82rem;"><option value="">-- 선택 안 함 --</option></select>
+          <select aria-label="저장된 토큰 시크릿" id="gitTokenSecret" style="flex:1;min-width:130px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.45rem;border-radius:var(--radius);font-family:inherit;font-size:0.82rem;"><option value="">-- 선택 안 함 --</option></select>
           <button class="btn" onclick="deployGit()">Clone &amp; 배포</button>
         </div>
         <p class="muted" style="font-size:0.78rem;margin:0;">private repo는 GitHub PAT를 입력하거나 저장된 시크릿에서 선택하세요. 토큰은 안전하게 처리되어 노출되지 않습니다.</p>
@@ -376,8 +382,8 @@
       <div style="border:1px solid var(--border);border-radius:var(--radius);padding:0.8rem;margin-bottom:0.8rem;">
         <div style="font-weight:600;margin-bottom:0.4rem;">📥 이미지 등록 (내장 registry에 push)</div>
         <div class="row">
-          <input id="importImage" placeholder="예: nginx:alpine, ghcr.io/org/app:v1" style="flex:2;min-width:200px;">
-          <input id="importName" placeholder="저장 이름 (선택)" style="flex:1;min-width:120px;">
+          <input aria-label="가져올 이미지" id="importImage" placeholder="예: nginx:alpine, ghcr.io/org/app:v1" style="flex:2;min-width:200px;">
+          <input aria-label="저장 이름" id="importName" placeholder="저장 이름 (선택)" style="flex:1;min-width:120px;">
           <button class="btn btn-sm" onclick="importImage()">등록</button>
         </div>
         <div id="importMsg" class="muted" style="font-size:0.82rem;margin-top:0.4rem;min-height:1.1em;"></div>
@@ -386,12 +392,12 @@
       <div style="border:1px solid var(--border);border-radius:var(--radius);padding:0.8rem;">
         <div style="font-weight:600;margin-bottom:0.4rem;">🚀 이미지로 서비스 기동</div>
         <div class="row" style="margin-bottom:0.5rem;">
-          <input id="runImage" placeholder="이미지 (예: localhost:5000/app:latest)" list="regImages" style="flex:2;min-width:220px;">
+          <input aria-label="배포 이미지" id="runImage" placeholder="이미지 (예: localhost:5000/app:latest)" list="regImages" style="flex:2;min-width:220px;">
           <datalist id="regImages"></datalist>
-          <input id="runName" placeholder="서비스명" style="flex:1;min-width:120px;">
+          <input aria-label="서비스명" id="runName" placeholder="서비스명" style="flex:1;min-width:120px;">
         </div>
         <div class="row" style="margin-bottom:0.5rem;">
-          <input id="runPersist" placeholder="영구 저장 경로 (선택, 쉼표 구분 · 예: /data, /app/uploads)" style="flex:1;min-width:220px;">
+          <input aria-label="영구 저장 경로" id="runPersist" placeholder="영구 저장 경로 (선택, 쉼표 구분 · 예: /data, /app/uploads)" style="flex:1;min-width:220px;">
         </div>
         <p class="muted" style="font-size:0.76rem;margin:-0.2rem 0 0.5rem;">컨테이너는 재시작·업데이트 때 새로 만들어지므로, 지정한 경로만 데이터가 유지됩니다. 영구 저장소가 있으면 한 노드에 고정되어 복제본 1개로 실행됩니다.</p>
         <label class="row" style="gap:0.35rem;font-size:0.82rem;cursor:pointer;margin-bottom:0.4rem;"><input type="checkbox" id="runSubdomain"> 서브도메인으로 연결 (<span class="dom-sub">svc.도메인</span>) · 기본은 경로 방식(<span class="dom-path">현재 주소/svc</span>)</label>
@@ -411,9 +417,9 @@
         <div id="pgStatus" class="muted" style="font-size:0.82rem;margin:0.5rem 0;">registry 상태 확인 중...</div>
         <div class="row" style="margin-bottom:0.6rem;">
           <label class="muted" style="font-size:0.82rem;">이미지 이름</label>
-          <input id="pgRepo" value="myapp" oninput="renderPushGuide()" style="flex:1;min-width:120px;max-width:220px;padding:0.3rem 0.5rem;font-size:0.82rem;">
+          <input aria-label="이미지 저장소 이름" id="pgRepo" value="myapp" oninput="renderPushGuide()" style="flex:1;min-width:120px;max-width:220px;padding:0.3rem 0.5rem;font-size:0.82rem;">
           <label class="muted" style="font-size:0.82rem;">태그</label>
-          <input id="pgTag" value="v1" oninput="renderPushGuide()" style="width:90px;padding:0.3rem 0.5rem;font-size:0.82rem;">
+          <input aria-label="이미지 태그" id="pgTag" value="v1" oninput="renderPushGuide()" style="width:90px;padding:0.3rem 0.5rem;font-size:0.82rem;">
         </div>
 
         <div class="pg-step"><b>1. registry를 insecure(HTTP)로 등록</b> <span class="muted">— 최초 1회</span>
@@ -448,16 +454,16 @@
       <p class="muted" style="font-size:0.85rem;margin-top:0;">계정 전용 PostgreSQL / MySQL 데이터베이스를 기동합니다. 기동 후 표시되는 <b>내부 엔드포인트(호스트:포트)</b>로 다른 서비스에서 접속할 수 있습니다. 데이터는 영구 저장소에 보관되어 재시작·업데이트 후에도 유지됩니다.</p>
       <div style="border:1px solid var(--border);border-radius:var(--radius);padding:0.8rem;">
         <div class="row" style="margin-bottom:0.5rem;">
-          <select id="dbEngine" style="flex:1;min-width:140px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.45rem;border-radius:var(--radius);font-family:inherit;font-size:0.9rem;">
+          <select aria-label="DB 엔진" id="dbEngine" style="flex:1;min-width:140px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.45rem;border-radius:var(--radius);font-family:inherit;font-size:0.9rem;">
             <option value="postgres">PostgreSQL 16</option>
             <option value="mysql">MySQL 8.0</option>
           </select>
-          <input id="dbSvcName" placeholder="서비스명 (예: my-db)" style="flex:1.4;min-width:140px;">
+          <input aria-label="서비스명" id="dbSvcName" placeholder="서비스명 (예: my-db)" style="flex:1.4;min-width:140px;">
         </div>
         <div class="row" style="margin-bottom:0.5rem;">
-          <input id="dbName" placeholder="DB 이름 (예: appdb)" style="flex:1;min-width:120px;">
-          <input id="dbUser" placeholder="계정 (예: appuser)" style="flex:1;min-width:120px;">
-          <input id="dbPass" type="password" placeholder="비밀번호" autocomplete="new-password" style="flex:1;min-width:120px;">
+          <input aria-label="DB 이름" id="dbName" placeholder="DB 이름 (예: appdb)" style="flex:1;min-width:120px;">
+          <input aria-label="DB 계정" id="dbUser" placeholder="계정 (예: appuser)" style="flex:1;min-width:120px;">
+          <input aria-label="DB 비밀번호" id="dbPass" type="password" placeholder="비밀번호" autocomplete="new-password" style="flex:1;min-width:120px;">
         </div>
         <div class="row">
           <button class="btn" onclick="deployDatabase()">데이터베이스 기동</button>
@@ -875,8 +881,8 @@
       row.className='mg-rule';
       row.style.cssText='border-top:1px dashed var(--border);padding:0.4rem 0;';
       row.innerHTML='<div class="row" style="gap:0.4rem;">'+
-        '<input data-k="path" placeholder="/admin" style="flex:1;min-width:120px;font-family:monospace;font-size:0.82rem;padding:0.3rem 0.5rem;">'+
-        '<select data-k="allow" style="font-size:0.82rem;padding:0.3rem;"><option value="owner">소유자만</option><option value="login">로그인한 사용자 전체</option><option value="users">지정한 사용자</option></select>'+
+        '<input data-k="path" aria-label="경로 패턴" placeholder="/admin" style="flex:1;min-width:120px;font-family:monospace;font-size:0.82rem;padding:0.3rem 0.5rem;">'+
+        '<select data-k="allow" aria-label="접근 허용 범위" style="font-size:0.82rem;padding:0.3rem;"><option value="owner">소유자만</option><option value="login">로그인한 사용자 전체</option><option value="users">지정한 사용자</option></select>'+
         '<button class="btn btn-sm btn-outline" title="삭제" style="padding:0.2rem 0.5rem;">✕</button></div>'+
         '<textarea data-k="users" rows="1" placeholder="허용할 이메일 (쉼표 구분)" style="display:none;width:100%;margin-top:0.3rem;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.35rem;border-radius:var(--radius);font-family:inherit;font-size:0.8rem;resize:vertical;"></textarea>';
       var path=row.querySelector('[data-k=path]'), allow=row.querySelector('[data-k=allow]'), users=row.querySelector('[data-k=users]');
@@ -980,8 +986,8 @@
       var box=document.getElementById('mgEnvRows');
       var row=document.createElement('div');
       row.className='mg-env-row row'; row.style.cssText='gap:0.3rem;margin-bottom:0.3rem;align-items:center;';
-      row.innerHTML='<input class="mg-env-k" placeholder="KEY" value="'+attrEsc(name||'')+'" style="flex:1;min-width:120px;font-family:monospace;font-size:0.8rem;">'+
-        '<input class="mg-env-v" placeholder="value" value="'+attrEsc(val||'')+'" style="flex:1.5;min-width:140px;font-family:monospace;font-size:0.8rem;"'+(isSecret?' type="password"':'')+'>'+
+      row.innerHTML='<input class="mg-env-k" aria-label="환경변수 이름" placeholder="KEY" value="'+attrEsc(name||'')+'" style="flex:1;min-width:120px;font-family:monospace;font-size:0.8rem;">'+
+        '<input class="mg-env-v" aria-label="환경변수 값" placeholder="value" value="'+attrEsc(val||'')+'" style="flex:1.5;min-width:140px;font-family:monospace;font-size:0.8rem;"'+(isSecret?' type="password"':'')+'>'+
         '<label class="row" style="gap:0.2rem;font-size:0.72rem;cursor:pointer;white-space:nowrap;"><input type="checkbox" class="mg-env-s"'+(isSecret?' checked':'')+'>비밀</label>'+
         '<button class="btn btn-sm btn-outline" onclick="this.closest(\'.mg-env-row\').remove()" style="padding:0.1rem 0.4rem;">✕</button>';
       // toggle password visibility when 비밀 changes
@@ -1203,7 +1209,7 @@
         var html='<div class="muted" style="font-size:0.78rem;margin-bottom:0.3rem;">주입할 시크릿 선택 (값은 서버에서 안전하게 주입됨):</div>';
         items.forEach(function(s){
           html+='<label class="row" style="gap:0.3rem;font-size:0.8rem;margin-bottom:0.2rem;"><input type="checkbox" data-secret-id="'+esc(s.id)+'"> 🔒 '+esc(s.name)+
-            ' <input type="text" data-secret-env="'+esc(s.id)+'" placeholder="환경변수명 (기본 '+esc(s.name)+')" style="flex:1;min-width:140px;font-size:0.78rem;padding:0.2rem 0.4rem;"></label>';
+            ' <input type="text" aria-label="환경변수명" data-secret-env="'+esc(s.id)+'" placeholder="환경변수명 (기본 '+esc(s.name)+')" style="flex:1;min-width:140px;font-size:0.78rem;padding:0.2rem 0.4rem;"></label>';
         });
         box.innerHTML=html;
       }catch(e){ hint.textContent='시크릿 조회 실패'; }

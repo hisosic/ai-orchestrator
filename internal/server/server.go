@@ -408,6 +408,8 @@ func NewRouter() http.Handler {
 	r.Get("/portal", handlePortal)
 	r.Get("/admin", handleDashboard)
 	r.Get("/dashboard", handleDashboard)
+	r.Get("/robots.txt", handleRobots)
+	r.Get("/sitemap.xml", handleSitemap)
 
 	// Auth
 	r.Post("/v1/auth/login", handleLogin)
@@ -998,6 +1000,8 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 					// endpoint URLs are http://svc.<domain>/ in that case.
 					"frame-src 'self' http: https:; "+
 					"connect-src 'self'; "+
+					"object-src 'none'; "+ // no plugins/embeds
+					"base-uri 'self'; "+ // block <base> hijacking
 					"frame-ancestors 'none'")
 		}
 		next.ServeHTTP(w, r)
@@ -1383,6 +1387,7 @@ func sessionAuthMiddleware(next http.Handler) http.Handler {
 		// Unauthenticated endpoints (health, page HTML, login).
 		if method == http.MethodOptions ||
 			path == "/" || path == "/dashboard" || path == "/admin" || path == "/portal" || path == "/health" ||
+			path == "/robots.txt" || path == "/sitemap.xml" ||
 			strings.HasPrefix(path, "/v1/auth/") {
 			next.ServeHTTP(w, r)
 			return
@@ -2861,6 +2866,38 @@ func handlePortal(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	io.WriteString(w, PortalHTML)
+}
+
+// portalBaseURL is the public https origin for this request (used by
+// robots.txt/sitemap.xml), preferring the canonical path host.
+func portalBaseURL(r *http.Request) string {
+	host := requestHost(r)
+	if ph := runtime.PathHost(); ph != "" {
+		host = ph
+	}
+	if host == "" {
+		host = "itda.rgrg.im"
+	}
+	return "https://" + host
+}
+
+// handleRobots serves robots.txt pointing crawlers at the sitemap. Only the
+// public portal is indexable; the admin dashboard is disallowed.
+func handleRobots(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	io.WriteString(w, "User-agent: *\nAllow: /$\nDisallow: /admin\nDisallow: /dashboard\nDisallow: /v1/\nSitemap: "+portalBaseURL(r)+"/sitemap.xml\n")
+}
+
+// handleSitemap serves a minimal sitemap listing the public portal.
+func handleSitemap(w http.ResponseWriter, r *http.Request) {
+	base := portalBaseURL(r)
+	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>`+"\n"+
+		`<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">`+"\n"+
+		"  <url><loc>"+base+"/</loc><changefreq>weekly</changefreq></url>\n"+
+		"</urlset>\n")
 }
 
 // ---------------------------------------------------------------------------

@@ -7941,6 +7941,19 @@ func isExecAllowedContainer(name string) bool {
 // AI Chat API (Claude via Anthropic API)
 // ---------------------------------------------------------------------------
 
+// claudeConsoleModel is the model used by the natural-language command console
+// and AI chat. The `thinking` parameter is intentionally omitted on these
+// requests, so a Sonnet 4.6-class model returns plain text/tool_use blocks (no
+// preserved-thinking blocks) and the manual tool loop stays correct. Override
+// with CLAUDE_CONSOLE_MODEL if needed. (The previous pinned id
+// claude-sonnet-4-20250514 was retired and returned 404.)
+var claudeConsoleModel = func() string {
+	if m := strings.TrimSpace(os.Getenv("CLAUDE_CONSOLE_MODEL")); m != "" {
+		return m
+	}
+	return "claude-sonnet-4-6"
+}()
+
 func getAnthropicKey() string {
 	return os.Getenv("ANTHROPIC_API_KEY")
 }
@@ -8218,8 +8231,8 @@ func callClaudeWithTools(systemPrompt, userMessage string) (string, []map[string
 	const maxTurns = 5
 	for turn := 0; turn < maxTurns; turn++ {
 		reqBody := map[string]any{
-			"model":      "claude-sonnet-4-20250514",
-			"max_tokens": 2048,
+			"model":      claudeConsoleModel,
+			"max_tokens": 4096,
 			"system":     systemPrompt,
 			"messages":   messages,
 			"tools":      containerTools,
@@ -8329,7 +8342,7 @@ func callClaude(systemPrompt, userMessage string) (string, error) {
 	}
 
 	reqBody := map[string]any{
-		"model":      "claude-sonnet-4-20250514",
+		"model":      claudeConsoleModel,
 		"max_tokens": 1024,
 		"system":     systemPrompt,
 		"messages": []map[string]string{

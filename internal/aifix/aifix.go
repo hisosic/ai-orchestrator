@@ -16,7 +16,7 @@ import (
 
 const (
 	claudeAPIURL = "https://api.anthropic.com/v1/messages"
-	claudeModel  = "claude-sonnet-4-20250514"
+	claudeModel  = "claude-sonnet-4-6" // successor to the retired claude-sonnet-4-20250514 (404)
 	// MaxRetries is the maximum number of AI fix + rebuild attempts.
 	// Set high enough to recover when a fix solves one issue but introduces
 	// another (e.g. a typo) that itself needs fixing.
@@ -25,10 +25,10 @@ const (
 
 // FixResult contains the AI-suggested fixes.
 type FixResult struct {
-	Analysis    string     `json:"analysis"`
-	Fixes       []FileFix  `json:"fixes"`
-	Suggestion  string     `json:"suggestion"`
-	FixApplied  bool       `json:"fix_applied"`
+	Analysis   string    `json:"analysis"`
+	Fixes      []FileFix `json:"fixes"`
+	Suggestion string    `json:"suggestion"`
+	FixApplied bool      `json:"fix_applied"`
 }
 
 // FileFix represents a fix to a specific file.
@@ -338,12 +338,12 @@ func callClaudeAPI(ctx context.Context, apiKey string, prompt string) (*FixResul
 
 // RuntimeFixResult contains the AI analysis of container runtime errors.
 type RuntimeFixResult struct {
-	Analysis   string     `json:"analysis"`
-	RootCause  string     `json:"root_cause"`  // "dockerfile", "source", "env", "dependency", "config"
-	Suggestion string     `json:"suggestion"`
-	Fixes      []FileFix  `json:"fixes"`
-	EnvFixes   []string   `json:"env_fixes"`   // environment variables to add/change
-	NeedsRebuild bool    `json:"needs_rebuild"`
+	Analysis     string    `json:"analysis"`
+	RootCause    string    `json:"root_cause"` // "dockerfile", "source", "env", "dependency", "config"
+	Suggestion   string    `json:"suggestion"`
+	Fixes        []FileFix `json:"fixes"`
+	EnvFixes     []string  `json:"env_fixes"` // environment variables to add/change
+	NeedsRebuild bool      `json:"needs_rebuild"`
 }
 
 // AnalyzeRuntimeError analyzes container startup failure using logs, Dockerfile, and source context.

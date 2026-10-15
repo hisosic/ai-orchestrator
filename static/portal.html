@@ -192,9 +192,9 @@
       <div style="border:1px solid var(--border);border-radius:var(--radius);padding:0.55rem 0.7rem;margin-bottom:0.7rem;">
         <div class="row" style="gap:0.9rem;align-items:center;font-size:0.85rem;">
           <span style="font-weight:600;">공유</span>
-          <label class="row" style="gap:0.3rem;cursor:pointer;"><input type="radio" name="mgShareMode" value="" onchange="mgShareModeChanged()"> 공유 안 함</label>
-          <label class="row" style="gap:0.3rem;cursor:pointer;"><input type="radio" name="mgShareMode" value="all" onchange="mgShareModeChanged()"> 🌐 전체 공유</label>
-          <label class="row" style="gap:0.3rem;cursor:pointer;"><input type="radio" name="mgShareMode" value="users" onchange="mgShareModeChanged()"> 👥 특정 사용자</label>
+          <label class="row" style="gap:0.3rem;cursor:pointer;"><input type="radio" name="mgShareMode" aria-label="공유 안 함" value="" onchange="mgShareModeChanged()"> 공유 안 함</label>
+          <label class="row" style="gap:0.3rem;cursor:pointer;"><input type="radio" name="mgShareMode" aria-label="전체 공유" value="all" onchange="mgShareModeChanged()"> 🌐 전체 공유</label>
+          <label class="row" style="gap:0.3rem;cursor:pointer;"><input type="radio" name="mgShareMode" aria-label="특정 사용자 공유" value="users" onchange="mgShareModeChanged()"> 👥 특정 사용자</label>
           <span id="mgShareMsg" class="muted" style="font-size:0.76rem;margin-left:auto;"></span>
         </div>
         <div id="mgShareHint" class="muted" style="font-size:0.76rem;margin-top:0.35rem;"></div>
